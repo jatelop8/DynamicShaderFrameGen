@@ -1,3 +1,10 @@
+// DynamicShaderFrameGen (https://github.com/jatelop8/DynamicShaderFrameGen)
+// Licensed under GPL-3.0-or-later WITH Modding Exception AND GPL-3.0 Linking Exception.
+// Derived from open-source projects (all GPL-3.0):
+//   - Skyrim Community Shaders (https://github.com/doodlum/skyrim-community-shaders)
+//   - ENBFrameGeneration (https://github.com/doodlum/ENBFrameGeneration)
+// Other components: Dear ImGui / CommonLibSSE-NG / Microsoft Detours (MIT).
+
 #pragma once
 
 // ImguiMenu.h - v0.7: in-game settings menu (Dear ImGui + D3D11 backend)

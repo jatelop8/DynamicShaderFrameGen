@@ -68,8 +68,8 @@ avoid any ambiguity:
 
 | Component | Source | License | Used for |
 |---|---|---|---|
-| D3D12 swap-chain proxy, dynamic-resolution hooks (`Main_UpdateJitter` / `SetScissorRect`), Halton jitter, DRS ratio | **Community Shaders** (doodlum / Pentalimb) — https://github.com/doodlum/skyrim-community-shaders | MIT | `src/DX12SwapChain.*` architecture, DRS + jitter logic in `src/FrameGen.cpp` |
-| FSR 3.1 Frame Generation integration (runtime table loading, swap-chain creation, per-frame configure/dispatch) | **ENBFrameGeneration** (doodlum / Pentalimb) — https://github.com/doodlum/ENBFrameGeneration | MIT | `src/FidelityFX.cpp` |
+| D3D12 swap-chain proxy, dynamic-resolution hooks (`Main_UpdateJitter` / `SetScissorRect`), Halton jitter, DRS ratio | **Community Shaders** (doodlum / Pentalimb) — https://github.com/doodlum/skyrim-community-shaders | GPL-3.0-or-later WITH Modding Exception AND GPL-3.0 Linking Exception | `src/DX12SwapChain.*` architecture, DRS + jitter logic in `src/FrameGen.cpp` |
+| FSR 3.1 Frame Generation integration (runtime table loading, swap-chain creation, per-frame configure/dispatch) | **ENBFrameGeneration** (doodlum / Pentalimb) — https://github.com/doodlum/ENBFrameGeneration | GPL-3.0-or-later WITH Modding Exception AND GPL-3.0 Linking Exception | `src/FidelityFX.cpp` |
 | In-game menu | **Dear ImGui** (Omar Cornut) — https://github.com/ocornut/imgui | MIT | `src/ImguiMenu.*`, `extern/imgui` (vendored) |
 | DLSS upscaling runtime | **NVIDIA Streamline SDK** — https://github.com/NVIDIA/streamline | Streamline SDK License | `src/Streamline.*` |
 | FSR 3.1 FG runtime | **AMD FidelityFX SDK** — https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK | AMD License (MIT-style) | FSR3 runtime loading |
@@ -83,7 +83,9 @@ the official SDK installs at runtime.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+**GPL-3.0-or-later WITH Modding Exception AND GPL-3.0 Linking Exception** — see [LICENSE](LICENSE) and [EXCEPTIONS.md](EXCEPTIONS.md).
+
+This project derives from **Community Shaders** and **ENBFrameGeneration** (both GPL-3.0), so this project is released under the same license, with full attribution in the table above.
 
 Note: the *runtime DLLs* loaded by this plugin (NVIDIA Streamline, AMD
 FidelityFX) are subject to their respective SDK licenses; they are not part of

@@ -1,3 +1,10 @@
+// DynamicShaderFrameGen (https://github.com/jatelop8/DynamicShaderFrameGen)
+// Licensed under GPL-3.0-or-later WITH Modding Exception AND GPL-3.0 Linking Exception.
+// Derived from open-source projects (all GPL-3.0):
+//   - Skyrim Community Shaders (https://github.com/doodlum/skyrim-community-shaders)
+//   - ENBFrameGeneration (https://github.com/doodlum/ENBFrameGeneration)
+// Other components: Dear ImGui / CommonLibSSE-NG / Microsoft Detours (MIT).
+
 #include <SKSE/SKSE.h>
 
 #include <RE/B/BSTimer.h>
@@ -10,7 +17,7 @@
 
 namespace FrameGen
 {
-	// v0.6：FSR3.1 FG 移植（doodlum/ENBFrameGeneration 开源版，MIT）
+	// v0.6：FSR3.1 FG 移植（doodlum/ENBFrameGeneration，GPL-3.0）
 	// 输入：HUDLessColor/depth/motionVectors 共享纹理（我们的 WrappedResource 链）+ D3D12 swapchain
 	// v0.6.1：全部走 ffxModule 函数表调用（运行时 loader，不链接 ffx_api.cpp）——
 	// 表统一用成员 ffxModule（回调也用它，避免 g_ffxModule 空表崩溃）

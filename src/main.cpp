@@ -1,3 +1,10 @@
+// DynamicShaderFrameGen (https://github.com/jatelop8/DynamicShaderFrameGen)
+// Licensed under GPL-3.0-or-later WITH Modding Exception AND GPL-3.0 Linking Exception.
+// Derived from open-source projects (all GPL-3.0):
+//   - Skyrim Community Shaders (https://github.com/doodlum/skyrim-community-shaders)
+//   - ENBFrameGeneration (https://github.com/doodlum/ENBFrameGeneration)
+// Other components: Dear ImGui / CommonLibSSE-NG / Microsoft Detours (MIT).
+
 // DynamicShaderFrameGen —— 独立帧生成插件（DLSS FG，作用于 ENB）
 // SKSE 插件入口：INI 加载 + D3D11CreateDeviceAndSwapChain IAT 钩子
 //（游戏启动早期，D3D 设备未创建时安装）

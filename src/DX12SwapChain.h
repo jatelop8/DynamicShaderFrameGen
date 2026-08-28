@@ -1,6 +1,13 @@
+// DynamicShaderFrameGen (https://github.com/jatelop8/DynamicShaderFrameGen)
+// Licensed under GPL-3.0-or-later WITH Modding Exception AND GPL-3.0 Linking Exception.
+// Derived from open-source projects (all GPL-3.0):
+//   - Skyrim Community Shaders (https://github.com/doodlum/skyrim-community-shaders)
+//   - ENBFrameGeneration (https://github.com/doodlum/ENBFrameGeneration)
+// Other components: Dear ImGui / CommonLibSSE-NG / Microsoft Detours (MIT).
+
 #pragma once
 
-// DX12SwapChain.h —— D3D12 Proxy（精简自 Community Shaders，MIT）
+// DX12SwapChain.h —— D3D12 Proxy（精简自 Community Shaders（GPL-3.0））
 // WrappedResource：D3D11 共享纹理 ↔ D3D12 资源互操作
 // DXGISwapChainProxy：游戏拿到的假 swapchain（接口转发 + Present 拦截）
 // DX12SwapChain：D3D12 设备/队列/FFX FG swapchain/双缓冲/共享 Fence

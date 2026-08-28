@@ -1,4 +1,11 @@
-// DX12SwapChain.cpp —— D3D12 Proxy（精简自 Community Shaders，MIT）
+// DynamicShaderFrameGen (https://github.com/jatelop8/DynamicShaderFrameGen)
+// Licensed under GPL-3.0-or-later WITH Modding Exception AND GPL-3.0 Linking Exception.
+// Derived from open-source projects (all GPL-3.0):
+//   - Skyrim Community Shaders (https://github.com/doodlum/skyrim-community-shaders)
+//   - ENBFrameGeneration (https://github.com/doodlum/ENBFrameGeneration)
+// Other components: Dear ImGui / CommonLibSSE-NG / Microsoft Detours (MIT).
+
+// DX12SwapChain.cpp —— D3D12 Proxy（精简自 Community Shaders（GPL-3.0））
 // Skyrim 是 DX11，DLSS 帧生成需要 DX12 swapchain。这里：
 //  1) D3D12 设备 + 命令队列 + FFX 帧生成 swapchain（AMD FidelityFX SDK 创建，
 //     带 FG 支持的 swapchain）
