@@ -1,0 +1,24 @@
+# Build output
+build/
+*.log
+
+# Closed-source upscaling runtimes (loaded at runtime from official NVIDIA/AMD SDKs)
+Shaders/Upscaling/Streamline/*.dll
+Shaders/Upscaling/FidelityFX/*.dll
+
+# IDE / editor
+.vs/
+.vscode/
+CMakeUserPresets.json
+
+# vcpkg local installs
+vcpkg_installed/
+
+# Compiled artifacts
+*.pdb
+*.obj
+*.ilk
+
+# Python
+__pycache__/
+*.pyc
