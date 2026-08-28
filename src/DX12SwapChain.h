@@ -104,6 +104,7 @@ namespace FrameGen
 
 		WrappedResource* swapChainBufferWrapped = nullptr;
 		WrappedResource* colorOutWrapped = nullptr;   // v0.7.5：DLSS 超分独立输出（CS 同款，防 in-place 失效）
+		WrappedResource* nrOutWrapped = nullptr;      // v0.8：DLSS-NR 输出（NGX 写这里，再拷贝呈现）
 		WrappedResource* depthWrapped = nullptr;   // v0.3：DLSSG 深度共享纹理（每帧从引擎 kMAIN 拷贝）
 		WrappedResource* mvecWrapped = nullptr;    // v0.3：DLSSG 运动矢量共享纹理（每帧从引擎 kMOTION_VECTOR 拷贝）
 

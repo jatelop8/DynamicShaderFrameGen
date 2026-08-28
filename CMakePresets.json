@@ -37,7 +37,7 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
                 "CMAKE_MAKE_PROGRAM": "E:/vcpkg-full/downloads/tools/ninja-1.13.2-windows/ninja.exe",
-                "PLUGIN_DEPLOY_DIR": "E:/EJ/mod/mods/DynamicShaderFrameGen"
+                "PLUGIN_DEPLOY_DIR": "E:/EJ/mod/mods/DynamicShaderFrameGenNR"
             }
         }
     ],

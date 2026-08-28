@@ -262,6 +262,11 @@ namespace FrameGen
 		colorOutDesc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
 		colorOutWrapped = new WrappedResource(colorOutDesc, d3d11Device.get(), d3d12Device.get());
 
+		// v0.8：DLSS-NR 输出纹理（同 colorOut：4K、UAV|RTV|SRV、DXGI NT 共享）。
+		// NGX 要求 Color 与 Output 为不同资源（读写分离）；NR 结果写这里，
+		// fence 后拷贝到 backbuffer 呈现（NR 开启时）。
+		nrOutWrapped = new WrappedResource(colorOutDesc, d3d11Device.get(), d3d12Device.get());
+
 		// v0.3：DLSSG 模式 → 深度/运动矢量共享纹理（每帧从引擎目标拷贝）
 		// v0.5.7（CS 官方方案）：引擎深度 D32_FLOAT 不在 DXGI NT 共享白名单 →
 		// depth 共享纹理**自建**：kMAIN 尺寸 + R32_FLOAT（可 NT 共享）+ SRV|RTV（shader 拷贝输出）；
@@ -740,11 +745,35 @@ namespace FrameGen
 		if (!dlssgMode && ImguiMenu::GetSingleton()->visible)
 			ImguiMenu::GetSingleton()->Draw(Get());
 
+		// v0.8：DLSS-NR（FSR3 模式）——fence 已 Signal/Wait（D3D11 完成 colorOut 写入），
+		// 在 D3D12 cmdList 上跑 NGX：colorOut → nrOut。NR 开启且成功 → 拷贝源切 nrOut。
+		// 4080/缺文件 → Evaluate 返回 false → useNr=false → 拷贝仍用 colorOut（画面不变）。
+		bool useNr = false;
+		if (!dlssgMode && Get().ngxNR.initialized && Get().ngxNR.supported && Get().settings.enableDLSSNR &&
+			colorOutWrapped && nrOutWrapped && depthWrapped && mvecWrapped) {
+			useNr = Get().ngxNR.Evaluate(
+				colorOutWrapped->resource.get(),
+				depthWrapped->resource.get(),
+				mvecWrapped->resource.get(),
+				nrOutWrapped->resource.get(),
+				swapChainDesc.Width, swapChainDesc.Height,
+				commandLists[frameIndex].get());
+			// 诊断（节流）：NR 运行状态
+			static std::uint32_t nrDiag = 0;
+			if (++nrDiag % 180 == 1) {
+				SKSE::log::info("[FrameGen] NR diag: init={} support={} enable={} ok={} createRc={:#x} evalRc={:#x}",
+					Get().ngxNR.initialized, Get().ngxNR.supported, Get().settings.enableDLSSNR,
+					Get().ngxNR.lastEvaluateOk, Get().ngxNR.lastCreateResult, Get().ngxNR.lastEvaluateResult);
+			}
+		}
+
 		// v0.5：FSR3 超分评估已移到 fence 前（D3D11 队列序正确）
 		// v0.7.17：拷贝源 = colorOut（DLSS 超分结果 4K；失败时 = 引擎画面兜底）
+		// v0.8：NR 开启且成功 → 拷贝源 = nrOut（DLSS-NR 神经渲染结果）
 		// D3D11 共享纹理 → D3D12 真 swapchain buffer
 		{
-			auto fakeSwapChain = (colorOutWrapped ? colorOutWrapped : swapChainBufferWrapped)->resource.get();
+			auto fakeSwapChain = (useNr && nrOutWrapped ? nrOutWrapped :
+				(colorOutWrapped ? colorOutWrapped : swapChainBufferWrapped))->resource.get();
 			auto realSwapChain = swapChainBuffers[frameIndex].get();
 			{
 				std::vector<D3D12_RESOURCE_BARRIER> barriers;

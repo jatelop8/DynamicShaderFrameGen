@@ -34,6 +34,7 @@ add_library(${PROJECT_NAME} SHARED
     src/Streamline.cpp
     src/FidelityFX.cpp
     src/ImguiMenu.cpp
+    src/NGXNR.cpp
     # v0.7：Dear ImGui 源码（vcpkg 下载被代理拦，直接 extern 编译）
     extern/imgui/imgui.cpp
     extern/imgui/imgui_draw.cpp

@@ -46,6 +46,7 @@ namespace DX
 
 #include "DX12SwapChain.h"
 #include "Streamline.h"
+#include "NGXNR.h"
 
 namespace FrameGen
 {
@@ -99,6 +100,12 @@ namespace FrameGen
 		int  qualityMode = 1;          // DLSS 模式：0=DLAA 1=Quality 2=Balanced 3=Performance 4=UltraPerformance
 		int  presetDLSS = 0;           // DLSS 模型预设：0=Auto 1=J 2=K 3=L 4=M
 		float sharpness = 0.5f;        // v0.6.3：DLSS 超分锐化（0-1，0=关闭）；v0.7.21 默认 0.3→0.5（4K 重建需更明显锐化）
+		// v0.8：DLSS Neural Radiance（DLSS-NR）——NGX 直调（RTX 50 系专属，4080 优雅降级）
+		bool enableDLSSNR = false;     // DLSS-NR 神经渲染（需 nvngx_dlss.dll + nvngx_dlssnr.dll + 50 系 GPU）
+		float nrIntensity = 0.5f;      // DLSSNR.Intensity（0-1）
+		float nrStyle = 0.5f;          // DLSSNR.Style（0-1）
+		float nrLocalTone = 0.0f;      // DLSSNR.LocalToneStrength（0-1）
+		float nrSkinStructure = 0.0f;  // DLSSNR.SkinStructureStrength（0-1）
 		int  streamlineLogLevel = 0;   // 0=Off 1=Default 2=Verbose
 		// v0.7.2：Skyrim 键码 = DIK 扫描码（Home=199/0xC7），不是 VK 码（0x24 无效——
 		// SKSE GetIDCode 返回 DIK）。菜单/插帧统一走 PollHomeKey 每帧轮询 VK_HOME。
@@ -125,6 +132,8 @@ namespace FrameGen
 
 		Streamline   streamline;
 		DX12SwapChain dx12SwapChain;
+		// v0.8：DLSS-NR（NGX 直调，D3D12 独立于 SL 实例）
+		NGXNR ngxNR;
 
 		// 相机近远平面（REL ID 定位，引擎常量）
 		float* cameraNear = nullptr;

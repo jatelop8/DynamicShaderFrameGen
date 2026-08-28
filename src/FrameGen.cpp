@@ -127,7 +127,17 @@ namespace FrameGen
 				settings.frameGeneration = readBool(line, true);
 			else if (key == "EnableUpscale")
 				settings.enableUpscale = readBool(line, true);   // v0.7.24：DLSS 超分开关
-			else if (key == "QualityMode")
+			else if (key == "EnableDLSSNR")
+				settings.enableDLSSNR = readBool(line, false);   // v0.8：DLSS-NR 神经渲染开关
+			else if (key == "NRIntensity") {
+				try { settings.nrIntensity = std::clamp(std::stof(line.substr(eq + 1)), 0.0f, 1.0f); } catch (...) {}
+			} else if (key == "NRStyle") {
+				try { settings.nrStyle = std::clamp(std::stof(line.substr(eq + 1)), 0.0f, 1.0f); } catch (...) {}
+			} else if (key == "NRLocalTone") {
+				try { settings.nrLocalTone = std::clamp(std::stof(line.substr(eq + 1)), 0.0f, 1.0f); } catch (...) {}
+			} else if (key == "NRSkinStructure") {
+				try { settings.nrSkinStructure = std::clamp(std::stof(line.substr(eq + 1)), 0.0f, 1.0f); } catch (...) {}
+			} else if (key == "QualityMode")
 				settings.qualityMode = std::clamp(readInt(line, 1), 0, 4);
 			else if (key == "PresetDLSS")
 				settings.presetDLSS = std::clamp(readInt(line, 0), 0, 4);
@@ -152,9 +162,10 @@ namespace FrameGen
 				} catch (...) {}
 			}
 		}
-		SKSE::log::info("[FrameGen] Config loaded: Enable={} ForceEnable={} Provider={} FrameGeneration={} EnableUpscale={} QualityMode={} PresetDLSS={} SL_LogLevel={} ToggleKey={:#x}",
+		SKSE::log::info("[FrameGen] Config loaded: Enable={} ForceEnable={} Provider={} FrameGeneration={} EnableUpscale={} QualityMode={} PresetDLSS={} SL_LogLevel={} ToggleKey={:#x} DLSSNR={} NR_Int={} NR_Style={} NR_LTone={} NR_Skin={}",
 			settings.enableFrameGen, settings.forceEnable, settings.provider, settings.frameGeneration,
-			settings.enableUpscale, settings.qualityMode, settings.presetDLSS, settings.streamlineLogLevel, settings.toggleKey);
+			settings.enableUpscale, settings.qualityMode, settings.presetDLSS, settings.streamlineLogLevel, settings.toggleKey,
+			settings.enableDLSSNR, settings.nrIntensity, settings.nrStyle, settings.nrLocalTone, settings.nrSkinStructure);
 	}
 
 	// ---- 输入：Home 键（短按切插帧 / 长按开菜单）----
@@ -762,6 +773,11 @@ namespace FrameGen
 			streamline.SetD3D12Device(dx12SwapChain.d3d12Device.get());
 		streamline.CheckFeatures(a_adapter);
 		streamline.PostDevice();
+
+		// v0.8：DLSS-NR（NGX 直调）——D3D12 设备上独立初始化，与 SL（D3D11）零冲突。
+		// 需要用户放置 nvngx_dlss.dll + nvngx_dlssnr.dll 到 Streamline 目录；缺文件或
+		// GPU 无 sm_120 cubin（4080）→ 优雅降级（菜单项灰掉），不闪退。
+		ngxNR.Init(dx12SwapChain.d3d12Device.get(), Streamline::PluginDir);
 
 		// v0.6：FSR3 FG（Provider=0）——加载 AMD 模块 + 创建 FG context
 		// （移植自 doodlum/ENBFrameGeneration；dlssgMode=false 时 CreateSwapChain 已建 ffxSwapChainContext）
