@@ -65,7 +65,7 @@ extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Load(const SKSE::LoadInterface* a_s
 	// SKSE::Init 内部已自动初始化 spdlog 日志（CommonLibSSE-NG 4.x）
 	SKSE::Init(a_skse);
 
-	SKSE::log::info("[FrameGen] DynamicShaderFrameGen loaded");
+	SKSE::log::info("[FrameGen] DynamicShaderFrameGen loaded (build {} {})", __DATE__, __TIME__);
 
 	auto& fg = FrameGen::Get();
 
