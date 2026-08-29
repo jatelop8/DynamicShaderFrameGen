@@ -67,11 +67,12 @@ namespace FrameGen
 		// 注：kFeatureDirectSR=1003、NvPerf=1002、DLSS_RR=1001、DLSS_G=1000——
 		// 1004 是 NR 的相邻新枚举（dlss5-dx11-bridge 同源 SDK 版本验证）。
 		sl::Feature featuresNR[] = { sl::kFeatureDLSS, sl::kFeatureDLSS_G, sl::kFeatureReflex, 1004 };
-		// v0.8.20：强制 D3D12 renderAPI——Streamline 的 NGX 集成按 renderAPI 建立 NGX
-		// 会话；dlssnr（nvngx_dlssnr.dll D3D12 NR）需要 D3D12 NGX 会话，而原
-		// provider=0（FSR3）用 D3D11 只有 D3D11 会话 → dlssnr CreateFeature 恒 0xbad00002。
-		// 代价：SL D3D11 超分不再可用（EvaluateDLSS 已保护跳过）——NR 验证阶段优先。
-		useD3D12 = true;
+		// v0.24.2：恢复 D3D11 DLSS 超分——v0.8.20 为 NR 验证强制 D3D12，导致
+		// EvaluateDLSS 跳过、DLSS feature 永不创建 → bridge（DLSS5 外挂 ReShade）
+		// 拦不到 CreateFeature → NR 无输入失效（用户实测 00:52）。
+		// provider=0（FSR3）→ D3D11 会话（DLSS 超分可用，bridge 可拦）；
+		// provider=1（DLSSG）→ D3D12（保留 NR 1004 注册，DLSSG 需要 D3D12）。
+		useD3D12 = a_settings.provider == 1;
 		pref.featuresToLoad = useD3D12 ? featuresNR : featuresDLSS;
 		pref.numFeaturesToLoad = useD3D12 ? _countof(featuresNR) : _countof(featuresDLSS);
 
