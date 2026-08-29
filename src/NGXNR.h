@@ -218,6 +218,10 @@ namespace FrameGen
 		// v0.8.11：NGX core 会话状态（由 nvngx_dlss.dll 建立——SkyrimUpscaler 实锤链路）
 		bool coreInitOk = false;      // dlss.dll 会话建立成功（Init_Ext 或热身 CreateFeature）
 		unsigned int coreInitResult = 0;  // 最近一次 core 初始化返回码
+		// v0.8.57：dlss.dll（coreModule）自身的 Init_Ext 状态——它的 CreateFeature
+		// （@0x2C8B0）需要 dlss.dll 内部状态（FNV 哈希表初始化）才能正常注册
+		bool dlssInitOk = false;
+		int dlssInitVersion = 0;
 		// v0.8.33：dlssnr snippet 在 core 会话上的注册状态——它的 Init_Ext 负责把
 		// NR feature 类型注册进 core；不注册则 dlssnr CreateFeature 恒 0xbad00002。
 		bool snippetInitialized = false;

@@ -270,19 +270,26 @@ namespace FrameGen
 
 		DWORD code = 0;
 		NGXFeatureCommonInfo fci{};  // v0.8.12：非空 FeatureCommonInfo（排除参数缺失）
-		// 3a) 首选：dlss.dll 的 D3D12_Init_Ext（真实实现，带 D3D12 device）版本协商
+		// 3a) v0.8.57 重大修正：**无条件**调 dlss.dll（coreModule）的 Init_Ext——
+		// dlss.dll 的 CreateFeature（@0x2C8B0）需要它自己的 Init_Ext 建立内部状态
+		// （FNV 哈希表初始化 + feature 注册），否则查表恒失败（v0.8.55/56 日志：
+		// dlss_table 全垃圾 + handler 表项空 = dlss.dll 状态从未建立）。
+		// 旧代码 `!coreInitOk` gate 在驱动 core 会话成功后（coreInitOk=true）挡住，
+		// dlss.dll Init_Ext 从未执行过！
 		if (coreModule && initExt12) {
-			for (int ver = 0x13; ver <= 0x16 && !coreInitOk; ++ver) {
+			for (int ver = 0x13; ver <= 0x16 && !dlssInitOk; ++ver) {
 				unsigned int r = Guarded([&] { return initExt12(kAppId, dataPath, a_device, ver, &fci); }, &code);
-				SKSE::log::info("[NGXNR] core D3D12_Init_Ext(0x{:02X}) -> {} (rc={:#x})", ver,
+				SKSE::log::info("[NGXNR] dlss Init_Ext(0x{:02X}) -> {} (rc={:#x})", ver,
 					code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r);
 				if (code == 0 && r == kNGXSuccess) {
-					initialized = true;
-					initVersion = ver;
-					coreInitOk = true;
-					coreInitResult = r;
+					dlssInitOk = true;
+					dlssInitVersion = ver;
 				}
 			}
+			if (dlssInitOk)
+				SKSE::log::info("[NGXNR] dlss.dll internal state established (table will init on CreateFeature)");
+			else
+				SKSE::log::warn("[NGXNR] dlss.dll Init_Ext refused - CreateFeature may not register its hash table");
 		}
 		// 3b) 备选：dlss.dll 的 D3D11_Init（3 参。反汇编 0x2B440 = stub 0xBAD00001——
 		// v0.8.12 修正：先前把 0x2B420（GetScratchBufferSize）误认为 D3D11_Init）
