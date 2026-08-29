@@ -490,16 +490,10 @@ namespace FrameGen
 
 			P->Set4("DLSSNR.Width", a_width);
 			P->Set4("DLSSNR.Height", a_height);
-			P->Set4("DLSSNR.InputWidth", a_width);
-			P->Set4("DLSSNR.InputHeight", a_height);
-			P->Set4("DLSSNR.OutputWidth", a_width);
-			P->Set4("DLSSNR.OutputHeight", a_height);
 			P->Set2("DLSSNR.ScalingRatio", 1.0f);		  // DLAA 模式（4K→4K 滤镜）
 			P->Set4("DLSSNR.Enabled", 1);
 			P->Set4("DLSSNR.DepthInverted", 0);			  // Skyrim depth: 近=0 远=1
 			P->Set4("DLSSNR.Hint.Render.Preset", 0);	  // 0=Auto (renodx: Preset #1/#2/#3)
-			P->Set4("PerfQualityValue", 2);				  // balanced-ish
-			P->Set4("DLSS.Mode", 0);
 			P->Set4("DLSS.Enable.Output.Subrects", 1);
 			// v0.8.16：通用创建键（bridge 实锤）——DLSSNR.* 之外补无前缀 Width/Height 等
 			P->Set4("Width", a_width);
@@ -585,9 +579,7 @@ namespace FrameGen
 		P->Set4("DLSSNR.Reset", 0);
 		// v0.8.27：UseAutoMask=1（PDPerfPlugin 键——自动遮罩，无需 UI 输入纹理）
 		P->Set4("DLSSNR.UseAutoMask", 1);
-		P->Set2("Sharpness", 0.0f);
-		P->Set2("Jitter.Offset.X", 0.0f);
-		P->Set2("Jitter.Offset.Y", 0.0f);
+		// v0.8.30：去掉 Sharpness/Jitter.Offset（DLSS 超分键，NR 可能不认）
 		// v0.8.25：NR 专属子矩形键（PDPerfPlugin 实锤——DLSSNR.ColorSubrectBaseX 无点号格式）
 		P->Set4("DLSSNR.ColorSubrectBaseX", 0u);
 		P->Set4("DLSSNR.ColorSubrectBaseY", 0u);
