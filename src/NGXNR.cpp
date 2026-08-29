@@ -649,30 +649,51 @@ namespace FrameGen
 					pdSetupDirectX, pdIsNrAvailable, pdEvaluateDLSSNR, pdInitDLSSNR, pdSetFrameGenParams);
 				SKSE::log::info("[NGXNR]   NGX std: CreateFeature={} EvaluateFeature={} Caps={} Alloc={} Release={}",
 					pdCreateFeature, pdEvalFeature, pdCapsFn, pdAllocParams, pdReleaseFeature);
-				// v0.8.65 修复 SetupDirectX 崩溃（0xc0000005，fault=0xc0000005 实锤）：
-				// PD 的 CRT 静态初始化器 0x4CD0/0x4D00（存 [0xC0E18]/[0xC0E20]，BSS
-				// 区）从未执行——[0xC0E20]=0 → D3D12 后端构造 0x31fe0 读它当指针 →
-				// rcx=0 → cmp byte [0],0 → 访问违例！手动执行这两个初始化器
-				// （0x4D00 = call 0xc210 工厂 → mov [0xC0E20], rax；0x4CD0 同款存
-				// [0xC0E18]）。地址是 RVA，需加模块基址。
+				// v0.8.65/71：PD 的 CRT 静态初始化器从未执行（DLL 加载时被跳过）→
+				// [0xC0E20](backend-reg)/[0xC0DC8](NGX ctx)/[0xC07B0-0xC0E78] 全空
+				// → SetupDirectX 崩 0x9E06、InitDLSSNR 崩 nvngx（[0xC0DC8]=0 链断裂）。
+				// v0.8.65 只跑了 0x4CD0/0x4D00；v0.8.71 **跑完整初始化器表**（30 项，
+				// 0x49780-0x49868：0x4F54..0x4E60，含写 [0xC0DC8] 的 0x4B70、new 2MB
+				// FNV 表的 0x4D60 等）。前 5 项（0x4F54/0x4EA0/0x4ED0/0x4F00/0x4F30）
+				// 是 atexit/注册类，Guarded 包裹执行无害。
 				{
 					using PFN_PDINIT = void(__cdecl*)();
-					for (int initRva : { 0x4CD0, 0x4D00 }) {
+					const int pdInitTable[] = {
+						0x4F54, 0x4EA0, 0x4ED0, 0x4F00, 0x4F30, 0x4B10, 0x4B30,
+						0x4B50, 0x4B70, 0x4B90, 0x4BA0, 0x4BB0, 0x4BC0, 0x4BE0,
+						0x4C40, 0x4C60, 0x4C70, 0x4C80, 0x4CA0, 0x4CC0, 0x4CD0,
+						0x4CF0, 0x4D00, 0x4D20, 0x4D60, 0x4DA0, 0x4DE0, 0x4E00,
+						0x4E60
+					};
+					for (int initRva : pdInitTable) {
 						auto initFn = reinterpret_cast<PFN_PDINIT>(reinterpret_cast<uintptr_t>(pdModule) + initRva);
 						DWORD ic = 0;
 						Guarded([&]() -> unsigned int { initFn(); return 0; }, &ic);
 						SKSE::log::info("[NGXNR]   PD static-init @0x{:x} -> {} (fault={:#x})", initRva,
 							ic == 0 ? "ok" : "FAULTED", ic);
 					}
-					// 诊断 [0xC0E20]（0x31fe0 崩点读的全局，真实 RVA = 0x320a5+7+0x8ED74）
-					uintptr_t regSlot = reinterpret_cast<uintptr_t>(pdModule) + 0xC0E20;
-					uintptr_t reg = 0;
-					MEMORY_BASIC_INFORMATION rm = {};
-					if (VirtualQuery(reinterpret_cast<LPCVOID>(regSlot), &rm, sizeof(rm)) &&
-						rm.State == MEM_COMMIT && (rm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
-						reg = *reinterpret_cast<uintptr_t*>(regSlot);
-					SKSE::log::info("[NGXNR]   PD backend-reg[0xC0E20] = {} ({} after static-init)",
-						(void*)reg, reg ? "READY" : "STILL EMPTY");
+					// 诊断关键槽：backend-reg / NGX ctx / NGX inited
+					auto rdGlob71 = [&](uintptr_t rva, const char* tag) -> uintptr_t {
+						uintptr_t slot = reinterpret_cast<uintptr_t>(pdModule) + rva;
+						uintptr_t v = 0;
+						MEMORY_BASIC_INFORMATION rm = {};
+						if (VirtualQuery(reinterpret_cast<LPCVOID>(slot), &rm, sizeof(rm)) &&
+							rm.State == MEM_COMMIT && (rm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+							v = *reinterpret_cast<uintptr_t*>(slot);
+						SKSE::log::info("[NGXNR]   PD {}[0x{:x}] = {}", tag, rva, (void*)v);
+						return v;
+					};
+					uintptr_t reg71 = rdGlob71(0xC0E20, "backend-reg");
+					rdGlob71(0xC0DC8, "ngx-ctx");
+					rdGlob71(0xC07B0, "slot-C07B0");
+					if (reg71) {
+						uint8_t b0 = 0;
+						MEMORY_BASIC_INFORMATION rm = {};
+						if (VirtualQuery(reinterpret_cast<LPCVOID>(reg71), &rm, sizeof(rm)) &&
+							rm.State == MEM_COMMIT && (rm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+							b0 = *reinterpret_cast<uint8_t*>(reg71);
+						SKSE::log::info("[NGXNR]   PD backend-reg byte[0] = {} (1=SetDevice done)", b0);
+					}
 				}
 				// SetupDirectX(device, 1) → D3D12 单例
 				using PFN_SetupDX = unsigned int(__cdecl*)(void*, int);
