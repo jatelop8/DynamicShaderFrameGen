@@ -120,6 +120,26 @@ namespace FrameGen
 			return 0;
 		}
 
+		// v0.16：dlssnr 日志函数 hook（0xe660）——抓 'DLSSNR: Cubin Init failed
+		// NvAPI_Status=%d' 的具体状态码。0xe660 是 printf 风格（rcx=fmt, rdx/r8/r9+栈）。
+		// 正确 hook 机器码：48 B8 <imm64> FF E0（mov rax,imm64; jmp rax）——直接写
+		// 8 字节地址会变成垃圾指令（v0.15 教训：hook 写坏函数头导致挂起）。
+		// 可变参数解析：cdecl x64 va_list = rdx/r8/r9 + 栈。
+		extern "C" __declspec(noinline) void __cdecl NR_DlssnrLogHook(const char* a_fmt, ...)
+		{
+			if (!a_fmt)
+				return;
+			va_list args;
+			va_start(args, a_fmt);
+			char buf[512] = {};
+			vsnprintf_s(buf, sizeof(buf), _TRUNCATE, a_fmt, args);
+			va_end(args);
+			// 只打印关键错误（避免刷屏）
+			if (strstr(buf, "Cubin") || strstr(buf, "Init") || strstr(buf, "fail") ||
+				strstr(buf, "NvAPI") || strstr(buf, "error") || strstr(buf, "Error"))
+				SKSE::log::info("[NGXNR-dlssnr] {}", buf);
+		}
+
 		std::string w2a(const std::wstring& a_w)
 		{
 			if (a_w.empty())
@@ -222,14 +242,39 @@ namespace FrameGen
 		// v0.13：绕过 Init_Ext 第一关状态检查（0x144bd jne 0x1474d → 6×NOP）。
 		// 0x14480 核心开头 call 0x7ab60（状态机，rcx=0x1152a70）→ test eax,eax →
 		// jne 0x1474d（失败路径返回 bad00002）。状态机在 sl/独立环境返回非 0 → Init_Ext
-		// 直接失败 → 1004 不注册。绕过后走 0x144fc 真正初始化（harness 实测：绕过后
-		// 流程推进到 Cubin Init，游戏里 NvAPI 完整应能过）。
+		// 直接失败 → 1004 不注册。绕过后走 0x144fc 真正初始化。
 		{
 			uintptr_t jneSlot = nrBase + 0x144bd;
 			DWORD jp = 0;
 			if (VirtualProtect(reinterpret_cast<LPVOID>(jneSlot), 8, PAGE_EXECUTE_READWRITE, &jp)) {
 				std::memset(reinterpret_cast<void*>(jneSlot), 0x90, 6);  // 0F 85 rel32 -> NOP*6
 				VirtualProtect(reinterpret_cast<LPVOID>(jneSlot), 8, jp, &jp);
+			}
+		}
+		// v0.17（★关键）：strstr 绕过（0x15e97 jne 0x15ec9 → jmp 0x15ec9）。
+		// Init_Ext（0x15df0）里 GetModuleFileNameW 后 call 0x7ee40（wcsstr "nvngx.dll"，
+		// 0xae280）——**"nvngx_dlssnr.dll" 不含连续子串 "nvngx.dll"**（实测 NOT FOUND），
+		// 且 stub 返回路径的 haystack 在 Init_Ext 里也查不到 → jne 落入 0x15e99 失败路径
+		// → bad00002。harness 实锤：jne→jmp 后 Init_Ext 推进到 0x14480 并最终返回 1。
+		// 机器码：0f 85 2e 00 00 00 → e9 2e 00 00 00（jne rel32 → jmp rel32，同长）。
+		{
+			uintptr_t jmpSlot = nrBase + 0x15e97;
+			DWORD sp = 0;
+			if (VirtualProtect(reinterpret_cast<LPVOID>(jmpSlot), 8, PAGE_EXECUTE_READWRITE, &sp)) {
+				*reinterpret_cast<uint8_t*>(jmpSlot) = 0xE9;  // jne(0F 85) -> jmp(E9)
+				VirtualProtect(reinterpret_cast<LPVOID>(jmpSlot), 8, sp, &sp);
+			}
+		}
+		// v0.16.1：状态机 0x7ab60 → xor eax,eax; ret（返回 0）。
+		// 0x144c3 lea r15d, [rax+1]（rax=0x7ab60 返回值）——状态机返回非 0 → r15d 非 1
+		// → 后续 [rsi+0x58] 非 0 分支跳 0x14723 返回错误 r15d。返回 0 → r15d=1。
+		{
+			uintptr_t smSlot = nrBase + 0x7ab60;
+			DWORD smp = 0;
+			if (VirtualProtect(reinterpret_cast<LPVOID>(smSlot), 8, PAGE_EXECUTE_READWRITE, &smp)) {
+				const uint8_t kRet0[] = { 0x31, 0xC0, 0xC3 };  // xor eax,eax; ret
+				std::memcpy(reinterpret_cast<void*>(smSlot), kRet0, sizeof(kRet0));
+				VirtualProtect(reinterpret_cast<LPVOID>(smSlot), 8, smp, &smp);
 			}
 		}
 		// v0.15：绕过 Init_Ext 组件查询失败（0x8810 → mov eax,1; ret）。
@@ -248,7 +293,21 @@ namespace FrameGen
 				VirtualProtect(reinterpret_cast<LPVOID>(compSlot), 8, cp, &cp);
 			}
 		}
-		SKSE::log::info("[NGXNR] dlssnr prepared for Streamline (loaded @{} + IAT patched + gates bypassed) - NR 1004 will register",
+		// v0.16：hook dlssnr 日志 0xe660（正确机器码 48 B8 imm64 FF E0）——
+		// 抓 Cubin Init 失败的 NvAPI_Status（harness 里 0x8810 绕过后流程推进到
+		// 0x19efc 'DLSSNR: Cubin Init failed NvAPI_Status=%d'；游戏里需看具体码）
+		{
+			uintptr_t logSlot = nrBase + 0xe660;
+			const uintptr_t hookTarget = reinterpret_cast<uintptr_t>(&NR_DlssnrLogHook);
+			DWORD lp = 0;
+			if (VirtualProtect(reinterpret_cast<LPVOID>(logSlot), 16, PAGE_EXECUTE_READWRITE, &lp)) {
+				uint8_t patch[12] = { 0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xE0 };
+				std::memcpy(patch + 2, &hookTarget, 8);
+				std::memcpy(reinterpret_cast<void*>(logSlot), patch, sizeof(patch));
+				VirtualProtect(reinterpret_cast<LPVOID>(logSlot), 16, lp, &lp);
+			}
+		}
+		SKSE::log::info("[NGXNR] dlssnr prepared for Streamline (loaded @{} + IAT patched + gates bypassed + log hooked) - NR 1004 will register",
 			(void*)m);
 	}
 
