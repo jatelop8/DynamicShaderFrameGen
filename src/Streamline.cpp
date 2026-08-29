@@ -60,7 +60,11 @@ namespace FrameGen
 		// evaluateFeature 回调 → slEvaluateFeature failed 28。实测：features 只有
 		// [DLSS_G, Reflex] 时日志 "kFeatureDLSS' context is missing" + Callback 0x0）
 		sl::Feature featuresDLSSG[] = { sl::kFeatureDLSS, sl::kFeatureDLSS_G, sl::kFeatureReflex };
-		useD3D12 = a_settings.provider == 1;
+		// v0.8.20：强制 D3D12 renderAPI——Streamline 的 NGX 集成按 renderAPI 建立 NGX
+		// 会话；dlssnr（nvngx_dlssnr.dll D3D12 NR）需要 D3D12 NGX 会话，而原
+		// provider=0（FSR3）用 D3D11 只有 D3D11 会话 → dlssnr CreateFeature 恒 0xbad00002。
+		// 代价：SL D3D11 超分不再可用（EvaluateDLSS 已保护跳过）——NR 验证阶段优先。
+		useD3D12 = true;
 		pref.featuresToLoad = useD3D12 ? featuresDLSSG : featuresDLSS;
 		pref.numFeaturesToLoad = useD3D12 ? _countof(featuresDLSSG) : _countof(featuresDLSS);
 
@@ -494,6 +498,11 @@ namespace FrameGen
 		std::uint32_t a_renderWidth, std::uint32_t a_renderHeight,
 		const FrameBuffer& a_fb, const Settings& a_settings)
 	{
+		// v0.8.20：SL 强制 D3D12 后，D3D11 超分不再可用（feature 是 D3D12 的，
+		// 用 D3D11 ctx 调 slEvaluateFeature 类型不匹配）。直接跳过 → 调用方兜底
+		// （colorOut = 引擎画面拷贝），NR 验证阶段优先。
+		if (useD3D12)
+			return false;
 		if (!initialized || !featureDLSS)
 			return false;
 
