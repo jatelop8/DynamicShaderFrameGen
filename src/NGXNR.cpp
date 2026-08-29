@@ -305,6 +305,11 @@ namespace FrameGen
 		// CreateFeature 试错决定（Evaluate 首帧）。core 宿主 + snippet 都加载成功即 ready。
 		ready = coreModule != nullptr;
 		needCreate = true;
+		// v0.8.32：core 路径变了（驱动 nvngx.dll）——重置遍历状态，
+		// 让 Evaluate 首帧在 snippet（dlssnr）路径下重新找 NR feature id
+		// （之前 nrFeatureId=1 是驱动 core CreateFeature 的结果，不适用于 dlssnr）。
+		nrFeatureId = -1;
+		nrIdTriedAll = false;
 		SKSE::log::info("[NGXNR] DLSS-NR armed (feature created on first evaluate frame; core={})", coreInitOk ? "ok" : "MISSING");
 	}
 
@@ -359,12 +364,25 @@ namespace FrameGen
 			printTex("Output", a_output);
 		}
 
+		// v0.8.32 重大修正：Create/Evaluate 必须走 snippet（nvngx_dlssnr.dll）
+		// 自己的导出（@0x15750/@0x159C0 真实实现）——它内部转发驱动 core 并
+		// 处理 DLSSNR.* 专属键（PopulateParameters_Impl @0x15F20）。
+		// v0.8.23 错误：优先走 ngxCoreModule（驱动 nvngx.dll）的 Create/Evaluate——
+		// 驱动 core 不认 DLSSNR.* 键 → feature 建错类型 → Evaluate 恒 0xbad00005。
 		auto createFeature = reinterpret_cast<PFN_NGXCreateFeature>(GetProcAddress(
-			ngxCoreModule ? ngxCoreModule : ngxModule, "NVSDK_NGX_D3D12_CreateFeature"));
+			ngxModule, "NVSDK_NGX_D3D12_CreateFeature"));
 		auto evalFeature = reinterpret_cast<PFN_NGXEvaluateFeature>(GetProcAddress(
-			ngxCoreModule ? ngxCoreModule : ngxModule, "NVSDK_NGX_D3D12_EvaluateFeature"));
+			ngxModule, "NVSDK_NGX_D3D12_EvaluateFeature"));
+		if (!createFeature || !evalFeature)
+			createFeature = reinterpret_cast<PFN_NGXCreateFeature>(GetProcAddress(
+				ngxCoreModule, "NVSDK_NGX_D3D12_CreateFeature"));
+		if (!evalFeature)
+			evalFeature = reinterpret_cast<PFN_NGXEvaluateFeature>(GetProcAddress(
+				ngxCoreModule, "NVSDK_NGX_D3D12_EvaluateFeature"));
 		if (!createFeature || !evalFeature)
 			return false;
+		SKSE::log::info("[NGXNR] using CreateFeature@{} EvaluateFeature@{} (snippet preferred)",
+			(void*)createFeature, (void*)evalFeature);
 
 		// v0.8.23：core 就绪后查 GetCapabilityParameters（驱动 nvngx.dll 提供）——
 		// 直接问 NR/超分支持性（SkyrimUpscaler 日志同款调用）。
@@ -537,7 +555,10 @@ namespace FrameGen
 				r = Guarded([&] { return createFeature(L, useId, &params, &h); }, &code);
 			} else if (!nrIdTriedAll) {
 				// v0.8.18：首次遍历找 NR feature id；v0.8.23 扩到 0..20 并改用驱动 core
-				for (int id = 0; id <= 20; ++id) {
+				// v0.8.32：改用 snippet（dlssnr）CreateFeature 后重新遍历——6 优先
+				// （dlssnr 反汇编 mov ecx,6：NVSDK NGXFeature 枚举中 DLSS-NR 极可能=6）
+				const int order[] = { 6, 0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20 };
+				for (int id : order) {
 					h = nullptr;
 					r = Guarded([&] { return createFeature(L, id, &params, &h); }, &code);
 					SKSE::log::info("[NGXNR] NR CreateFeature id={} -> rc={:#x} fault={:#x} h={}", id,
