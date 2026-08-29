@@ -328,27 +328,38 @@ namespace FrameGen
 		// （跳 0x7FFC9FABA6CC 无模块）用的是 FG 共享设备——差异即在此。
 		// 用与 FG 设备相同的 adapter（D3D11<->D3D12 共享纹理要求同 adapter）。
 		if (!nrDevice) {
-			IDXGIDevice* dxgiDev = nullptr;
-			HRESULT qiHr = a_device->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDev);
-			if (SUCCEEDED(qiHr) && dxgiDev) {
-				IDXGIAdapter* ad = nullptr;
-				HRESULT adHr = dxgiDev->GetAdapter(&ad);
-				if (SUCCEEDED(adHr) && ad) {
-					for (auto fl : { D3D_FEATURE_LEVEL_12_0, D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 }) {
-						HRESULT hr = D3D12CreateDevice(ad, fl, __uuidof(ID3D12Device), (void**)&nrDevice);
-						if (SUCCEEDED(hr) && nrDevice) {
-							SKSE::log::info("[NGXNR] v0.19 independent D3D12 device created (feature level {:#x}, from FG adapter)", (int)fl);
-							break;
-						}
-						SKSE::log::warn("[NGXNR] v0.19 D3D12CreateDevice(FL {:#x}) failed hr={:#x}", (int)fl, static_cast<unsigned int>(hr));
-					}
-					ad->Release();
-				} else {
-					SKSE::log::warn("[NGXNR] v0.19 GetAdapter failed hr={:#x}", static_cast<unsigned int>(adHr));
-				}
-				dxgiDev->Release();
+			// v0.21：优先 D3D12CreateDevice(nullptr)（默认主显示 adapter，harness 同款）——
+			// v0.20 实锤 QI(IDXGIDevice) 在 D3D12 设备上返回 E_NOINTERFACE (0x80004002)：
+			// IDXGIDevice 是 D3D11 设备接口，D3D12 设备不实现。nullptr 用主适配器
+			// （用户双 4080 SUPER，主卡与 FG 相同 adapter，共享纹理 OK）。
+			HRESULT hr0 = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_0, __uuidof(ID3D12Device), (void**)&nrDevice);
+			if (SUCCEEDED(hr0) && nrDevice) {
+				SKSE::log::info("[NGXNR] v0.21 independent D3D12 device created (D3D12CreateDevice(nullptr), FL 12_0)");
 			} else {
-				SKSE::log::warn("[NGXNR] v0.19 QI(IDXGIDevice) failed hr={:#x}", static_cast<unsigned int>(qiHr));
+				SKSE::log::warn("[NGXNR] v0.21 D3D12CreateDevice(nullptr) failed hr={:#x} - trying QI(IDXGIDevice) adapter path",
+					static_cast<unsigned int>(hr0));
+				IDXGIDevice* dxgiDev = nullptr;
+				HRESULT qiHr = a_device->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDev);
+				if (SUCCEEDED(qiHr) && dxgiDev) {
+					IDXGIAdapter* ad = nullptr;
+					HRESULT adHr = dxgiDev->GetAdapter(&ad);
+					if (SUCCEEDED(adHr) && ad) {
+						for (auto fl : { D3D_FEATURE_LEVEL_12_0, D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 }) {
+							HRESULT hr = D3D12CreateDevice(ad, fl, __uuidof(ID3D12Device), (void**)&nrDevice);
+							if (SUCCEEDED(hr) && nrDevice) {
+								SKSE::log::info("[NGXNR] v0.19 independent D3D12 device created (feature level {:#x}, from FG adapter)", (int)fl);
+								break;
+							}
+							SKSE::log::warn("[NGXNR] v0.19 D3D12CreateDevice(FL {:#x}) failed hr={:#x}", (int)fl, static_cast<unsigned int>(hr));
+						}
+						ad->Release();
+					} else {
+						SKSE::log::warn("[NGXNR] v0.19 GetAdapter failed hr={:#x}", static_cast<unsigned int>(adHr));
+					}
+					dxgiDev->Release();
+				} else {
+					SKSE::log::warn("[NGXNR] v0.19 QI(IDXGIDevice) failed hr={:#x}", static_cast<unsigned int>(qiHr));
+				}
 			}
 			if (!nrDevice)
 				SKSE::log::warn("[NGXNR] v0.19 failed to create independent D3D12 device - falling back to FG device");
@@ -1576,11 +1587,13 @@ namespace FrameGen
 
 		// v0.8.31：独立 cmdList（PDPerfPlugin/bridge 模式）——插在 Present cmdList
 		// 里 Evaluate 恒 0xbad00005，独立 cmdList + 同 queue 串行执行可能解决
-		if (!nrAlloc) {
+		// ★v0.21：用 nrDevice（独立设备）创建——dlssnr CreateFeature/Evaluate 需要
+		// 与 Init_Ext 相同的设备；FG device 的 cmdList 传给 dlssnr 设备不匹配。
+		if (!nrAlloc && nrDevice) {
 			DWORD acode = 0;
-			auto a1 = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&nrAlloc));
-			auto a2 = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, nrAlloc, nullptr, IID_PPV_ARGS(&nrList));
-			SKSE::log::info("[NGXNR] NR cmdList created: allocHr={:#x} listHr={:#x}", 
+			auto a1 = nrDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&nrAlloc));
+			auto a2 = nrDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, nrAlloc, nullptr, IID_PPV_ARGS(&nrList));
+			SKSE::log::info("[NGXNR] NR cmdList created on independent device: allocHr={:#x} listHr={:#x}", 
 				static_cast<unsigned int>(a1), static_cast<unsigned int>(a2));
 			if (nrList)
 				nrList->Close();
@@ -1619,8 +1632,19 @@ namespace FrameGen
 		// 全 Success），D3D12 同款（SetupDirectX(device,1) 建单例后 CreateFeature
 		// 单例空返回 7，非 dlss 系的 2）。PDPerfPlugin 是完整独立实现（自带
 		// DLSSNRBackendNGX），CreateFeature/EvaluateFeature 内部直接处理 NR。
+		// ★v0.21：snippetInitialized（dlssnr 已在独立设备注册）后，CreateFeature/
+		// EvaluateFeature 改用 **dlssnr 自己的导出**（CreateFeature@0x15750/
+		// EvaluateFeature@0x159c0）——PD 的 CreateFeature 只是驱动 core 的薄包装
+		// （v0.8.60 反汇编 [0xAE848]/[0xAE850] 槽），驱动 core 槽空时恒 0xbad00007
+		// （v0.20 日志实锤 id=0..20 全 7）。dlssnr 导出 = NR snippet 正规入口。
 		auto createFeature = reinterpret_cast<PFN_NGXCreateFeature>(pdCreateFeature);
 		auto evalFeature = reinterpret_cast<PFN_NGXEvaluateFeature>(pdEvalFeature);
+		if (snippetInitialized && ngxModule) {
+			if (auto f = reinterpret_cast<PFN_NGXCreateFeature>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_CreateFeature")))
+				createFeature = f;
+			if (auto f = reinterpret_cast<PFN_NGXEvaluateFeature>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_EvaluateFeature")))
+				evalFeature = f;
+		}
 		if (!createFeature)
 			createFeature = reinterpret_cast<PFN_NGXCreateFeature>(slNrCreateFn);
 		if (!createFeature)
@@ -1683,6 +1707,18 @@ namespace FrameGen
 		// + renodx addon 反编译双源实锤）。v0.8.10：OwnNGXParams 方法名（Set4=uint32、
 		// Set2=float、Set7=ID3D12Resource*——dlssg-to-fsr3 vtable 布局）。
 		if (needCreate || a_width != outWidth || a_height != outHeight) {
+			// ★v0.21：NR 未注册（独立设备创建失败 或 dlssnr Init_Ext 未成功）→ 不创建
+			// feature——PD 薄包装/未注册会话在 FG 设备上恒 0xbad00007（v0.20 日志
+			// id=0..20 全 7 实锤），无效且每 180 帧刷屏。静默跳过，等 Init_Ext 成功。
+			if (!snippetInitialized || !nrDevice) {
+				static bool nrSkipLogged = false;
+				if (!nrSkipLogged) {
+					nrSkipLogged = true;
+					SKSE::log::warn("[NGXNR] CreateFeature SKIPPED - NR not registered (snippetInit={} nrDevice={}) - NR inactive until Init_Ext succeeds",
+						snippetInitialized, (void*)nrDevice);
+				}
+				return false;
+			}
 			// --- v0.8.12：core 未建立 → 先用 dlss.dll 的 CreateFeature 热身 ---
 			// Init 全是 stub（D3D11/D3D12_Init @0x2b440 = 0xBAD00001）、Init_Ext 全
 			// 0xbad00002——CreateFeature 才是自举入口（SkyrimUpscaler 同款：Init 占位
