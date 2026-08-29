@@ -1018,15 +1018,36 @@ namespace FrameGen
 							handler = *reinterpret_cast<uintptr_t*>(handlerSlot);
 						SKSE::log::info("[NGXNR]   handler_slot@{} = {}", (void*)handlerSlot, (void*)handler);
 						if (handler) {
+							// v0.8.52：Protect 检查放宽（PAGE_EXECUTE_WRITECOPY=0x80 之前漏检）+
+							// dump handler 前 0x180 字节（3 段）+ handler 模块基址（AllocationBase）
 							MEMORY_BASIC_INFORMATION fmbi = {};
-							if (VirtualQuery(reinterpret_cast<LPCVOID>(handler), &fmbi, sizeof(fmbi)) &&
-								fmbi.State == MEM_COMMIT && (fmbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
-								char hhex[200] = {};
-								int c = 0;
+							uintptr_t hAllocBase = 0;
+							SIZE_T hRegion = 0;
+							if (VirtualQuery(reinterpret_cast<LPCVOID>(handler), &fmbi, sizeof(fmbi)) && fmbi.State == MEM_COMMIT) {
+								hAllocBase = reinterpret_cast<uintptr_t>(fmbi.AllocationBase);
+								hRegion = fmbi.RegionSize;
+							}
+							SKSE::log::info("[NGXNR]   handler module: allocBase={} region={:#x} rva={:#x}",
+								(void*)hAllocBase, hRegion,
+								hAllocBase && handler >= hAllocBase ? handler - hAllocBase : 0);
+							MEMORY_BASIC_INFORMATION cmbi = {};
+							bool readable = VirtualQuery(reinterpret_cast<LPCVOID>(handler), &cmbi, sizeof(cmbi)) &&
+								cmbi.State == MEM_COMMIT &&
+								(cmbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE | PAGE_EXECUTE_READ |
+									PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY | PAGE_WRITECOPY));
+							if (readable) {
 								uint8_t* hp = reinterpret_cast<uint8_t*>(handler);
-								for (int i = 0; i < 0x40; ++i)
-									c += sprintf(hhex + c, "%02X ", hp[i]);
-								SKSE::log::info("[NGXNR]   handler code: {}", hhex);
+								for (int seg = 0; seg < 3; ++seg) {
+									char hhex[300] = {};
+									int c = 0;
+									for (int i = 0; i < 0x80; ++i) {
+										uint8_t b = hp[seg * 0x80 + i];
+										c += sprintf(hhex + c, "%02X ", b);
+									}
+									SKSE::log::info("[NGXNR]   handler[+{:04x}]: {}", seg * 0x80, hhex);
+								}
+							} else {
+								SKSE::log::warn("[NGXNR]   handler not readable (prot={:#x})", static_cast<unsigned int>(cmbi.Protect));
 							}
 						}
 					}
