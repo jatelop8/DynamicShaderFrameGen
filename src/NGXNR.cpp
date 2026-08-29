@@ -312,6 +312,48 @@ namespace FrameGen
 		else
 			SKSE::log::info("[NGXNR] NGX core session ready (rc={:#x})", coreInitResult);
 
+		// --- v0.8.34：Streamline 插件分发通道（PDPerfPlugin 实测路径）---
+		// PDPerfPlugin（SkyrimUpscaler Build 13）字符串表：NGX_D3D12_CREATE_DLSSNR_EXT /
+		// NGX_D3D12_EVALUATE_DLSSNR_EXT / NGX_DLSSNR_GET_SCALING_RATIO —— 这些不在任何
+		// DLL 导出表，是 slGetFeatureFunction(feature, name, &fn) 的 functionName 参数。
+		// 裸 NGX 直调全 0xbad00002（dlssnr Init_Ext after-core 仍 refused）——NR 的
+		// 正规通道是 Streamline 插件分发（sl.dlss_nr.dll 就在我们的 Streamline 目录）。
+		{
+			HMODULE slMod = LoadLibraryW(L"sl.interposer.dll");
+			if (!slMod)
+				slMod = GetModuleHandleW(L"sl.interposer.dll");
+			using PFN_SL_GET_FEATURE_FN = int(__cdecl*)(int feature, const char* name, void*& fn);
+			auto slGetFn = slMod ? reinterpret_cast<PFN_SL_GET_FEATURE_FN>(GetProcAddress(slMod, "slGetFeatureFunction")) : nullptr;
+			SKSE::log::info("[NGXNR] sl.interposer slGetFeatureFunction={} (mod={})", (void*)slGetFn, (void*)slMod);
+			if (slGetFn) {
+				// feature 枚举：kFeatureDLSS=0 kFeatureReflex=3 kFeatureDLSS_G=1000 kFeatureDLSS_RR=1001
+				const int feats[] = { 0, 3, 1000, 1001, 4, 5, 6 };
+				const char* names[] = {
+					"NGX_D3D12_CREATE_DLSSNR_EXT",
+					"NGX_D3D12_EVALUATE_DLSSNR_EXT",
+					"NGX_DLSSNR_GET_SCALING_RATIO",
+					"slDLSSNRSetOptions",
+				};
+				for (int f : feats) {
+					for (const char* n : names) {
+						void* fn = nullptr;
+						int r = Guarded([&] { return slGetFn(f, n, fn); }, &code);
+						if (code == 0 && r == 0 && fn) {
+							SKSE::log::info("[NGXNR]   SL feature={} {} -> OK fn={}", f, n, (void*)fn);
+							if (strcmp(n, "NGX_D3D12_CREATE_DLSSNR_EXT") == 0)
+								slNrCreateFn = fn;
+							else if (strcmp(n, "NGX_D3D12_EVALUATE_DLSSNR_EXT") == 0)
+								slNrEvalFn = fn;
+						} else {
+							SKSE::log::info("[NGXNR]   SL feature={} {} -> rc={} fault={:#x}", f, n, code ? -1 : r, code);
+						}
+					}
+				}
+				if (slNrCreateFn && slNrEvalFn)
+					SKSE::log::info("[NGXNR] Streamline NR channel armed: Create@{} Eval@{}", (void*)slNrCreateFn, (void*)slNrEvalFn);
+			}
+		}
+
 		// nvngx_dlssnr.dll presence (informational)
 		nvngxNrPresent = GetFileAttributesW(nrPath.c_str()) != INVALID_FILE_ATTRIBUTES;
 		SKSE::log::info("[NGXNR] nvngx_dlssnr.dll {}", nvngxNrPresent ? "present" : "NOT present (expected -> feature unavailable)");
@@ -384,10 +426,17 @@ namespace FrameGen
 		// 处理 DLSSNR.* 专属键（PopulateParameters_Impl @0x15F20）。
 		// v0.8.23 错误：优先走 ngxCoreModule（驱动 nvngx.dll）的 Create/Evaluate——
 		// 驱动 core 不认 DLSSNR.* 键 → feature 建错类型 → Evaluate 恒 0xbad00005。
-		auto createFeature = reinterpret_cast<PFN_NGXCreateFeature>(GetProcAddress(
-			ngxModule, "NVSDK_NGX_D3D12_CreateFeature"));
-		auto evalFeature = reinterpret_cast<PFN_NGXEvaluateFeature>(GetProcAddress(
-			ngxModule, "NVSDK_NGX_D3D12_EvaluateFeature"));
+		// v0.8.34：Streamline 插件分发通道优先（slGetFeatureFunction 拿的
+		// NGX_D3D12_CREATE_DLSSNR_EXT / NGX_D3D12_EVALUATE_DLSSNR_EXT——PDPerfPlugin
+		// 实测路径，裸 NGX 直调全 0xbad00002），fallback dlssnr snippet，最后驱动 core。
+		auto createFeature = reinterpret_cast<PFN_NGXCreateFeature>(slNrCreateFn);
+		auto evalFeature = reinterpret_cast<PFN_NGXEvaluateFeature>(slNrEvalFn);
+		if (!createFeature)
+			createFeature = reinterpret_cast<PFN_NGXCreateFeature>(GetProcAddress(
+				ngxModule, "NVSDK_NGX_D3D12_CreateFeature"));
+		if (!evalFeature)
+			evalFeature = reinterpret_cast<PFN_NGXEvaluateFeature>(GetProcAddress(
+				ngxModule, "NVSDK_NGX_D3D12_EvaluateFeature"));
 		if (!createFeature || !evalFeature)
 			createFeature = reinterpret_cast<PFN_NGXCreateFeature>(GetProcAddress(
 				ngxCoreModule, "NVSDK_NGX_D3D12_CreateFeature"));
@@ -396,8 +445,8 @@ namespace FrameGen
 				ngxCoreModule, "NVSDK_NGX_D3D12_EvaluateFeature"));
 		if (!createFeature || !evalFeature)
 			return false;
-		SKSE::log::info("[NGXNR] using CreateFeature@{} EvaluateFeature@{} (snippet preferred)",
-			(void*)createFeature, (void*)evalFeature);
+		SKSE::log::info("[NGXNR] using CreateFeature@{} EvaluateFeature@{} (SL={} snippet={})",
+			(void*)createFeature, (void*)evalFeature, (void*)slNrCreateFn, (void*)ngxModule);
 
 		// v0.8.23：core 就绪后查 GetCapabilityParameters（驱动 nvngx.dll 提供）——
 		// 直接问 NR/超分支持性（SkyrimUpscaler 日志同款调用）。

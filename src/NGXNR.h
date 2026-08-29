@@ -222,6 +222,11 @@ namespace FrameGen
 		// NR feature 类型注册进 core；不注册则 dlssnr CreateFeature 恒 0xbad00002。
 		bool snippetInitialized = false;
 		unsigned int snippetInitResult = 0;
+		// v0.8.34：Streamline 插件分发通道（PDPerfPlugin 实测路径）——slGetFeatureFunction
+		// 拿 NGX_D3D12_CREATE_DLSSNR_EXT / NGX_D3D12_EVALUATE_DLSSNR_EXT。
+		// 用 void* 存（PFN 类型定义在 .cpp，头文件不可见），调用处 reinterpret_cast。
+		void* slNrCreateFn = nullptr;
+		void* slNrEvalFn = nullptr;
 		// v0.8.12：dlss.dll 热身 CreateFeature 结果（区分"缺 core" vs "其他原因"）
 		unsigned int warmupResult = 0;    // 0=未执行 1=成功 其他=返回码
 		// v0.8.14：热身只试一次（失败后不每帧重试刷屏）；GetScratchBufferSize 诊断
