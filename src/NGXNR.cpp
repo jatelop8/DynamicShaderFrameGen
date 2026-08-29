@@ -238,17 +238,20 @@ namespace FrameGen
 				auto scratchSize = reinterpret_cast<unsigned int(__cdecl*)(int, NGXInstanceParameters*, unsigned long long*)>(
 					GetProcAddress(coreModule, "NVSDK_NGX_D3D12_GetScratchBufferSize"));
 				OwnNGXParams wp;
-				wp.Set4("DLSS.Mode", 0);
-				wp.Set4("DLSS.Input.Width", a_width);
-				wp.Set4("DLSS.Input.Height", a_height);
-				wp.Set4("DLSS.Output.Width", a_width);
-				wp.Set4("DLSS.Output.Height", a_height);
-				wp.Set4("DLSS.Enable.Output.Subrects", 1);
-				wp.Set4("DLSS.PerfQualityValue", 1);
-				wp.Set4("DLSS.DepthInverted", 0);
-				wp.Set4("DLSS.Hint.Render.Preset", 0);
+				// v0.8.16：创建键按 dlss5-dx11-bridge 精确复制（BG3/FO4/Unity 实战）：
+				//   Width/Height/OutWidth/OutHeight（无前缀！）+ PerfQualityValue=2 +
+				//   Flags=107 + Subrects=0 + NodeMask + RTXValue。我们先前用
+				//   DLSS.Input/Output.* 键名 → 参数校验失败 0xbad00005。
+				wp.Set4("Width", a_width);
+				wp.Set4("Height", a_height);
+				wp.Set4("OutWidth", a_width);
+				wp.Set4("OutHeight", a_height);
+				wp.Set4("PerfQualityValue", 2);
+				wp.Set4("DLSS.Feature.Create.Flags", 107);
+				wp.Set4("DLSS.Enable.Output.Subrects", 0);
 				wp.Set4("CreationNodeMask", 1u);
 				wp.Set4("VisibilityNodeMask", 1u);
+				wp.Set4("RTXValue", 0);
 
 				// 诊断 v0.8.15：CreateFeature 反汇编实锤第一步 =
 				// cmdList->GetDevice(IID_ID3D12Device)（vtable 槽 7，非 QueryInterface）——
@@ -303,6 +306,12 @@ namespace FrameGen
 			params.Set4("PerfQualityValue", 2);				  // balanced-ish
 			params.Set4("DLSS.Mode", 0);
 			params.Set4("DLSS.Enable.Output.Subrects", 1);
+			// v0.8.16：通用创建键（bridge 实锤）——DLSSNR.* 之外补无前缀 Width/Height 等
+			params.Set4("Width", a_width);
+			params.Set4("Height", a_height);
+			params.Set4("OutWidth", a_width);
+			params.Set4("OutHeight", a_height);
+			params.Set4("DLSS.Feature.Create.Flags", 107);
 			params.Set4("CreationNodeMask", 1u);
 			params.Set4("VisibilityNodeMask", 1u);
 			params.Set4("RTXValue", 0);
