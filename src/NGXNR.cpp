@@ -970,16 +970,46 @@ namespace FrameGen
 
 		DWORD code = 0;
 		unsigned int r = 0;
-		// v0.8.49 决定性诊断：Evaluate 调用前打印 handle 实际值——反汇编铁证
-		// 真实 EvaluateFeature 的 5 = handle(rsi)空 或 params(rbp)空（fail_log 路径）；
-		// handler 表空返回的是 4（0xBAD00004）不是 5！而日志 handle 明明非空仍 5
-		// → 怀疑 [0x6E3C0] 槽在 CreateFeature 后被驱动更新（Init 读到的可能是
-		// 别的函数，如 GetScratchBufferSize）——我们实际调的未必是 EvaluateFeature。
+		// v0.8.50：三刀定位——
+		// ① evalFeature 直接读槽 [0x6E3C0]（CreateFeature 后槽内容 changed=YES 实锤，
+		//    GetProcAddress 的跳板 @0xA4F4 读同一槽，但 Init 时读到的可能是别的函数）
+		// ② 读 handle+4 = featureId（真实现 movsxd rax,[rsi+4] 用的）
+		// ③ 读真实现 0xB2 处 call [rip+0x40336] 的 handler 指针（handler 返回值 5 会透传）
 		{
 			static std::uint32_t evalDiag = 0;
-			if (++evalDiag % 180 == 1)
-				SKSE::log::info("[NGXNR] eval call: fn={} handle={} params={} L={}", (void*)evalFeature,
-					(void*)handle, (void*)&params, (void*)L);
+			if (++evalDiag % 180 == 1) {
+				uintptr_t slotEval = 0;
+				uintptr_t slotCreate = 0;
+				if (ngxCoreModule) {
+					uintptr_t modBase = reinterpret_cast<uintptr_t>(ngxCoreModule);
+					slotCreate = *reinterpret_cast<uintptr_t*>(modBase + 0x6E3B0);
+					slotEval = *reinterpret_cast<uintptr_t*>(modBase + 0x6E3C0);
+				}
+				unsigned int fid = 0;
+				if (handle)
+					memcpy(&fid, reinterpret_cast<const void*>(reinterpret_cast<uintptr_t>(handle) + 4), 4);
+				// 真实现 + 0xB2 处 call [rip+0x40336] → handler 指针（rip 相对：0xB2+7+0x40336）
+				uintptr_t handler = 0;
+				if (slotEval) {
+					uintptr_t handlerSlotAddr = slotEval + 0xB2 + 7 + 0x40336;
+					MEMORY_BASIC_INFORMATION mbi = {};
+					if (VirtualQuery(reinterpret_cast<LPCVOID>(handlerSlotAddr), &mbi, sizeof(mbi)) &&
+						mbi.State == MEM_COMMIT && (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+						handler = *reinterpret_cast<uintptr_t*>(handlerSlotAddr);
+				}
+				SKSE::log::info("[NGXNR] eval call: fn={} slotEval={} slotCreate={} handle={} featureId={} params={} handler={}",
+					(void*)evalFeature, (void*)slotEval, (void*)slotCreate, (void*)handle, fid,
+					(void*)&params, (void*)handler);
+			}
+		}
+		// v0.8.50：evalFeature 优先用槽地址（CreateFeature 后 [0x6E3C0] = 真实现；
+		// GetProcAddress 的跳板 @0xA4F4 也转发同一槽，但直接用槽地址排除跳板层）
+		PFN_NGXEvaluateFeature fnEval = evalFeature;
+		if (ngxCoreModule) {
+			uintptr_t modBase = reinterpret_cast<uintptr_t>(ngxCoreModule);
+			uintptr_t slotEval = *reinterpret_cast<uintptr_t*>(modBase + 0x6E3C0);
+			if (slotEval)
+				fnEval = reinterpret_cast<PFN_NGXEvaluateFeature>(slotEval);
 		}
 		if (nrList) {
 			// v0.8.31：独立 cmdList——barrier → Evaluate → 回 barrier → Close
@@ -990,7 +1020,7 @@ namespace FrameGen
 			b1.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_mvec, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
 			b1.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_output, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
 			nrList->ResourceBarrier(static_cast<UINT>(b1.size()), b1.data());
-			r = Guarded([&] { return evalFeature(nrList, handle, &params, nullptr); }, &code);
+			r = Guarded([&] { return fnEval(nrList, handle, &params, nullptr); }, &code);
 			std::vector<D3D12_RESOURCE_BARRIER> b2;
 			b2.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_color, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON));
 			b2.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON));
@@ -999,7 +1029,7 @@ namespace FrameGen
 			nrList->ResourceBarrier(static_cast<UINT>(b2.size()), b2.data());
 			nrList->Close();
 		} else {
-			r = Guarded([&] { return evalFeature(L, handle, &params, nullptr); }, &code);
+			r = Guarded([&] { return fnEval(L, handle, &params, nullptr); }, &code);
 		}
 		lastEvaluateResult = code ? kNGXExceptionMarker : r;
 		lastEvaluateOk = (code == 0 && r == kNGXSuccess);
