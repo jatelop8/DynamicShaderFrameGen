@@ -463,14 +463,16 @@ namespace FrameGen
 			}
 		}
 
-		// --- 1) 加载 NGX core 宿主 nvngx_dlss.dll ---
-		std::wstring corePath = std::wstring(a_pluginDir) + L"\\nvngx_dlss.dll";
-		coreModule = LoadLibraryW(corePath.c_str());
-		if (!coreModule) {
-			SKSE::log::warn("[NGXNR] nvngx_dlss.dll NOT found under {} - no NGX core host (CreateFeature will fail 0xbad00002)", w2a(a_pluginDir));
-		} else {
-			SKSE::log::info("[NGXNR] NGX core host nvngx_dlss.dll loaded");
-		}
+		// --- 1) v0.22：**不加载 nvngx_dlss.dll**（核心崩溃修复）---
+		// harness 实锤（harness_nr_verify.py Mode A vs B）：进程里有 nvngx_dlss.dll 时，
+		// dlssnr Init_Ext 真路径（7-patch 后）优先调用 dlss.dll 内部函数（崩溃栈
+		// dlss.dll+002CB80/002B440），而 dlss.dll 从未正确初始化（其 Init_Ext 被
+		// strstr "nvngx.dll" 检查卡死 = 0xbad00002，内部 FNV 哈希表空）→ 跳无效地址
+		// 0x7FFC9FABA6CC 闪退（v0.17/v0.21 两次同址 + harness Mode A 崩溃实锤）。
+		// harness 成功环境（Mode B）无 dlss.dll → dlssnr 走驱动 core（nvngx.dll，
+		// 0 段 Init 已成功 rc=1）路径 → Init_Ext=1。NGX core 会话由驱动 nvngx.dll
+		// 建立（v0.8.22 起），dlss.dll 的 "core 宿主" 角色已过时，加载纯属引入崩溃源。
+		coreModule = nullptr;
 
 		// --- 2) 加载 NR snippet nvngx_dlssnr.dll（CreateFeature/Evaluate 的执行者）---
 		std::wstring nrPath = std::wstring(a_pluginDir) + L"\\nvngx_dlssnr.dll";
@@ -838,8 +840,9 @@ namespace FrameGen
 		}
 
 		// v0.8.10：无 GetCapabilityParameters（snippet 不导出）——supported 由
-		// CreateFeature 试错决定（Evaluate 首帧）。core 宿主 + snippet 都加载成功即 ready。
-		ready = coreModule != nullptr;
+		// CreateFeature 试错决定（Evaluate 首帧）。snippet（dlssnr）加载成功即 ready。
+		// v0.22：ready 判定从 coreModule（dlss.dll，已禁用加载）改为 ngxModule（dlssnr）。
+		ready = ngxModule != nullptr;
 		needCreate = true;
 		// v0.8.32：core 路径变了（驱动 nvngx.dll）——重置遍历状态，
 		// 让 Evaluate 首帧在 snippet（dlssnr）路径下重新找 NR feature id
