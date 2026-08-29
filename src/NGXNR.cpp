@@ -677,12 +677,72 @@ namespace FrameGen
 				// SetupDirectX(device, 1) → D3D12 单例
 				using PFN_SetupDX = unsigned int(__cdecl*)(void*, int);
 				if (pdSetupDirectX) {
+					// v0.8.66：SetupDirectX 崩 0x9E06 的根因链已反汇编锁定——
+					// SetupDirectX(0x33A30) → D3D12 工厂(0x301b0 id=0x12) → new 0xe0 →
+					// 0x31FE0 构造：obj->0x90=device; 若 [0xC0E20]指向对象 byte[0]==0 则
+					// 调 0x9D60 SetDevice(obj,device) = device->GetDevice(IID_ID3D12Device)
+					// 存 obj->0x98; 随后 0x9DB0 Setup 读 obj->0x98 → 0x9E06 mov rax,[rcx]
+					// 崩。obj->0x98=0 = GetDevice 失败或未执行。先手动验证 GetDevice。
+					if (a_device) {
+						ID3D12Device* qdev = nullptr;
+						HRESULT qhr = a_device->QueryInterface(IID_PPV_ARGS(&qdev));
+						SKSE::log::info("[NGXNR]   manual QI(ID3D12Device) on {} -> {:#x} ptr={}",
+							(void*)a_device, (unsigned int)qhr, (void*)qdev);
+						if (qdev) qdev->Release();
+						// GetDevice 在 ID3D12DeviceChild（本 SDK 的 ID3D12Device 不直接
+						// 暴露）——PD 0x9D60 是直接 call vtable 槽 7（偏移 0x38），照抄。
+						void** vt7 = *reinterpret_cast<void***>(a_device);
+						using PFN_GetDev = HRESULT(WINAPI*)(void*, REFIID, void**);
+						ID3D12Device* gdev = nullptr;
+						HRESULT ghr = E_FAIL;
+						if (vt7)
+							ghr = reinterpret_cast<PFN_GetDev>(vt7[7])(a_device, IID_PPV_ARGS(&gdev));
+						SKSE::log::info("[NGXNR]   manual vtable[7] GetDevice -> {:#x} ptr={}",
+							(unsigned int)ghr, (void*)gdev);
+						if (gdev) gdev->Release();
+					}
 					unsigned int setupRet = 0;
 					DWORD sc = 0;
 					Guarded([&] { return setupRet = reinterpret_cast<PFN_SetupDX>(pdSetupDirectX)(a_device, 1); }, &sc);
 					pdSetupOk = (sc == 0 && setupRet != 0);
 					SKSE::log::info("[NGXNR]   SetupDirectX(device,1) -> {} (rc={:#x} fault={:#x})",
 						pdSetupOk ? "ok" : "FAILED", setupRet, sc);
+					// v0.8.66：SetupDirectX 建的 NR 单例在 [0xC1268]（0x33A30 里
+					// mov [rip+0x8d80b/0x8d7d8], rax；D3D12 后端 id=0x12 分支）。
+					// 单例->0x98 = D3D12 device（0x9D60 SetDevice 写入）。
+					{
+						uintptr_t pdBase2 = reinterpret_cast<uintptr_t>(pdModule);
+						auto rdGlob = [&](uintptr_t rva, const char* tag) -> uintptr_t {
+							uintptr_t slot = pdBase2 + rva;
+							uintptr_t v = 0;
+							MEMORY_BASIC_INFORMATION sm = {};
+							if (VirtualQuery(reinterpret_cast<LPCVOID>(slot), &sm, sizeof(sm)) &&
+								sm.State == MEM_COMMIT && (sm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+								v = *reinterpret_cast<uintptr_t*>(slot);
+							SKSE::log::info("[NGXNR]   PD {} @{} = {}", tag, (void*)slot, (void*)v);
+							return v;
+						};
+						uintptr_t sing = rdGlob(0xC1268, "NR singleton");
+						uintptr_t regv = rdGlob(0xC0E20, "backend-reg");
+						if (regv) {
+							uintptr_t b0 = 0;
+							MEMORY_BASIC_INFORMATION sm = {};
+							if (VirtualQuery(reinterpret_cast<LPCVOID>(regv), &sm, sizeof(sm)) &&
+								sm.State == MEM_COMMIT && (sm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+								b0 = *reinterpret_cast<uint8_t*>(regv);
+							SKSE::log::info("[NGXNR]   PD backend-reg->byte[0] = {} ({} SetDevice)",
+								b0, b0 ? "skip" : "run");
+						}
+						if (sing) {
+							uintptr_t dev = 0;
+							MEMORY_BASIC_INFORMATION sm = {};
+							if (VirtualQuery(reinterpret_cast<LPCVOID>(sing + 0x98), &sm, sizeof(sm)) &&
+								sm.State == MEM_COMMIT && (sm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+								dev = *reinterpret_cast<uintptr_t*>(sing + 0x98);
+							SKSE::log::info("[NGXNR]   PD NR singleton[0x98] (device) = {} (expect {})",
+								(void*)dev, (void*)a_device);
+						}
+					}
 				}
 				// IsDLSSNRAvailable()
 				if (pdIsNrAvailable) {
@@ -709,42 +769,26 @@ namespace FrameGen
 				// SetupDirectX 建的 NGX 上下文）→ 0x1ae70 检查（"cannot initialize
 				// NGX without a D3D12 device"）。
 				{
-					// 诊断：SetupDirectX 后 [0x8CDAE]（InitDLSSNR 读的单例）与
-					// [0xa6015]（0x1ada0 读的 NGX 上下文，[0x98]=device）是否已填
+					// v0.8.66：诊断修正——SetupDirectX 单例槽是 [0xC1268]（非旧的
+					// 0x8CDAE/0xA6015，那俩在 .rdata 是普通数据）。InitDLSSNR/Evaluate
+					// 全部经 [0xC1268] 取单例（0x33B70/0x33C40/0x341f0 等导出一致）。
 					uintptr_t pdBase = reinterpret_cast<uintptr_t>(pdModule);
-					auto readGlobal = [&](uintptr_t rva, const char* tag) -> uintptr_t {
-						uintptr_t slot = pdBase + rva;
-						uintptr_t v = 0;
+					uintptr_t sing2 = 0;
+					{
+						uintptr_t slot = pdBase + 0xC1268;
 						MEMORY_BASIC_INFORMATION sm = {};
 						if (VirtualQuery(reinterpret_cast<LPCVOID>(slot), &sm, sizeof(sm)) &&
 							sm.State == MEM_COMMIT && (sm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
-							v = *reinterpret_cast<uintptr_t*>(slot);
-						SKSE::log::info("[NGXNR]   PD {} slot@{} = {}", tag, (void*)slot, (void*)v);
-						return v;
-					};
-					uintptr_t s1 = readGlobal(0x8CDAE, "NR singleton");
-					uintptr_t s2 = readGlobal(0xa6015, "NGX ctx");
-					if (s1) {
-						// VirtualQuery 保护读取（v0.8.47 教训：单例可能是 0x2000000 哨兵）
-						uintptr_t v78 = 0, vt = 0;
-						MEMORY_BASIC_INFORMATION sm = {};
-						if (VirtualQuery(reinterpret_cast<LPCVOID>(s1 + 0x78), &sm, sizeof(sm)) &&
-							sm.State == MEM_COMMIT && (sm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
-							v78 = *reinterpret_cast<uintptr_t*>(s1 + 0x78);
-						if (VirtualQuery(reinterpret_cast<LPCVOID>(s1), &sm, sizeof(sm)) &&
-							sm.State == MEM_COMMIT && (sm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
-							vt = *reinterpret_cast<uintptr_t*>(s1);
-						SKSE::log::info("[NGXNR]   PD NR singleton[0x78]={} vtable={} (InitDLSSNR target ready)",
-							(void*)v78, (void*)vt);
+							sing2 = *reinterpret_cast<uintptr_t*>(slot);
 					}
-					if (s2) {
-						uintptr_t dev = 0;
+					SKSE::log::info("[NGXNR]   PD NR singleton after setup = {}", (void*)sing2);
+					if (sing2) {
+						uintptr_t vt = 0;
 						MEMORY_BASIC_INFORMATION sm = {};
-						if (VirtualQuery(reinterpret_cast<LPCVOID>(s2 + 0x98), &sm, sizeof(sm)) &&
+						if (VirtualQuery(reinterpret_cast<LPCVOID>(sing2), &sm, sizeof(sm)) &&
 							sm.State == MEM_COMMIT && (sm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
-							dev = *reinterpret_cast<uintptr_t*>(s2 + 0x98);
-						SKSE::log::info("[NGXNR]   PD NGX ctx[0x98] (device) = {} (expect {})",
-							(void*)dev, (void*)a_device);
+							vt = *reinterpret_cast<uintptr_t*>(sing2);
+						SKSE::log::info("[NGXNR]   PD NR singleton vtable={} (NR ctx ready)", (void*)vt);
 					}
 				}
 				// v0.8.60：SetupDirectX 成功后查 PDPerfPlugin 的 Caps（标准 API）——
