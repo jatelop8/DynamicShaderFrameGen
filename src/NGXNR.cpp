@@ -731,22 +731,48 @@ namespace FrameGen
 					// → feature 1004 已注册。这里只查询确认。
 					std::uint8_t reqs[0x400] = {};
 					long long rr = fnGetReq(1004, reqs);
-					SKSE::log::info("[NGXNR] v0.12 slGetFeatureRequirements(1004) -> {}", rr);
-					void* evalFn = nullptr;
-					long long gr = fnGetFn(1004, "slEvaluateFeature", evalFn);
-					SKSE::log::info("[NGXNR] v0.12 slGetFeatureFunction(1004, 'slEvaluateFeature') -> {} fn={}",
-						gr, evalFn);
-					if (gr == 0 && evalFn) {
-						slNrEvalFn10 = evalFn;
-						slNrReady = true;
-						SKSE::log::info("[NGXNR] v0.12 DLSS-NR feature 1004 READY (slEvaluateFeature={}) - Streamline path armed",
-							evalFn);
+					SKSE::log::info("[NGXNR] v0.14 slGetFeatureRequirements(1004) -> {}", rr);
+					// v0.14：sl.dlss_nr 注册的函数名是 dlssnrBeginEvaluation/dlssnrEndEvaluation
+					// （字符串实锤），不是 slEvaluateFeature——多查几个名字
+					const char* fnNames[] = { "slEvaluateFeature", "dlssnrBeginEvaluation", "dlssnrEndEvaluation" };
+					for (const char* nm : fnNames) {
+						void* evalFn = nullptr;
+						long long gr = fnGetFn(1004, nm, evalFn);
+						SKSE::log::info("[NGXNR] v0.14 slGetFeatureFunction(1004, '{}') -> {} fn={}", nm, gr, evalFn);
+						if (gr == 0 && evalFn) {
+							slNrEvalFn10 = evalFn;
+							slNrReady = true;
+							SKSE::log::info("[NGXNR] v0.14 DLSS-NR feature 1004 READY ({}={}) - Streamline path armed",
+								nm, evalFn);
+							break;
+						}
 					}
 				} else {
 					SKSE::log::warn("[NGXNR] v0.12 sl.interposer exports missing (getreq={} getfn={})",
 						(void*)fnGetReq, (void*)fnGetFn);
 				}
 			}
+		}
+
+		// --- v0.14：dlssnr Init_Ext 直测（游戏环境）---
+		// sl.dlss_nr 内部初始化 dlssnr 仍失败（1004 未注册）——用驱动 core 会话 +
+		// AllocateParameters 的 realParams 直调 dlssnr Init_Ext，确认游戏环境里
+		// dlssnr 能否独立初始化（返回 1=成功 → sl.dlss_nr 没走 Init_Ext 或另有原因；
+		// 返回 bad00002 → dlssnr 内部还有关卡，需 NvAPI_Status 定位）。
+		if (ngxModule && coreInitOk && realParams) {
+			auto nrInitExtFn = reinterpret_cast<PFN_NGXInitExt>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Init_Ext"));
+			if (nrInitExtFn) {
+				DWORD g2 = 0;
+				unsigned int ir2 = 0;
+				Guarded([&] { return ir2 = nrInitExtFn(0x1337, L"", device, initVersion, realParams); }, &g2);
+				SKSE::log::info("[NGXNR] v0.14 dlssnr Init_Ext direct (core session, ver={:#x}) -> {:#x} (fault={:#x})",
+					initVersion, ir2, g2);
+			} else {
+				SKSE::log::warn("[NGXNR] v0.14 dlssnr NVSDK_NGX_D3D12_Init_Ext NOT exported");
+			}
+		} else {
+			SKSE::log::info("[NGXNR] v0.14 dlssnr direct init skipped (ngxModule={} coreInitOk={} realParams={})",
+				(void*)ngxModule, coreInitOk, (void*)realParams);
 		}
 
 		// --- v0.8.58：PDPerfPlugin 直调探测（SkyrimUpscaler 实锤跑通 NR 的完整
