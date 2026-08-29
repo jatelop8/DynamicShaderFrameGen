@@ -506,6 +506,7 @@ namespace FrameGen
 		//   [0x18006E3E0] = 真实函数指针（mov rax,[0x18006E3E0]; push rax; ret 跳它）
 		// v0.8.42 日志实锤：读 0x6E4B8 得到 0x7ffb032ae4c0（=自身+8 附近，数据区不是代码）
 		// → 真实实现指针 RVA = 0x6E3E0（0x18006E3E0 基于固定基址 0x180000000）。
+		// v0.8.43 日志实锤：fn_ptr=0x7ffb0b427730 → RVA=0x87730（超出旧 0x80000 范围被误杀）→ 放宽到 0x200000
 		if (ngxCoreModule) {
 			uintptr_t modBase = reinterpret_cast<uintptr_t>(ngxCoreModule);
 			uintptr_t flagAddr = modBase + 0x6E4B8;   // 初始化标志（非空=已就绪）
@@ -514,7 +515,7 @@ namespace FrameGen
 			SKSE::log::info("[NGXNR] driver-core EvaluateFeature detour: flag@{}={} fn_ptr@{}={}",
 				reinterpret_cast<void*>(flagAddr), reinterpret_cast<void*>(*reinterpret_cast<uintptr_t*>(flagAddr)),
 				reinterpret_cast<void*>(fnPtrAddr), reinterpret_cast<void*>(realEval));
-			if (realEval && realEval > modBase && realEval < modBase + 0x80000) {
+			if (realEval && realEval > modBase && realEval < modBase + 0x200000) {
 				// 扫描真实实现前 0x200 字节找 0xBAD00005/2 引用（mov eax/lea 该常量）
 				uint8_t* p = reinterpret_cast<uint8_t*>(realEval);
 				for (int i = 0; i < 0x200; ++i) {
