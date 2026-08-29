@@ -216,11 +216,19 @@ namespace FrameGen
 		// 实锤：DLSSNR.Color/Depth/MVec/Output/Width/Height/Enabled/ScalingRatio/
 		// DepthInverted/Reset...）。无前缀通用 DLSS 键（Color/Depth/Output）NR 不认。
 		if (needCreate || a_width != outWidth || a_height != outHeight) {
+			// v0.8.8：DLSS-NR 参数键全部用 DLSSNR.* 前缀（nvngx_dlssnr.dll 字符串表
+			// + renodx-dlss5 addon 反编译双源实锤）。无前缀通用 DLSS 键 NR 不认。
+			// v0.8.9：补 renodx 实锤参数——Input/Output 尺寸、ScalingRatio、Preset。
 			params->Set("DLSSNR.Width", a_width);
 			params->Set("DLSSNR.Height", a_height);
+			params->Set("DLSSNR.InputWidth", a_width);
+			params->Set("DLSSNR.InputHeight", a_height);
+			params->Set("DLSSNR.OutputWidth", a_width);
+			params->Set("DLSSNR.OutputHeight", a_height);
 			params->Set("DLSSNR.ScalingRatio", 1.0f);		  // DLAA 模式（4K→4K 滤镜）
 			params->Set("DLSSNR.Enabled", 1);
 			params->Set("DLSSNR.DepthInverted", 0);			  // Skyrim depth: 近=0 远=1
+			params->Set("DLSSNR.Hint.Render.Preset", 0);	  // 0=Auto (renodx: Preset #1/#2/#3)
 			params->Set("DLSSNR.Reset", 1);					  // 创建时重置内部状态
 			params->Set("PerfQualityValue", 2);				  // balanced-ish; NR uses for ratio
 			params->Set("DLSS.Feature.Create.Flags", 107);
@@ -255,6 +263,10 @@ namespace FrameGen
 		params->Set("DLSSNR.MVec", a_mvec);
 		params->Set("DLSSNR.Output", a_output);
 		params->Set("DLSSNR.Enabled", 1);
+		// v0.8.9：MV 缩放（Skyrim 引擎 mvec 语义 = 我们 DLSS 超分的 mvecScale 1.0；
+		// bridge 对它的游戏用 -1.0，Skyrim 已验证 1.0 超分正确）
+		params->Set("DLSSNR.MVecScaleX", 1.0f);
+		params->Set("DLSSNR.MVecScaleY", 1.0f);
 		// v0.8.7：NR 参数读 settings（GUI 滑块/INI 写入处）——原用本对象成员
 		// (intensity/style/...) 从未被赋值，滑块无效。Get() = FrameGen 命名空间自由函数。
 		auto& s = Get().settings;
