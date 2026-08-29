@@ -16,9 +16,9 @@ are loaded at runtime from the official NVIDIA / AMD SDKs.
   shared backbuffer, so ENB effects survive frame generation.
 - **In-game ImGui menu** (hold `Home`) — toggle frame generation, toggle DLSS
   upscaling, quality mode, sharpness, save to INI.
-- **DLSS-NR (Neural Rendering)** — direct NGX integration of NVIDIA's neural
-  radiance feature (RTX 50-series only, sm_120). Graceful degradation: on GPUs
-  without the FP8 Blackwell kernel the menu item is disabled — never a crash.
+- **DLSS-NR (Neural Rendering)** — not bundled since v0.25; neural rendering is
+  provided by the external ReShade addon route (dlss5-dx11-bridge + renodx-dlss5),
+  keeping this plugin clean of any NVIDIA-binary patching code.
 - **Render scale via engine dynamic resolution** — the engine render target is
   scaled through the dynamic-resolution hooks (perf gain; the backbuffer stays
   at output resolution).
@@ -39,9 +39,8 @@ mod):
 - `SKSE/Plugins/DynamicShaderFrameGen.ini`
 - `Shaders/` (upscale copy shaders)
 
-**DLSS-NR (optional, RTX 50-series)**: drop NVIDIA's `nvngx_dlssnr.dll` into
-`Shaders/Upscaling/Streamline/`. It is not redistributed (NVIDIA restriction,
-~158 MB). On other GPUs the menu item simply stays disabled.
+**DLSS-NR**: since v0.25 the plugin no longer integrates DLSS-NR internally —
+use the external ReShade addon route (dlss5-dx11-bridge + renodx-dlss5).
 
 ## Usage
 
@@ -50,14 +49,12 @@ mod):
 | Hold `Home` | Open / close the in-game menu |
 | Menu → Frame Generation (FG) | Toggle FSR 3.1 frame generation |
 | Menu → DLSS Upscale | Toggle DLSS upscaling / DLAA rebuild |
-| Menu → DLSS-NR | Toggle neural rendering (RTX 50-series only) |
 | Menu → Quality Mode / Sharpness | Adjust DLSS settings (live) |
 | Menu → Save to INI | Persist settings |
 
 `EnableUpscale=0` in the INI disables DLSS and returns to pure frame
 generation (highest frame rate, native engine image).
 
-`EnableDLSSNR=1` enables DLSS-NR (with `nvngx_dlssnr.dll` present and an
 RTX 50-series GPU); `NRIntensity` / `NRStyle` / `NRLocalTone` /
 `NRSkinStructure` adjust the neural filter live in the menu.
 
