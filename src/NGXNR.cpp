@@ -107,14 +107,26 @@ namespace FrameGen
 		}
 
 		// guarded calls: a wrong signature must land in the log, never crash the game
+		// v0.8.65：__except 里打异常详情（代码 + 异常地址 + 访问违例地址）——
+		// SetupDirectX 崩 0xc0000005 时直接看到访问地址，反推真实全局
+		static int LogGuardedFault(EXCEPTION_POINTERS* a_ep, DWORD* a_code)
+		{
+			*a_code = a_ep->ExceptionRecord->ExceptionCode;
+			uintptr_t access = 0;
+			if (a_ep->ExceptionRecord->NumberParameters >= 2)
+				access = static_cast<uintptr_t>(a_ep->ExceptionRecord->ExceptionInformation[1]);
+			SKSE::log::error("[NGXNR] Guarded fault: code={:#x} @{} access={}",
+				a_ep->ExceptionRecord->ExceptionCode,
+				(void*)a_ep->ExceptionRecord->ExceptionAddress, (void*)access);
+			return EXCEPTION_EXECUTE_HANDLER;
+		}
 		template <class Fn, class... Args>
 		unsigned int Guarded(Fn a_fn, DWORD* a_code, Args&&... a_args)
 		{
 			*a_code = 0;
 			__try {
 				return a_fn(std::forward<Args>(a_args)...);
-			} __except (EXCEPTION_EXECUTE_HANDLER) {
-				*a_code = GetExceptionCode();
+			} __except (LogGuardedFault(GetExceptionInformation(), a_code)) {
 				return kNGXExceptionMarker;
 			}
 		}
@@ -637,6 +649,31 @@ namespace FrameGen
 					pdSetupDirectX, pdIsNrAvailable, pdEvaluateDLSSNR, pdInitDLSSNR, pdSetFrameGenParams);
 				SKSE::log::info("[NGXNR]   NGX std: CreateFeature={} EvaluateFeature={} Caps={} Alloc={} Release={}",
 					pdCreateFeature, pdEvalFeature, pdCapsFn, pdAllocParams, pdReleaseFeature);
+				// v0.8.65 修复 SetupDirectX 崩溃（0xc0000005，fault=0xc0000005 实锤）：
+				// PD 的 CRT 静态初始化器 0x4CD0/0x4D00（存 [0xC0E18]/[0xC0E20]，BSS
+				// 区）从未执行——[0xC0E20]=0 → D3D12 后端构造 0x31fe0 读它当指针 →
+				// rcx=0 → cmp byte [0],0 → 访问违例！手动执行这两个初始化器
+				// （0x4D00 = call 0xc210 工厂 → mov [0xC0E20], rax；0x4CD0 同款存
+				// [0xC0E18]）。地址是 RVA，需加模块基址。
+				{
+					using PFN_PDINIT = void(__cdecl*)();
+					for (int initRva : { 0x4CD0, 0x4D00 }) {
+						auto initFn = reinterpret_cast<PFN_PDINIT>(reinterpret_cast<uintptr_t>(pdModule) + initRva);
+						DWORD ic = 0;
+						Guarded([&]() -> unsigned int { initFn(); return 0; }, &ic);
+						SKSE::log::info("[NGXNR]   PD static-init @0x{:x} -> {} (fault={:#x})", initRva,
+							ic == 0 ? "ok" : "FAULTED", ic);
+					}
+					// 诊断 [0xC0E20]（0x31fe0 崩点读的全局，真实 RVA = 0x320a5+7+0x8ED74）
+					uintptr_t regSlot = reinterpret_cast<uintptr_t>(pdModule) + 0xC0E20;
+					uintptr_t reg = 0;
+					MEMORY_BASIC_INFORMATION rm = {};
+					if (VirtualQuery(reinterpret_cast<LPCVOID>(regSlot), &rm, sizeof(rm)) &&
+						rm.State == MEM_COMMIT && (rm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+						reg = *reinterpret_cast<uintptr_t*>(regSlot);
+					SKSE::log::info("[NGXNR]   PD backend-reg[0xC0E20] = {} ({} after static-init)",
+						(void*)reg, reg ? "READY" : "STILL EMPTY");
+				}
 				// SetupDirectX(device, 1) → D3D12 单例
 				using PFN_SetupDX = unsigned int(__cdecl*)(void*, int);
 				if (pdSetupDirectX) {
