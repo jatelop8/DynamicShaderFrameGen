@@ -752,14 +752,19 @@ namespace FrameGen
 						SKSE::log::info("[NGXNR]   PD singleton obj={} backend-reg={}", (void*)obj, (void*)backendReg);
 						uintptr_t devAddr = reinterpret_cast<uintptr_t>(a_device);
 						if (obj) {
+							// v0.8.69：obj->0x88 也是 GetDevice 写（S_FALSE 失败=0），
+							// InitDLSSNR 可能用 0x88 当 device 传给 nvngx → +9 崩。
+							// 0x88/0x98/0xa0 全补 device。
+							*reinterpret_cast<uintptr_t*>(obj + 0x88) = devAddr;
 							*reinterpret_cast<uintptr_t*>(obj + 0x98) = devAddr;
 							*reinterpret_cast<uintptr_t*>(obj + 0xa0) = devAddr;
-							SKSE::log::info("[NGXNR]   PD singleton patched 0x98={} 0xa0={}", (void*)devAddr, (void*)devAddr);
+							SKSE::log::info("[NGXNR]   PD singleton patched 0x88={} 0x98={} 0xa0={}", (void*)devAddr, (void*)devAddr, (void*)devAddr);
 						}
 						if (backendReg) {
+							*reinterpret_cast<uintptr_t*>(backendReg + 0x88) = devAddr;
 							*reinterpret_cast<uintptr_t*>(backendReg + 0x98) = devAddr;
 							*reinterpret_cast<uintptr_t*>(backendReg + 0xa0) = devAddr;
-							SKSE::log::info("[NGXNR]   PD backend-reg patched 0x98={} 0xa0={}", (void*)devAddr, (void*)devAddr);
+							SKSE::log::info("[NGXNR]   PD backend-reg patched 0x88={} 0x98={} 0xa0={}", (void*)devAddr, (void*)devAddr, (void*)devAddr);
 							// 手动执行 0x9D60 SetDevice(backend-reg, device) →
 							// 内部 rbx=backend-reg → tail 0x9DB0 完整 Setup
 							DWORD sc2 = 0;
@@ -972,6 +977,17 @@ namespace FrameGen
 					SKSE::log::info("[NGXNR] IsDLSSNRAvailable() -> {} (fault={:#x})", nrAvail ? "TRUE" : "false", mc);
 				}
 				if (pdInitDLSSNR) {
+					// v0.8.69：InitDLSSNR 崩溃 @0x7ffbac65bf2e（PD 模块外，疑 nvngx_dlssnr/
+					// nvngx_dlss）——打各模块基址，下轮定位崩溃 RVA
+					{
+						auto modBase = [](const wchar_t* name) -> void* {
+							HMODULE h = GetModuleHandleW(name);
+							return (void*)h;
+						};
+						SKSE::log::info("[NGXNR]   mod nvngx_dlssnr.dll={} nvngx_dlss.dll={} sl.dlss_nr.dll={} nvngx.dll={}",
+							modBase(L"nvngx_dlssnr.dll"), modBase(L"nvngx_dlss.dll"),
+							modBase(L"sl.dlss_nr.dll"), modBase(L"nvngx.dll"));
+					}
 					DWORD ic = 0;
 					unsigned int ir = 0;
 					Guarded([&] { return ir = reinterpret_cast<unsigned int(__cdecl*)(const void*)>(pdInitDLSSNR)(&cfg); }, &ic);
