@@ -131,6 +131,8 @@ namespace FrameGen
 				settings.enableDLSSNR = readBool(line, false);   // v0.8：DLSS-NR 神经渲染开关
 			else if (key == "NRDirectTest")
 				settings.nrDirectTest = readBool(line, false);   // v0.18：NR 直测开关（默认关防闪退）
+			else if (key == "FpsOverlay")
+				settings.fpsOverlay = readBool(line, true);      // v0.24：FPS 显示器（默认开）
 			else if (key == "NRIntensity") {
 				try { settings.nrIntensity = std::clamp(std::stof(line.substr(eq + 1)), 0.0f, 1.0f); } catch (...) {}
 			} else if (key == "NRStyle") {

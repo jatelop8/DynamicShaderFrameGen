@@ -26,7 +26,21 @@ def patch_dlssnr(m):
     wp(0x8810, bytes([0xB8, 0x01, 0x00, 0x00, 0x00, 0xC3]))
     # first gate 0x144bd 6xNOP
     wp(0x144bd, bytes([0x90]*6))
-    print("patched dlssnr @0x%x" % base)
+    # v0.22: IAT stubs (full 7-patch like game PrepareDlssnrForStreamline)
+    k32 = ctypes.WinDLL("kernel32.dll")
+    GMHEXW = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_uint, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p))
+    def stub_exw(flags, name, out):
+        out[0] = m
+        return 1
+    GMHA = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_char_p)
+    def stub_ga(name):
+        return core_handle
+    global _stub_exw, _stub_ga, core_handle
+    _stub_exw = GMHEXW(stub_exw)
+    _stub_ga = GMHA(stub_ga)
+    wp(0xac118, struct.pack("<Q", ctypes.cast(_stub_exw, ctypes.c_void_p).value))
+    wp(0xac080, struct.pack("<Q", ctypes.cast(_stub_ga, ctypes.c_void_p).value))
+    print("patched dlssnr @0x%x (incl IAT stubs)" % base)
 
 LOG_CB = ctypes.CFUNCTYPE(None, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64)
 logfns = []
@@ -78,6 +92,8 @@ def run(mode):
     nr = k32.LoadLibraryW(ctypes.c_wchar_p(SL + r"\nvngx_dlssnr.dll"))
     print("nvngx_dlssnr.dll -> 0x%x" % (nr or 0))
     if not nr: return
+    global core_handle
+    core_handle = core
     patch_dlssnr(nr)
 
     # core Init (5-arg)
@@ -104,8 +120,5 @@ def run(mode):
     return r2
 
 if __name__ == "__main__":
-    # v0.22: Mode B only (Mode A crashes the process - dlss.dll conflict proven)
     run("B")
     print("\nMode B completed")
-else:
-    run("B")

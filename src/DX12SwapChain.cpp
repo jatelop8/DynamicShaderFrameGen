@@ -742,7 +742,8 @@ namespace FrameGen
 
 		// v0.7：游戏内菜单绘制（引擎渲染完、拷贝共享纹理到 D3D12 之前——菜单画在
 		// 共享纹理上随帧进入画面；D3D11 context 此刻空闲）
-		if (!dlssgMode && ImguiMenu::GetSingleton()->visible)
+		// v0.24：FPS overlay 常驻（菜单关也显示，settings.fpsOverlay 开关）
+		if (!dlssgMode && (ImguiMenu::GetSingleton()->visible || Get().settings.fpsOverlay))
 			ImguiMenu::GetSingleton()->Draw(Get());
 
 		// v0.8.1：DLSS-NR（FSR3 模式）——fence 已 Signal/Wait（D3D11 完成 colorOut 写入），

@@ -18,6 +18,7 @@
 #include <d3d11.h>
 
 struct ImGuiContext;
+struct ImFont;
 
 namespace FrameGen
 {
@@ -39,6 +40,8 @@ namespace FrameGen
 		void Toggle() { visible = !visible; }
 
 		// Draw each frame (called in Present FSR3 branch, before shared-texture copy)
+		// v0.24: draws FPS overlay (settings.fpsOverlay, top-right bold white) even
+		// when the menu is closed; draws the menu only when visible.
 		void Draw(FrameGen& a_fg);
 
 		// Keyboard event forwarding (called from InputEventHandler)
@@ -47,6 +50,8 @@ namespace FrameGen
 	private:
 		bool initialized = false;
 		HWND hwnd = nullptr;
+		ImFont* fontFps = nullptr;  // bold large font for the FPS overlay
 		void DrawMenu(FrameGen& a_fg);
+		void DrawFps(FrameGen& a_fg);
 	};
 }

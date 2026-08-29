@@ -17,6 +17,7 @@
 
 #include <SKSE/SKSE.h>
 
+#include <cstdio>
 #include <fstream>
 
 namespace FrameGen
@@ -40,6 +41,29 @@ namespace FrameGen
 		ImGuiStyle& style = ImGui::GetStyle();
 		style.WindowRounding = 6.0f;
 		style.FrameRounding = 4.0f;
+
+		// v0.24: FPS overlay font - bold large (Windows system Arial Bold), fallback default
+		{
+			auto& fio = ImGui::GetIO();
+			fio.Fonts->Clear();
+			ImFont* bold = fio.Fonts->AddFontFromFileTTF(
+				"C:\\Windows\\Fonts\\arialbd.ttf", 36.0f, nullptr,
+				fio.Fonts->GetGlyphRangesDefault());
+			if (!bold)
+				bold = fio.Fonts->AddFontFromFileTTF(
+					"C:\\Windows\\Fonts\\impact.ttf", 36.0f, nullptr,
+					fio.Fonts->GetGlyphRangesDefault());
+			if (!bold) {
+				ImFontConfig cfg;
+				cfg.SizePixels = 36.0f;  // ImGui 1.92: SizePx renamed to SizePixels
+				bold = fio.Fonts->AddFontDefault(&cfg);
+			}
+			fontFps = bold;
+			// menu UI keeps the small default font
+			ImFont* ui = fio.Fonts->AddFontDefault();
+			if (ui)
+				fio.FontDefault = ui;
+		}
 
 		if (!ImGui_ImplWin32_Init(hwnd)) {
 			SKSE::log::error("[ImguiMenu] ImGui_ImplWin32_Init failed");
@@ -96,7 +120,11 @@ namespace FrameGen
 
 	void ImguiMenu::Draw(FrameGen& a_fg)
 	{
-		if (!initialized || !visible)
+		if (!initialized)
+			return;
+		const bool wantMenu = visible;
+		const bool wantFps = a_fg.settings.fpsOverlay;
+		if (!wantMenu && !wantFps)
 			return;
 
 		auto& sc = a_fg.dx12SwapChain;
@@ -108,28 +136,69 @@ namespace FrameGen
 		ImGui_ImplDX11_NewFrame();
 		ImGui_ImplWin32_NewFrame();
 		auto& io = ImGui::GetIO();
-		// v0.7.5: menu visible -> ImGui draws its own cursor (game hides the
-		// system cursor in first-person; ImGui cursor follows manual MousePos)
-		io.MouseDrawCursor = true;
 
-		// Manual mouse input (no WndProc hook needed)
-		POINT pt{};
-		GetCursorPos(&pt);
-		if (hwnd)
-			ScreenToClient(hwnd, &pt);
-		io.AddMousePosEvent(static_cast<float>(pt.x), static_cast<float>(pt.y));
-		io.AddMouseButtonEvent(0, (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0);
-		io.AddMouseButtonEvent(1, (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0);
-		io.AddMouseButtonEvent(2, (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0);
+		if (wantMenu) {
+			// v0.7.5: menu visible -> ImGui draws its own cursor (game hides the
+			// system cursor in first-person; ImGui cursor follows manual MousePos)
+			io.MouseDrawCursor = true;
+
+			// Manual mouse input (no WndProc hook needed)
+			POINT pt{};
+			GetCursorPos(&pt);
+			if (hwnd)
+				ScreenToClient(hwnd, &pt);
+			io.AddMousePosEvent(static_cast<float>(pt.x), static_cast<float>(pt.y));
+			io.AddMouseButtonEvent(0, (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0);
+			io.AddMouseButtonEvent(1, (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0);
+			io.AddMouseButtonEvent(2, (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0);
+		}
 
 		ImGui::NewFrame();
-		DrawMenu(a_fg);
+		if (wantFps)
+			DrawFps(a_fg);
+		if (wantMenu)
+			DrawMenu(a_fg);
 		ImGui::Render();
 
 		// Draw onto upscaled output RTV - then copied to D3D12 backbuffer for FSR3 FG
 		ID3D11DeviceContext* ctx = sc.d3d11Context.get();
 		ctx->OMSetRenderTargets(1, &rtWrapped->rtv, nullptr);
 		ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+	}
+
+	void ImguiMenu::DrawFps(FrameGen& a_fg)
+	{
+		using namespace std::chrono;
+		static auto s_last = steady_clock::now();
+		static float s_fps = 60.0f;
+		const auto now = steady_clock::now();
+		const float dt = duration_cast<duration<float>>(now - s_last).count();
+		s_last = now;
+		if (dt > 0.0f && dt < 1.0f) {
+			const float inst = 1.0f / dt;
+			s_fps = s_fps * 0.92f + inst * 0.08f;  // EMA smoothing
+		}
+
+		// Frame generation active -> show on-screen (displayed) fps (FSR3/DLSSG are 2x)
+		const float mult = a_fg.fgActive.load() ? 2.0f : 1.0f;
+
+		char buf[32];
+		std::snprintf(buf, sizeof(buf), "%.0f FPS", s_fps * mult);
+
+		ImFont* font = fontFps ? fontFps : ImGui::GetFont();
+		const float size = font->LegacySize;  // font size passed to AddFont* (36.0f)
+		const ImVec2 disp = ImGui::GetIO().DisplaySize;
+		const ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0.0f, buf);
+		const ImVec2 pos(disp.x - ts.x - 26.0f, 16.0f);
+
+		ImDrawList* dl = ImGui::GetBackgroundDrawList();
+		// black outline around the white text (bold look + readable on any background)
+		for (int dx = -2; dx <= 2; ++dx)
+			for (int dy = -2; dy <= 2; ++dy)
+				if (dx * dx + dy * dy <= 8)
+					dl->AddText(font, size, ImVec2(pos.x + dx, pos.y + dy),
+						IM_COL32(0, 0, 0, 235), buf);
+		dl->AddText(font, size, pos, IM_COL32(255, 255, 255, 255), buf);
 	}
 
 	void ImguiMenu::DrawMenu(FrameGen& a_fg)
@@ -156,6 +225,7 @@ namespace FrameGen
 		// v0.7.24：DLSS 超分开关——4K 下 DLAA 重建 ~3-5ms/帧；关掉回到纯插帧（帧数最高）
 		ImGui::Checkbox("DLSS Upscale (DLAA rebuild)", &s.enableUpscale);
 		ImGui::Checkbox("Force Enable (<120Hz)", &s.forceEnable);
+		ImGui::Checkbox("FPS Overlay (top-right)", &s.fpsOverlay);
 
 		// v0.8：DLSS-NR（神经渲染）——NGX 直调，RTX 50 系专属。
 		// 未初始化/不支持（4080 无 sm_120 cubin、缺 nvngx_dlssnr.dll）→ 灰掉不崩
