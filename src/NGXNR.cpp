@@ -326,8 +326,10 @@ namespace FrameGen
 			auto slGetFn = slMod ? reinterpret_cast<PFN_SL_GET_FEATURE_FN>(GetProcAddress(slMod, "slGetFeatureFunction")) : nullptr;
 			SKSE::log::info("[NGXNR] sl.interposer slGetFeatureFunction={} (mod={})", (void*)slGetFn, (void*)slMod);
 			if (slGetFn) {
-				// feature 枚举：kFeatureDLSS=0 kFeatureReflex=3 kFeatureDLSS_G=1000 kFeatureDLSS_RR=1001
-				const int feats[] = { 0, 3, 1000, 1001, 4, 5, 6 };
+				// feature 枚举：kFeatureDLSS=0 kFeatureReflex=3 kFeatureDLSS_G=1000
+				// kFeatureDLSS_RR=1001 kFeatureNvPerf=1002 kFeatureDirectSR=1003
+				// v0.8.35：DLSS-NR = 1004（sl.dlss_nr.dll 代码区 7 处引用 1004 实锤）
+				const int feats[] = { 1004, 1005, 0, 3, 1000, 1001, 1002, 1003, 4, 5, 6 };
 				const char* names[] = {
 					"NGX_D3D12_CREATE_DLSSNR_EXT",
 					"NGX_D3D12_EVALUATE_DLSSNR_EXT",

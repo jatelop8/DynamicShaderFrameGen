@@ -60,13 +60,20 @@ namespace FrameGen
 		// evaluateFeature 回调 → slEvaluateFeature failed 28。实测：features 只有
 		// [DLSS_G, Reflex] 时日志 "kFeatureDLSS' context is missing" + Callback 0x0）
 		sl::Feature featuresDLSSG[] = { sl::kFeatureDLSS, sl::kFeatureDLSS_G, sl::kFeatureReflex };
+		// v0.8.35：DLSS-NR feature id = 1004（sl.dlss_nr.dll 代码区 7 处引用 1004 实锤；
+		// SL SDK 头文件无此枚举，运行时插件注册）。必须加进 featuresToLoad，
+		// sl.interposer 才会加载 sl.dlss_nr.dll 插件并注册 NR 函数
+		// （NGX_D3D12_CREATE_DLSSNR_EXT 等，经 slGetFeatureFunction 查询）。
+		// 注：kFeatureDirectSR=1003、NvPerf=1002、DLSS_RR=1001、DLSS_G=1000——
+		// 1004 是 NR 的相邻新枚举（dlss5-dx11-bridge 同源 SDK 版本验证）。
+		sl::Feature featuresNR[] = { sl::kFeatureDLSS, sl::kFeatureDLSS_G, sl::kFeatureReflex, 1004 };
 		// v0.8.20：强制 D3D12 renderAPI——Streamline 的 NGX 集成按 renderAPI 建立 NGX
 		// 会话；dlssnr（nvngx_dlssnr.dll D3D12 NR）需要 D3D12 NGX 会话，而原
 		// provider=0（FSR3）用 D3D11 只有 D3D11 会话 → dlssnr CreateFeature 恒 0xbad00002。
 		// 代价：SL D3D11 超分不再可用（EvaluateDLSS 已保护跳过）——NR 验证阶段优先。
 		useD3D12 = true;
-		pref.featuresToLoad = useD3D12 ? featuresDLSSG : featuresDLSS;
-		pref.numFeaturesToLoad = useD3D12 ? _countof(featuresDLSSG) : _countof(featuresDLSS);
+		pref.featuresToLoad = useD3D12 ? featuresNR : featuresDLSS;
+		pref.numFeaturesToLoad = useD3D12 ? _countof(featuresNR) : _countof(featuresDLSS);
 
 		switch (a_settings.streamlineLogLevel) {
 		case 2:
