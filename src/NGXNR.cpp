@@ -523,20 +523,33 @@ namespace FrameGen
 				MEMORY_BASIC_INFORMATION mbi = {};
 				if (VirtualQuery(reinterpret_cast<LPCVOID>(realEval), &mbi, sizeof(mbi)) &&
 					mbi.State == MEM_COMMIT && (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
-					// 扫描真实实现前 0x200 字节找 0xBAD00005/2 引用（mov eax/lea 该常量）
+					// v0.8.46：dump 完整 0x240 字节（错误常量在 @+0xfe/@+0x1cb，48 字节 head 不够）
+					// + 每个错误常量引用点的 ±16 字节上下文（解出检查逻辑）
 					uint8_t* p = reinterpret_cast<uint8_t*>(realEval);
-					for (int i = 0; i < 0x200; ++i) {
+					for (int i = 0; i < 0x240; ++i) {
 						uint32_t v = 0;
 						memcpy(&v, p + i, 4);
 						if (v == 0xBAD00005 || v == 0xBAD00002) {
-							SKSE::log::info("[NGXNR]   real impl @+{:#x}: error const {:#x} referenced", i, v);
+							SKSE::log::info("[NGXNR]   real impl @+{:#x}: error const {:#x}", i, v);
+							// ±16 字节上下文
+							char ctx[120] = {};
+							int start = (i - 16 > 0) ? i - 16 : 0;
+							int cnt = (i + 16 < 0x240) ? i + 16 : 0x240;
+							int c = 0;
+							for (int j = start; j < cnt; ++j)
+								c += sprintf(ctx + c, "%02X ", p[j]);
+							SKSE::log::info("[NGXNR]     ctx[{:#x}..{:#x}]: {}", start, cnt, ctx);
 						}
 					}
-					// 打印前 96 字节
-					char hex[300] = {};
-					for (int i = 0; i < 48; ++i)
-						sprintf(hex + i * 3, "%02X ", p[i]);
-					SKSE::log::info("[NGXNR]   real impl head: {}", hex);
+					// 打印完整 0x240 字节（分 4 段）
+					for (int seg = 0; seg < 4; ++seg) {
+						char hex[300] = {};
+						int base = seg * 0x90;
+						int c = 0;
+						for (int i = 0; i < 0x90 && base + i < 0x240; ++i)
+							c += sprintf(hex + c, "%02X ", p[base + i]);
+						SKSE::log::info("[NGXNR]   real impl [+{:#04x}]: {}", base, hex);
+					}
 				} else {
 					SKSE::log::warn("[NGXNR]   real impl not readable ({})", reinterpret_cast<void*>(realEval));
 				}
