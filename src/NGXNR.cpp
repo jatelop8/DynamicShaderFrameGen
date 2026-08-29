@@ -522,6 +522,8 @@ namespace FrameGen
 		}
 
 		// --- per-frame resources + params (DLSSNR.* keys) ---
+		// v0.8.26：Evaluate 只留 DLSSNR.* 键——去掉 DLSS.*（bridge 超分格式，NR 可能不认
+		// 且多余键干扰校验）+ 去掉 Backbuffer（我们没有真 backbuffer，传 Output 报错）
 		params.Set7("DLSSNR.Color", a_color);
 		params.Set7("DLSSNR.Depth", a_depth);
 		params.Set7("DLSSNR.MVec", a_mvec);
@@ -536,25 +538,14 @@ namespace FrameGen
 		params.Set2("DLSSNR.Style", s.nrStyle);
 		params.Set2("DLSSNR.LocalToneStrength", s.nrLocalTone);
 		params.Set2("DLSSNR.SkinStructureStrength", s.nrSkinStructure);
+		params.Set2("DLSSNR.LocalStructureStrength", s.nrLocalTone);
 		params.Set4("DLSSNR.Reset", 0);
+		// v0.8.27：UseAutoMask=1（PDPerfPlugin 键——自动遮罩，无需 UI 输入纹理）
+		params.Set4("DLSSNR.UseAutoMask", 1);
 		params.Set2("Sharpness", 0.0f);
 		params.Set2("Jitter.Offset.X", 0.0f);
 		params.Set2("Jitter.Offset.Y", 0.0f);
-		// v0.8.24：Evaluate 补 bridge 子矩形/曝光键（dlss5-dx11-bridge 1063-1079 实锤）
-		params.Set4("DLSS.Render.Subrect.Dimensions.Width", a_width);
-		params.Set4("DLSS.Render.Subrect.Dimensions.Height", a_height);
-		params.Set4("DLSS.Input.Color.Subrect.Base.X", 0u);
-		params.Set4("DLSS.Input.Color.Subrect.Base.Y", 0u);
-		params.Set4("DLSS.Input.Depth.Subrect.Base.X", 0u);
-		params.Set4("DLSS.Input.Depth.Subrect.Base.Y", 0u);
-		params.Set4("DLSS.Input.MV.Subrect.Base.X", 0u);
-		params.Set4("DLSS.Input.MV.Subrect.Base.Y", 0u);
-		params.Set4("DLSS.Output.Subrect.Base.X", 0u);
-		params.Set4("DLSS.Output.Subrect.Base.Y", 0u);
-		params.Set2("DLSS.Pre.Exposure", 1.0f);
-		params.Set2("DLSS.Exposure.Scale", 1.0f);
-		// v0.8.25：NR 专属子矩形键（PDPerfPlugin 字符串表实锤——NR 用
-		// DLSSNR.ColorSubrectBaseX 无点号拼接格式，不是 DLSS.* 格式）
+		// v0.8.25：NR 专属子矩形键（PDPerfPlugin 实锤——DLSSNR.ColorSubrectBaseX 无点号格式）
 		params.Set4("DLSSNR.ColorSubrectBaseX", 0u);
 		params.Set4("DLSSNR.ColorSubrectBaseY", 0u);
 		params.Set4("DLSSNR.ColorSubrectWidth", a_width);
@@ -571,12 +562,6 @@ namespace FrameGen
 		params.Set4("DLSSNR.OutputSubrectBaseY", 0u);
 		params.Set4("DLSSNR.OutputSubrectWidth", a_width);
 		params.Set4("DLSSNR.OutputSubrectHeight", a_height);
-		params.Set4("DLSSNR.BackbufferSubrectBaseX", 0u);
-		params.Set4("DLSSNR.BackbufferSubrectBaseY", 0u);
-		params.Set4("DLSSNR.BackbufferSubrectWidth", a_width);
-		params.Set4("DLSSNR.BackbufferSubrectHeight", a_height);
-		params.Set7("DLSSNR.Backbuffer", a_output);
-		params.Set2("DLSSNR.LocalStructureStrength", s.nrLocalTone);
 
 		DWORD code = 0;
 		unsigned int r = Guarded([&] { return evalFeature(a_cmdList, handle, &params, nullptr); }, &code);
