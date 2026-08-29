@@ -666,8 +666,15 @@ namespace FrameGen
 				ngxModule, "NVSDK_NGX_D3D12_EvaluateFeature"));
 		if (!createFeature || !evalFeature)
 			return false;
-		SKSE::log::info("[NGXNR] using CreateFeature@{} EvaluateFeature@{} (core={} SL={} snippet={})",
-			(void*)createFeature, (void*)evalFeature, (void*)ngxCoreModule, (void*)slNrCreateFn, (void*)ngxModule);
+		// v0.8.49：using 日志节流（首帧一次）——v0.8.40 起每帧刷屏淹没了关键日志
+		{
+			static bool usingLogged = false;
+			if (!usingLogged) {
+				usingLogged = true;
+				SKSE::log::info("[NGXNR] using CreateFeature@{} EvaluateFeature@{} (core={} SL={} snippet={})",
+					(void*)createFeature, (void*)evalFeature, (void*)ngxCoreModule, (void*)slNrCreateFn, (void*)ngxModule);
+			}
+		}
 
 		// v0.8.23：core 就绪后查 GetCapabilityParameters（驱动 nvngx.dll 提供）——
 		// 直接问 NR/超分支持性（SkyrimUpscaler 日志同款调用）。
@@ -882,6 +889,18 @@ namespace FrameGen
 			supported = true;   // v0.8.10：CreateFeature 成功 = 硬件/驱动支持（替代 Caps 查询）
 			needCreate = false;
 			SKSE::log::info("[NGXNR] feature created {}x{} handle={}", a_width, a_height, (void*)h);
+			// v0.8.49：CreateFeature 后重读 detour 槽——验证 [0x6E3C0]（Evaluate 槽）
+			// 和 [0x6E3B0]（Create 槽）是否被驱动更新（Init 时读到的可能不是
+			// EvaluateFeature 真实现 → 我们实际调用的函数不对 → 恒 5）
+			if (ngxCoreModule) {
+				uintptr_t modBase = reinterpret_cast<uintptr_t>(ngxCoreModule);
+				uintptr_t createSlot = modBase + 0x6E3B0;
+				uintptr_t evalSlot = modBase + 0x6E3C0;
+				uintptr_t cs = *reinterpret_cast<uintptr_t*>(createSlot);
+				uintptr_t es = *reinterpret_cast<uintptr_t*>(evalSlot);
+				SKSE::log::info("[NGXNR] after-create slots: Create@{} Eval@{} (evalFeature={} changed={})",
+					(void*)cs, (void*)es, (void*)evalFeature, es != reinterpret_cast<uintptr_t>(evalFeature) ? "YES" : "no");
+			}
 		}
 
 		// --- per-frame resources + params ---
@@ -951,6 +970,17 @@ namespace FrameGen
 
 		DWORD code = 0;
 		unsigned int r = 0;
+		// v0.8.49 决定性诊断：Evaluate 调用前打印 handle 实际值——反汇编铁证
+		// 真实 EvaluateFeature 的 5 = handle(rsi)空 或 params(rbp)空（fail_log 路径）；
+		// handler 表空返回的是 4（0xBAD00004）不是 5！而日志 handle 明明非空仍 5
+		// → 怀疑 [0x6E3C0] 槽在 CreateFeature 后被驱动更新（Init 读到的可能是
+		// 别的函数，如 GetScratchBufferSize）——我们实际调的未必是 EvaluateFeature。
+		{
+			static std::uint32_t evalDiag = 0;
+			if (++evalDiag % 180 == 1)
+				SKSE::log::info("[NGXNR] eval call: fn={} handle={} params={} L={}", (void*)evalFeature,
+					(void*)handle, (void*)&params, (void*)L);
+		}
 		if (nrList) {
 			// v0.8.31：独立 cmdList——barrier → Evaluate → 回 barrier → Close
 			// （PDPerfPlugin/bridge 模式；调用方不再 barrier）
