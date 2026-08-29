@@ -650,6 +650,12 @@ namespace FrameGen
 				d3d11Context->CopyResource(colorOutWrapped->resource11, swapChainBufferWrapped->resource11);
 		}
 
+		// v0.24.1：游戏内菜单/FPS overlay 绘制——必须在 fence 之前（D3D11 写 colorOut 完成
+		// 后随 Signal/Wait 同步，D3D12 拷贝才能稳定读到）。v0.24 把 Draw 放在 fence 之后
+		// （原菜单位置）导致 D3D11 写与 D3D12 CopyResource 跨 API 竞争 → FPS/UI 闪烁。
+		if (!dlssgMode && (ImguiMenu::GetSingleton()->visible || Get().settings.fpsOverlay))
+			ImguiMenu::GetSingleton()->Draw(Get());
+
 		// v0.6：FSR3 FG（Provider=0，dlssgMode=false）——每帧 Configure + Dispatch
 		// （doodlum/ENBFrameGeneration 移植；depth/mvec 共享纹理在 dlssgMode=false 时
 		// 由下面的 FSR3 拷贝块填充——先拷贝后 FG）
@@ -739,12 +745,6 @@ namespace FrameGen
 			frameIndex = swapChain->GetCurrentBackBufferIndex();
 			return S_OK;
 		}
-
-		// v0.7：游戏内菜单绘制（引擎渲染完、拷贝共享纹理到 D3D12 之前——菜单画在
-		// 共享纹理上随帧进入画面；D3D11 context 此刻空闲）
-		// v0.24：FPS overlay 常驻（菜单关也显示，settings.fpsOverlay 开关）
-		if (!dlssgMode && (ImguiMenu::GetSingleton()->visible || Get().settings.fpsOverlay))
-			ImguiMenu::GetSingleton()->Draw(Get());
 
 		// v0.8.1：DLSS-NR（FSR3 模式）——fence 已 Signal/Wait（D3D11 完成 colorOut 写入），
 		// 在 D3D12 cmdList 上跑 NGX：colorOut → nrOut。NGX 输入资源状态要求
