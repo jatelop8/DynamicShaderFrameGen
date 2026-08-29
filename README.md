@@ -89,6 +89,11 @@ avoid any ambiguity:
 | RE / REL framework | **CommonLibSSE-NG** (Ryan-rsm-McKenzie, alandtse) — https://github.com/alandtse/CommonLibSSE-NG | MIT | Whole plugin framework |
 | Function detours | **Microsoft Detours** — https://github.com/microsoft/Detours | MIT | `MenuManagerDrawInterfaceStart` / `SetScissorRect` detours |
 | Bundled CommonLibSSE-NG tree | **skyrim-community-shaders-dxr** extern (contains CommonLibSSE-NG) — https://github.com/doodlum/skyrim-community-shaders | MIT | `extern/CommonLibSSE-NG` used for RE/REL framework |
+| DLSS session establishment pattern (D3D11/D3D12 Init sequence, driver core loading) | **Skyrim-Upscaler** (PureDark) — https://github.com/PureDark/Skyrim-Upscaler | MIT | NGX session setup in `src/NGXNR.cpp` / `src/FrameGen.cpp` |
+| NGX direct-integration initialization (core library loading, parameter allocation, feature create/evaluate sequence) | **PDPerfPlugin** (bundled in Skyrim-Upscaler) — https://github.com/PureDark/Skyrim-Upscaler (extern/PDPerfPlugin) | MIT | `src/NGXNR.cpp` direct-NGX path |
+| DLSS5 / DLSS-NR independent D3D12 session architecture ("second NGX session on its own device") | **dlss5-dx11-bridge** (NIGos) — https://github.com/NIGos/dlss5-dx11-bridge | MIT | `src/NGXNR.cpp` independent-device session design |
+| Logging library | **spdlog** (Gabi Melman) — https://github.com/gabime/spdlog | MIT | build dependency (logging) |
+| Math / texture utilities | **DirectXTK** (Microsoft) — https://github.com/microsoft/DirectXTK | MIT | build dependency (via CommonLibSSE-NG) |
 
 No code was taken from closed-source or paid projects. This repository contains
 no NVIDIA Streamline or AMD FidelityFX binaries — those runtimes are loaded from
