@@ -219,7 +219,20 @@ namespace FrameGen
 				VirtualProtect(reinterpret_cast<LPVOID>(slot), 8, oldProt, &oldProt);
 			}
 		}
-		SKSE::log::info("[NGXNR] dlssnr prepared for Streamline (loaded @{} + IAT patched) - NR 1004 will register",
+		// v0.13：绕过 Init_Ext 第一关状态检查（0x144bd jne 0x1474d → 6×NOP）。
+		// 0x14480 核心开头 call 0x7ab60（状态机，rcx=0x1152a70）→ test eax,eax →
+		// jne 0x1474d（失败路径返回 bad00002）。状态机在 sl/独立环境返回非 0 → Init_Ext
+		// 直接失败 → 1004 不注册。绕过后走 0x144fc 真正初始化（harness 实测：绕过后
+		// 流程推进到 Cubin Init，游戏里 NvAPI 完整应能过）。
+		{
+			uintptr_t jneSlot = nrBase + 0x144bd;
+			DWORD jp = 0;
+			if (VirtualProtect(reinterpret_cast<LPVOID>(jneSlot), 8, PAGE_EXECUTE_READWRITE, &jp)) {
+				std::memset(reinterpret_cast<void*>(jneSlot), 0x90, 6);  // 0F 85 rel32 -> NOP*6
+				VirtualProtect(reinterpret_cast<LPVOID>(jneSlot), 8, jp, &jp);
+			}
+		}
+		SKSE::log::info("[NGXNR] dlssnr prepared for Streamline (loaded @{} + IAT patched + first-gate bypassed) - NR 1004 will register",
 			(void*)m);
 	}
 
