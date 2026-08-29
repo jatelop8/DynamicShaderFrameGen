@@ -287,10 +287,25 @@ namespace FrameGen
 				SKSE::log::info("[NGXNR] NGX core session established via D3D11_Init (SkyrimUpscaler pattern)");
 			}
 		}
-		// 3c) 记录：snippet 侧 Init_Ext（预期 0xbad00002；v0.8.12 传非空 FeatureCommonInfo）
-		if (nrInitExt && !initialized) {
-			unsigned int r = Guarded([&] { return nrInitExt(kAppId, dataPath, a_device, 0x13, &fci); }, &code);
-			SKSE::log::info("[NGXNR] nr Init_Ext(0x13) -> {} (rc={:#x})", code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r);
+		// 3c) v0.8.33 修正：驱动 core 会话建立后，**无条件**重试 dlssnr 的 Init_Ext——
+		// 它负责把 NR feature 类型注册进 core 会话（v0.8.19 的推理，但旧代码
+		// `!initialized` gate 在驱动 core 成功后是 false，从未执行过！）。
+		// dlssnr 的 CreateFeature 需要它自己的 Init_Ext 先注册。
+		if (nrInitExt) {
+			for (int ver = 0x13; ver <= 0x16 && !snippetInitialized; ++ver) {
+				unsigned int r = Guarded([&] { return nrInitExt(kAppId, dataPath, a_device, ver, &fci); }, &code);
+				SKSE::log::info("[NGXNR] nr Init_Ext(0x{:02X}) after-core -> {} (rc={:#x})", ver,
+					code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r);
+				if (code == 0 && r == kNGXSuccess) {
+					snippetInitialized = true;
+					snippetInitResult = r;
+					initVersion = ver;
+				}
+			}
+			if (snippetInitialized)
+				SKSE::log::info("[NGXNR] dlssnr snippet registered into core session (rc={:#x})", snippetInitResult);
+			else
+				SKSE::log::warn("[NGXNR] dlssnr Init_Ext all refused - NR feature registration failed (rc={:#x})", snippetInitResult);
 		}
 		if (!coreInitOk)
 			SKSE::log::warn("[NGXNR] no NGX core session (rc={:#x}) - will try dlss.dll warmup CreateFeature on first evaluate frame", coreInitResult);
