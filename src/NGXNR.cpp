@@ -967,12 +967,13 @@ namespace FrameGen
 			//   [0x14]=u32 [0x18]=byte(0) [0x1c]=u32
 			if (!pdNrInitTried) {
 				pdNrInitTried = true;
-				// ★★★ cfg 必须 ≥0x200 字节（v0.8.73 实锤根因）★★★
+				// ★★★ cfg 必须 ≥0x400 字节（v0.8.73b 实锤）★★★
 				// InitDLSSNR 内部 0x1ADA0 里 call 0x1A880（executor ctor 延续代码）
-				// 用 rdi=cfg 初始化 cfg+0x78..0x1e8 全部字段（写 ~0x170 字节）。
-				// 旧结构体只有 0x100 → cfg+0x100..0x1e8 写穿栈 → nvngx 调用
-				// CreateCommittedResource 时参数从被踩的栈读 → pHeapProperties=1
-				// → D3D12Core.dll+0x7bf2e 崩（access=0x9）。rest 扩到 0x1E0。
+				// 用 rdi=cfg 初始化 cfg+0x78..0x3c8（写 ~0x350 字节，v0.8.73 反汇编
+				// 实锤到 0x3c8+）。cfg < 0x3D0 → 写穿栈 → nvngx 调
+				// CreateCommittedResource 时参数从被踩栈读 → pHeapProperties=1
+				// → D3D12Core.dll+0x7bf2e 崩（access=0x9）。0x200 仍写穿
+				// （v0.8.73 实测崩溃位置不变），rest 扩到 0x3E0（总 0x400）。
 				struct NRInitCfg {
 					std::uint32_t id;
 					std::uint32_t width;
@@ -983,7 +984,7 @@ namespace FrameGen
 					std::uint8_t b18;
 					std::uint8_t pad[3];
 					std::uint32_t u1c;
-					std::uint8_t rest[0x1E0];
+					std::uint8_t rest[0x3E0];
 				};
 				NRInitCfg cfg{};
 				cfg.id = 0;                  // ★ SkyrimUpscaler 用 0（v0.8.63 用 1 是错的）
