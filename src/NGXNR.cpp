@@ -25,9 +25,6 @@ namespace FrameGen
 	// signature: (u64 appId, wchar_t* path, void** outHandle, int ver, void* info)
 	using PFN_NGXInit = unsigned int(__cdecl*)(unsigned long long a_appId,
 		const wchar_t* a_dataPath, void** a_outHandle, int a_sdkVersion, const void* a_featureInfo);
-	using PFN_NGXInitProjectID = unsigned int(__cdecl*)(const char* a_project, int a_engineType,
-		const char* a_version, const wchar_t* a_dataPath, ID3D12Device* a_device,
-		int a_sdkVersion, const void* a_featureInfo);
 	using PFN_NGXAllocParams = unsigned int(__cdecl*)(NGXInstanceParameters** a_params);
 	using PFN_NGXCreateFeature = unsigned int(__cdecl*)(ID3D12GraphicsCommandList* a_cmdList,
 		int a_featureId, NGXInstanceParameters* a_params, NGXHandle** a_handle);
@@ -35,11 +32,17 @@ namespace FrameGen
 		const NGXHandle* a_handle, const NGXInstanceParameters* a_params, void* a_callback);
 	using PFN_NGXReleaseFeature = unsigned int(__cdecl*)(NGXHandle* a_handle);
 	using PFN_NGXGetCaps = unsigned int(__cdecl*)(NGXInstanceParameters** a_caps);
+	// v0.8.11: NVSDK_NGX_D3D11_Init on nvngx_dlss.dll — disassembly (rva 0x2b420)
+	// shows a 3-arg real impl: checks arg3 (r8) != null, writes qword 0 to *r8,
+	// returns 1 (kNGXSuccess). SkyrimUpscaler log proves this call establishes
+	// the NGX core session (Init -> GetCapabilityParameters -> CREATE_DLSS_EXT all
+	// succeed afterwards on the same nvngx_dlss.dll).
+	using PFN_NGXInit11 = unsigned int(__cdecl*)(unsigned long long a_appId,
+		const wchar_t* a_dataPath, void* a_param);
 
 	namespace
 	{
 		constexpr unsigned long long kAppId = 0x1000000ULL;
-		constexpr const char* kProjectId = "a0f57b54-1daf-4934-90ae-c4035c19df04";  // bridge's tested GUID
 		constexpr int kFeatureSuperSampling = 1;  // DLSS-NR is a sub-mode of SuperSampling
 		constexpr unsigned int kNGXExceptionMarker = 0x7FFFFFFF;
 
@@ -88,27 +91,49 @@ namespace FrameGen
 			return;
 		device = a_device;
 
-		std::wstring dllPath = std::wstring(a_pluginDir) + L"\\nvngx_dlssnr.dll";
-		ngxModule = LoadLibraryW(dllPath.c_str());
-		if (!ngxModule) {
-			dllPath = std::wstring(a_pluginDir) + L"\\nvngx_dlss.dll";
-			ngxModule = LoadLibraryW(dllPath.c_str());
+		// ------------------------------------------------------------------
+		// v0.8.11 重大修正（v0.8.10 方向反了）：
+		//   v0.8.10 只加载 nvngx_dlssnr.dll（NR snippet）→ CreateFeature 每帧
+		//   0xbad00002 = "找不到已初始化 NGX core 实例"——snippet 需要 core 会话，
+		//   而进程里从未加载过 core 宿主。
+		//   SkyrimUpscaler.log 实锤链路（同款 nvngx_dlss.dll，md5 f9add387）：
+		//     NVSDK_NGX_D3D11_Init = 1 Success
+		//     NVSDK_NGX_D3D11_GetCapabilityParameters = 1 Success
+		//     NGX_D3D11_CREATE_DLSS_EXT = 1 Success
+		//   → nvngx_dlss.dll 自举 NGX core（Init 3 参真实现 + CreateFeature 自举），
+		//     dlssnr 只是外围 snippet。正确顺序：先 dlss.dll 建 core，再 dlssnr 跑 NR。
+		// ------------------------------------------------------------------
+
+		// --- 1) 加载 NGX core 宿主 nvngx_dlss.dll ---
+		std::wstring corePath = std::wstring(a_pluginDir) + L"\\nvngx_dlss.dll";
+		coreModule = LoadLibraryW(corePath.c_str());
+		if (!coreModule) {
+			SKSE::log::warn("[NGXNR] nvngx_dlss.dll NOT found under {} - no NGX core host (CreateFeature will fail 0xbad00002)", w2a(a_pluginDir));
+		} else {
+			SKSE::log::info("[NGXNR] NGX core host nvngx_dlss.dll loaded");
 		}
+
+		// --- 2) 加载 NR snippet nvngx_dlssnr.dll（CreateFeature/Evaluate 的执行者）---
+		std::wstring nrPath = std::wstring(a_pluginDir) + L"\\nvngx_dlssnr.dll";
+		ngxModule = LoadLibraryW(nrPath.c_str());
 		if (!ngxModule) {
-			SKSE::log::warn("[NGXNR] no nvngx_dlssnr.dll / nvngx_dlss.dll under {} - DLSS-NR disabled (no crash)", w2a(a_pluginDir));
+			SKSE::log::warn("[NGXNR] nvngx_dlssnr.dll NOT found under {} - DLSS-NR disabled (no crash)", w2a(a_pluginDir));
 			nvngxPresent = false;
 			return;
 		}
 		nvngxPresent = true;
 		wchar_t resolved[MAX_PATH] = {};
 		GetModuleFileNameW(ngxModule, resolved, MAX_PATH);
-		SKSE::log::info("[NGXNR] loaded {} (resolved: {})", w2a(dllPath), w2a(resolved));
+		SKSE::log::info("[NGXNR] loaded {} (resolved: {})", w2a(nrPath), w2a(resolved));
 
-		auto initExt = reinterpret_cast<PFN_NGXInitExt>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Init_Ext"));
-		auto init = reinterpret_cast<PFN_NGXInit>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Init"));
-		auto initProject = reinterpret_cast<PFN_NGXInitProjectID>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Init_ProjectID"));
-		SKSE::log::info("[NGXNR] entry: Init_Ext={} Init={} Init_ProjectID={}",
-			(void*)initExt, (void*)init, (void*)initProject);
+		// --- 3) 建立 NGX core 会话（用 nvngx_dlss.dll）---
+		auto initExt12 = coreModule ? reinterpret_cast<PFN_NGXInitExt>(GetProcAddress(coreModule, "NVSDK_NGX_D3D12_Init_Ext")) : nullptr;
+		auto init11 = coreModule ? reinterpret_cast<PFN_NGXInit11>(GetProcAddress(coreModule, "NVSDK_NGX_D3D11_Init")) : nullptr;
+		// snippet 侧导出（仅记录；Init 是 stub 0xbad00001，Init_Ext 需 core——v0.8.10 已证）
+		auto nrInitExt = reinterpret_cast<PFN_NGXInitExt>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Init_Ext"));
+		auto nrInit = reinterpret_cast<PFN_NGXInit>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Init"));
+		SKSE::log::info("[NGXNR] entry: core[dlss]: Init_Ext={} D3D11_Init={} | nr[dlssnr]: Init_Ext={} Init={}",
+			(void*)initExt12, (void*)init11, (void*)nrInitExt, (void*)nrInit);
 
 		// data path = directory of the game exe (NGX writes its logs there)
 		wchar_t dataPath[MAX_PATH] = {};
@@ -117,41 +142,50 @@ namespace FrameGen
 			*(s + 1) = L'\0';
 
 		DWORD code = 0;
-		for (int ver = 0x13; ver <= 0x16; ++ver) {
-			if (initExt) {
-				unsigned int r = Guarded([&] { return initExt(kAppId, dataPath, a_device, ver, nullptr); }, &code);
-				SKSE::log::info("[NGXNR] Init_Ext(0x{:02X}) -> {} (rc={:#x})", ver,
+		// 3a) 首选：dlss.dll 的 D3D12_Init_Ext（真实实现，带 D3D12 device）版本协商
+		if (coreModule && initExt12) {
+			for (int ver = 0x13; ver <= 0x16 && !coreInitOk; ++ver) {
+				unsigned int r = Guarded([&] { return initExt12(kAppId, dataPath, a_device, ver, nullptr); }, &code);
+				SKSE::log::info("[NGXNR] core D3D12_Init_Ext(0x{:02X}) -> {} (rc={:#x})", ver,
 					code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r);
-				if (code == 0 && r == kNGXSuccess) { initialized = true; initVersion = ver; break; }
-			}
-			if (init) {
-				void* outHandle = nullptr;
-				unsigned int r = Guarded([&] { return init(kAppId, dataPath, &outHandle, ver, nullptr); }, &code);
-				SKSE::log::info("[NGXNR] Init(0x{:02X}) -> {} (rc={:#x} outHandle={})", ver,
-					code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r, outHandle);
-				if (code == 0 && r == kNGXSuccess) { initialized = true; initVersion = ver; break; }
-			}
-			if (initProject) {
-				unsigned int r = Guarded([&] { return initProject(kProjectId, 0, "1.0", dataPath, a_device, ver, nullptr); }, &code);
-				SKSE::log::info("[NGXNR] Init_ProjectID(0x{:02X}) -> {} (rc={:#x})", ver,
-					code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r);
-				if (code == 0 && r == kNGXSuccess) { initialized = true; initVersion = ver; break; }
+				if (code == 0 && r == kNGXSuccess) {
+					initialized = true;
+					initVersion = ver;
+					coreInitOk = true;
+					coreInitResult = r;
+				}
 			}
 		}
-		if (!initialized)
-			SKSE::log::warn("[NGXNR] all NGX D3D12 init flavours refused (expected without NGX core) - trying CreateFeature directly");
+		// 3b) 备选：dlss.dll 的 D3D11_Init（SkyrimUpscaler 同款——建立 core 会话）
+		if (!coreInitOk && init11) {
+			void* dummy = nullptr;
+			unsigned int r = Guarded([&] { return init11(kAppId, dataPath, &dummy); }, &code);
+			SKSE::log::info("[NGXNR] core D3D11_Init -> {} (rc={:#x})", code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r);
+			if (code == 0 && r == kNGXSuccess) {
+				coreInitOk = true;
+				coreInitResult = r;
+				SKSE::log::info("[NGXNR] NGX core session established via D3D11_Init (SkyrimUpscaler pattern)");
+			}
+		}
+		// 3c) 记录：snippet 侧 Init_Ext（预期 0xbad00002，无 core 时；core 建立后此处仅参考）
+		if (nrInitExt && !initialized) {
+			unsigned int r = Guarded([&] { return nrInitExt(kAppId, dataPath, a_device, 0x13, nullptr); }, &code);
+			SKSE::log::info("[NGXNR] nr Init_Ext(0x13) -> {} (rc={:#x})", code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r);
+		}
+		if (!coreInitOk)
+			SKSE::log::warn("[NGXNR] no NGX core session (rc={:#x}) - dlssnr CreateFeature will likely fail 0xbad00002", coreInitResult);
+		else
+			SKSE::log::info("[NGXNR] NGX core session ready (rc={:#x})", coreInitResult);
 
 		// nvngx_dlssnr.dll presence (informational)
-		std::wstring nrDll = std::wstring(a_pluginDir) + L"\\nvngx_dlssnr.dll";
-		nvngxNrPresent = GetFileAttributesW(nrDll.c_str()) != INVALID_FILE_ATTRIBUTES;
-		SKSE::log::info("[NGXNR] nvngx_dlssnr.dll {}",
-			nvngxNrPresent ? "present" : "NOT present (expected -> feature unavailable)");
+		nvngxNrPresent = GetFileAttributesW(nrPath.c_str()) != INVALID_FILE_ATTRIBUTES;
+		SKSE::log::info("[NGXNR] nvngx_dlssnr.dll {}", nvngxNrPresent ? "present" : "NOT present (expected -> feature unavailable)");
 
 		// v0.8.10：无 GetCapabilityParameters（snippet 不导出）——supported 由
-		// CreateFeature 试错决定（Evaluate 首帧）。DLL 加载成功即 ready。
-		ready = true;
+		// CreateFeature 试错决定（Evaluate 首帧）。core 宿主 + snippet 都加载成功即 ready。
+		ready = coreModule != nullptr;
 		needCreate = true;
-		SKSE::log::info("[NGXNR] DLSS-NR armed (feature created on first evaluate frame)");
+		SKSE::log::info("[NGXNR] DLSS-NR armed (feature created on first evaluate frame; core={})", coreInitOk ? "ok" : "MISSING");
 	}
 
 	// ------------------------------------------------------------------
@@ -202,7 +236,8 @@ namespace FrameGen
 				return false;
 			}
 			if (r != kNGXSuccess || !h) {
-				SKSE::log::warn("[NGXNR] CreateFeature failed {:#x} - DLSS-NR disabled ({}x{})", r, a_width, a_height);
+				SKSE::log::warn("[NGXNR] CreateFeature failed {:#x} - DLSS-NR disabled ({}x{} core={})", r, a_width, a_height,
+					coreInitOk ? "ok" : "MISSING");
 				return false;
 			}
 			handle = h;
@@ -267,10 +302,17 @@ namespace FrameGen
 			FreeLibrary(ngxModule);
 			ngxModule = nullptr;
 		}
+		if (coreModule) {
+			// v0.8.11：core 宿主（nvngx_dlss.dll）——NGX Shutdown 用 snippet 侧已调，
+			// 这里只卸载模块。进程退出期，泄漏可接受；显式卸载避免重复 Shutdown。
+			FreeLibrary(coreModule);
+			coreModule = nullptr;
+		}
 		initialized = false;
 		featureCreated = false;
 		supported = false;
 		ready = false;
+		coreInitOk = false;
 		handle = nullptr;
 		device = nullptr;
 	}

@@ -155,9 +155,14 @@ namespace FrameGen
 		int initVersion = 0;   // negotiated SDK version (0x13..0x16), 0 = refused (non-fatal)
 		bool ready = false;           // v0.8.10：DLL 加载成功即 ready——Init 失败也试 CreateFeature
 
+		// v0.8.11：NGX core 会话状态（由 nvngx_dlss.dll 建立——SkyrimUpscaler 实锤链路）
+		bool coreInitOk = false;      // dlss.dll Init 成功 → dlssnr CreateFeature 应能找到 core
+		unsigned int coreInitResult = 0;  // 最近一次 core 初始化返回码
+
 	private:
 		ID3D12Device* device = nullptr;
-		HMODULE ngxModule = nullptr;
+		HMODULE coreModule = nullptr; // v0.8.11：nvngx_dlss.dll（NGX core 宿主，自举 core 会话）
+		HMODULE ngxModule = nullptr;  // nvngx_dlssnr.dll（执行 CreateFeature/Evaluate 的 NR snippet）
 		OwnNGXParams params;          // v0.8.10：自实现参数对象（值成员，无需 AllocateParameters）
 		NGXHandle* handle = nullptr;
 		unsigned int outWidth = 0;
