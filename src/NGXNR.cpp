@@ -354,6 +354,65 @@ namespace FrameGen
 				if (slNrCreateFn && slNrEvalFn)
 					SKSE::log::info("[NGXNR] Streamline NR channel armed: Create@{} Eval@{}", (void*)slNrCreateFn, (void*)slNrEvalFn);
 			}
+
+			// v0.8.36：slGetFeatureFunction 全 rc=28/31（feature 未注册/函数未找到）。
+			// sl.common.dll 导出的是 slGetPluginFunction（@0x42C00）——另一个分发器，
+			// PDPerfPlugin 可能调它拿 NR 函数。两种签名都试：
+			//   ① void* slGetPluginFunction(const char* name)
+			//   ② sl::Result slGetPluginFunction(const char* name, void*& fn)
+			HMODULE slCommon = LoadLibraryW(L"sl.common.dll");
+			if (!slCommon)
+				slCommon = GetModuleHandleW(L"sl.common.dll");
+			if (slCommon) {
+				SKSE::log::info("[NGXNR] sl.common loaded={} (mod={})", (void*)GetProcAddress(slCommon, "slGetPluginFunction"), (void*)slCommon);
+				// 签名①：直接返回 void*
+				using PFN_GP1 = void* (__cdecl*)(const char* name);
+				auto gp1 = reinterpret_cast<PFN_GP1>(GetProcAddress(slCommon, "slGetPluginFunction"));
+				// 签名②：Result + out 参数
+				using PFN_GP2 = int(__cdecl*)(const char* name, void*& fn);
+				auto gp2 = reinterpret_cast<PFN_GP2>(GetProcAddress(slCommon, "slGetPluginFunction"));
+				const char* pnames[] = {
+					"NGX_D3D12_CREATE_DLSSNR_EXT",
+					"NGX_D3D12_EVALUATE_DLSSNR_EXT",
+					"NGX_DLSSNR_GET_SCALING_RATIO",
+					"slDLSSNRSetOptions",
+				};
+				if (gp1) {
+					for (const char* n : pnames) {
+						void* fn = nullptr;
+						DWORD r = 0;
+						Guarded([&]() -> unsigned int { fn = gp1(n); return 0; }, &r);
+						if (r == 0 && fn)
+							SKSE::log::info("[NGXNR]   slGetPluginFunction(1) {} -> fn={}", n, (void*)fn);
+						else
+							SKSE::log::info("[NGXNR]   slGetPluginFunction(1) {} -> null (fault={:#x})", n, r);
+						if (r == 0 && fn) {
+							if (strcmp(n, "NGX_D3D12_CREATE_DLSSNR_EXT") == 0 && !slNrCreateFn)
+								slNrCreateFn = fn;
+							else if (strcmp(n, "NGX_D3D12_EVALUATE_DLSSNR_EXT") == 0 && !slNrEvalFn)
+								slNrEvalFn = fn;
+						}
+					}
+				}
+				if (gp2) {
+					for (const char* n : pnames) {
+						void* fn = nullptr;
+						int r = Guarded([&] { return gp2(n, fn); }, &code);
+						if (code == 0 && r == 0 && fn)
+							SKSE::log::info("[NGXNR]   slGetPluginFunction(2) {} -> fn={}", n, (void*)fn);
+						else
+							SKSE::log::info("[NGXNR]   slGetPluginFunction(2) {} -> rc={} fault={:#x}", n, code ? -1 : r, code);
+						if (code == 0 && r == 0 && fn) {
+							if (strcmp(n, "NGX_D3D12_CREATE_DLSSNR_EXT") == 0 && !slNrCreateFn)
+								slNrCreateFn = fn;
+							else if (strcmp(n, "NGX_D3D12_EVALUATE_DLSSNR_EXT") == 0 && !slNrEvalFn)
+								slNrEvalFn = fn;
+						}
+					}
+				}
+				if (slNrCreateFn && slNrEvalFn)
+					SKSE::log::info("[NGXNR] Streamline NR channel armed (slGetPluginFunction): Create@{} Eval@{}", (void*)slNrCreateFn, (void*)slNrEvalFn);
+			}
 		}
 
 		// nvngx_dlssnr.dll presence (informational)
