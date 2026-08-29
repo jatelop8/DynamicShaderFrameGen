@@ -315,5 +315,9 @@ namespace FrameGen
 		unsigned int nr9InitRc = 0;   // Init 返回码（1=Success）
 		unsigned int nr9CreateRc = 0; // CreateFeature 返回码（1=Success）
 		unsigned int nr9EvalRc = 0;   // 最近一次 EvaluateFeature 返回码
+		// ===== v0.10 Streamline 路径（RenoDX 验证，kFeatureDLSS_NR=1004）=====
+		bool slNrTried = false;       // slInit 只试一次
+		bool slNrReady = false;       // slGetFeatureFunction(1004) 成功
+		void* slNrEvalFn10 = nullptr; // slEvaluateFeature 函数指针（v0.10）
 	};
 }  // namespace FrameGen
