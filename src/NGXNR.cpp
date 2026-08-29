@@ -389,8 +389,19 @@ namespace FrameGen
 				}
 				// 也试 sl.dlss_nr.dll 的 slGetPluginFunction（Streamline 插件协议：
 				// 每个插件导出它供查询，strcmp 分发表：slOnPluginLoad/slSetData/
-				// slDLSSNRSetOptions 等）。手动 LoadLibrary 它看是否能注册。
-				HMODULE slNr = LoadLibraryW(L"sl.dlss_nr.dll");
+				// slDLSSNRSetOptions 等）。v0.8.38：用完整路径加载——裸文件名
+				// LoadLibraryW(L"sl.dlss_nr.dll") 在 CWD=游戏根目录下找不到
+				// Data\Shaders\Upscaling\Streamline\ 里的插件（v0.8.37 日志实锤：
+				// sl.dlss_nr 段日志根本没打印 = 加载失败）。
+				HMODULE slNr = nullptr;
+				{
+					std::wstring slNrPath = std::wstring(a_pluginDir) + L"\\sl.dlss_nr.dll";
+					slNr = LoadLibraryW(slNrPath.c_str());
+					if (!slNr)
+						SKSE::log::warn("[NGXNR] LoadLibraryW({}) failed err={}", w2a(slNrPath), GetLastError());
+					else
+						SKSE::log::info("[NGXNR] sl.dlss_nr.dll loaded via full path: {}", w2a(slNrPath));
+				}
 				if (!slNr)
 					slNr = GetModuleHandleW(L"sl.dlss_nr.dll");
 				if (slNr) {
