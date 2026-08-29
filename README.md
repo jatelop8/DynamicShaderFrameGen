@@ -55,9 +55,6 @@ use the external ReShade addon route (dlss5-dx11-bridge + renodx-dlss5).
 `EnableUpscale=0` in the INI disables DLSS and returns to pure frame
 generation (highest frame rate, native engine image).
 
-RTX 50-series GPU); `NRIntensity` / `NRStyle` / `NRLocalTone` /
-`NRSkinStructure` adjust the neural filter live in the menu.
-
 ## Architecture
 
 1. Engine renders to its render targets (kMAIN); the plugin's swap-chain proxy
@@ -68,6 +65,31 @@ RTX 50-series GPU); `NRIntensity` / `NRStyle` / `NRLocalTone` /
    Frame Generation is dispatched on the D3D12 swap chain → presented.
 4. FSR3 FG consumes depth / motion vectors (copied to shared textures and
    upscaled by the bundled HLSL shaders under `Shaders/Upscaling/`).
+
+## Building from source
+
+Requirements: Visual Studio 2022+ Build Tools (MSVC x64), CMake ≥ 3.24, Ninja,
+vcpkg (spdlog, directxtk, detours preinstalled), a local CommonLibSSE-NG clone.
+
+```bat
+build_ninja.bat   :: loads VsDevCmd → cmake --preset NINJA → build → deploy
+```
+
+Output: `build\NINJA\DynamicShaderFrameGen.dll` (auto-deployed to
+`SKSE\Plugins\` under the mod folder configured in the script). The Streamline
+and FidelityFX runtimes are loaded at runtime from your own SDK installs.
+
+## Troubleshooting
+
+- **Nothing happens in-game** — verify SKSE64 + Address Library (1.6.1170) are
+  installed and the mod is enabled in MO2; check
+  `My Games\Skyrim Special Edition\SKSE\DynamicShaderFrameGen.log`.
+- **FG works but DLSS menu disabled** — non-NVIDIA GPU or Streamline missing.
+- **FPS counter shows 2×** — frame generation is active (displaying
+  interpolated frame rate); the NVIDIA overlay often cannot read it (proxy
+  chain), use the in-game overlay instead.
+- **ENB + ReShade** — both are supported; install order does not matter (each
+  proxies a different API layer).
 
 ## Code Sources & Attributions
 
@@ -86,9 +108,9 @@ avoid any ambiguity:
 | RE / REL framework | **CommonLibSSE-NG** (Ryan-rsm-McKenzie, alandtse) — https://github.com/alandtse/CommonLibSSE-NG | MIT | Whole plugin framework |
 | Function detours | **Microsoft Detours** — https://github.com/microsoft/Detours | MIT | `MenuManagerDrawInterfaceStart` / `SetScissorRect` detours |
 | Bundled CommonLibSSE-NG tree | **skyrim-community-shaders-dxr** extern (contains CommonLibSSE-NG) — https://github.com/doodlum/skyrim-community-shaders | MIT | `extern/CommonLibSSE-NG` used for RE/REL framework |
-| DLSS session establishment pattern (D3D11/D3D12 Init sequence, driver core loading) | **Skyrim-Upscaler** (PureDark) — https://github.com/PureDark/Skyrim-Upscaler | MIT | NGX session setup in `src/NGXNR.cpp` / `src/FrameGen.cpp` |
-| NGX direct-integration initialization (core library loading, parameter allocation, feature create/evaluate sequence) | **PDPerfPlugin** (bundled in Skyrim-Upscaler) — https://github.com/PureDark/Skyrim-Upscaler (extern/PDPerfPlugin) | MIT | `src/NGXNR.cpp` direct-NGX path |
-| DLSS5 / DLSS-NR independent D3D12 session architecture ("second NGX session on its own device") | **dlss5-dx11-bridge** (NIGos) — https://github.com/NIGos/dlss5-dx11-bridge | MIT | `src/NGXNR.cpp` independent-device session design |
+| DLSS session establishment pattern (D3D11/D3D12 Init sequence, driver core loading) | **Skyrim-Upscaler** (PureDark) — https://github.com/PureDark/Skyrim-Upscaler | MIT | DLSS session setup in `src/FrameGen.cpp` (NGX integration studied during early development) |
+| NGX direct-integration initialization (core library loading, parameter allocation, feature create/evaluate sequence) | **PDPerfPlugin** (bundled in Skyrim-Upscaler) — https://github.com/PureDark/Skyrim-Upscaler (extern/PDPerfPlugin) | MIT | NGX initialization research (removed with DLSS-NR in v0.25) |
+| DLSS5 / DLSS-NR independent D3D12 session architecture ("second NGX session on its own device") | **dlss5-dx11-bridge** (NIGos) — https://github.com/NIGos/dlss5-dx11-bridge | MIT | DLSS-NR session design research (removed with DLSS-NR in v0.25) |
 | Logging library | **spdlog** (Gabi Melman) — https://github.com/gabime/spdlog | MIT | build dependency (logging) |
 | Math / texture utilities | **DirectXTK** (Microsoft) — https://github.com/microsoft/DirectXTK | MIT | build dependency (via CommonLibSSE-NG) |
 
