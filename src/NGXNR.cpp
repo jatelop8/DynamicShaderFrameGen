@@ -339,7 +339,27 @@ namespace FrameGen
 
 			DWORD code = 0;
 			NGXHandle* h = nullptr;
-			unsigned int r = Guarded([&] { return createFeature(a_cmdList, kFeatureSuperSampling, &params, &h); }, &code);
+			unsigned int r = kNGXSuccess;
+			int useId = nrFeatureId >= 0 ? nrFeatureId : kFeatureSuperSampling;
+			if (nrFeatureId >= 0) {
+				// 已锁定 id：正常创建
+				r = Guarded([&] { return createFeature(a_cmdList, useId, &params, &h); }, &code);
+			} else if (!nrIdTriedAll) {
+				// v0.8.18：首次遍历 0..10 找 NR feature id（dlssnr 可能不是 1）
+				for (int id = 0; id <= 10; ++id) {
+					h = nullptr;
+					r = Guarded([&] { return createFeature(a_cmdList, id, &params, &h); }, &code);
+					SKSE::log::info("[NGXNR] NR CreateFeature id={} -> rc={:#x} fault={:#x} h={}", id,
+						code ? kNGXExceptionMarker : r, code, (void*)h);
+					if (code != 0) break;  // fault：不继续遍历
+					if (r == kNGXSuccess && h) { nrFeatureId = id; break; }
+				}
+				if (nrFeatureId < 0)
+					nrIdTriedAll = true;
+			} else {
+				// 已遍历全失败：用默认 id 继续（保持行为）
+				r = Guarded([&] { return createFeature(a_cmdList, useId, &params, &h); }, &code);
+			}
 			lastCreateResult = code ? kNGXExceptionMarker : r;
 			if (code != 0) {
 				SKSE::log::warn("[NGXNR] CreateFeature FAULTED (code {:#x}) - DLSS-NR disabled this frame", code);

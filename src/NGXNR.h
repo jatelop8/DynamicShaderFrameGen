@@ -209,6 +209,10 @@ namespace FrameGen
 		// v0.8.14：热身只试一次（失败后不每帧重试刷屏）；GetScratchBufferSize 诊断
 		bool warmupTried = false;
 		unsigned int scratchSizeResult = 0;  // 0=未执行 1=成功 其他=返回码（core 缺失实锤）
+		// v0.8.18：NR feature id 遍历——dlssnr 反汇编开头 mov ecx,6（可能 NR feature id=6），
+		// id=1（SuperSampling）在 core=ok 下仍 0xbad00002 → 遍历 0..10 找成功 id
+		int nrFeatureId = -1;         // 已锁定的 NR feature id（-1=未定）
+		bool nrIdTriedAll = false;    // 遍历过全部仍失败（不再每帧遍历）
 
 	private:
 		ID3D12Device* device = nullptr;
