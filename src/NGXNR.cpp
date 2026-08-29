@@ -993,6 +993,8 @@ namespace FrameGen
 						if (ar == 1 && p) {
 							nr9Params = p;
 							// 3) Set 参数（NVSDK_NGX_Parameter vtable：slot3=Set(name,uint) slot4=Set(name,float)）
+							// ★v0.9 修正：dlssnr 内部只认 DLSSNR.Width/Height/ScalingRatio
+							// （已搜字符串实锤——InputWidth/OutputWidth/Scale 不存在，设了无害但无效）
 							auto setUI = [&](const char* n, unsigned int v) -> int {
 								uintptr_t* vt = *reinterpret_cast<uintptr_t**>(p);
 								return reinterpret_cast<int(__cdecl*)(void*, const char*, unsigned int)>(vt[3])(p, n, v);
@@ -1003,13 +1005,11 @@ namespace FrameGen
 							};
 							unsigned s1 = static_cast<unsigned>(setUI("DLSSNR.Width", a_width));
 							unsigned s2 = static_cast<unsigned>(setUI("DLSSNR.Height", a_height));
-							unsigned s3 = static_cast<unsigned>(setUI("DLSSNR.InputWidth", a_width));
-							unsigned s4 = static_cast<unsigned>(setUI("DLSSNR.InputHeight", a_height));
-							unsigned s5 = static_cast<unsigned>(setUI("DLSSNR.OutputWidth", a_width));
-							unsigned s6 = static_cast<unsigned>(setUI("DLSSNR.OutputHeight", a_height));
-							unsigned s7 = static_cast<unsigned>(setF("DLSSNR.Scale", 1.0f));
-							SKSE::log::info("[NGXNR] v0.9 Set: W/H/InW/InH/OutW/OutH/Scale -> {:#x}/{:#x}/{:#x}/{:#x}/{:#x}/{:#x}/{:#x}",
-								s1, s2, s3, s4, s5, s6, s7);
+							unsigned s3 = static_cast<unsigned>(setF("DLSSNR.ScalingRatio", 1.0f));
+							unsigned s4 = static_cast<unsigned>(setUI("DLSSNR.Enabled", 1));
+							unsigned s5 = static_cast<unsigned>(setUI("DLSSNR.Reset", 1));
+							SKSE::log::info("[NGXNR] v0.9 Set: W/H/ScalingRatio/Enabled/Reset -> {:#x}/{:#x}/{:#x}/{:#x}/{:#x}",
+								s1, s2, s3, s4, s5);
 							// 4) CreateFeature(feature 18)
 							using PFN_Create9 = int(__cdecl*)(ID3D12GraphicsCommandList*, int, void*, void**);
 							auto fnCreate9 = reinterpret_cast<PFN_Create9>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_CreateFeature"));
