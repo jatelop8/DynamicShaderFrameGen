@@ -203,6 +203,27 @@ namespace FrameGen
 						SKSE::log::info("[NGXNR] NGX core established via driver nvngx.dll (SkyrimUpscaler pattern)");
 					else
 						SKSE::log::warn("[NGXNR] driver nvngx.dll loaded but Init refused - falling back to dlss.dll warmup");
+
+					// v0.8.28：用驱动 core 的 AllocateParameters 拿真 params 对象——
+					// PDPerfPlugin 同款（NVSDK_NGX_D3D12_AllocateParameters 实锤）；
+					// 真对象 vtable 与官方 NVSDK_NGX_Parameter 一致，替代自实现。
+					if (coreInitOk) {
+						auto allocFn = reinterpret_cast<PFN_NGXAllocParams>(GetProcAddress(ngxCoreModule, "NVSDK_NGX_D3D12_AllocateParameters"));
+						auto destroyFn = reinterpret_cast<unsigned int(__cdecl*)(NGXInstanceParameters*)>(GetProcAddress(ngxCoreModule, "NVSDK_NGX_D3D12_DestroyParameters"));
+						if (allocFn) {
+							NGXInstanceParameters* rp = nullptr;
+							DWORD ac = 0;
+							unsigned int ar = Guarded([&] { return allocFn(&rp); }, &ac);
+							SKSE::log::info("[NGXNR] AllocateParameters -> {} (rc={:#x} p={})",
+								ac ? "faulted" : (ar == kNGXSuccess ? "ok" : "failed"), ac ? ac : ar, (void*)rp);
+							if (ac == 0 && ar == kNGXSuccess && rp) {
+								realParams = rp;
+								paramsDestroy = destroyFn;
+							}
+						} else {
+							SKSE::log::warn("[NGXNR] driver core AllocateParameters not exported - using OwnNGXParams");
+						}
+					}
 				}
 			}
 		}
@@ -297,6 +318,9 @@ namespace FrameGen
 		lastEvaluateOk = false;
 		if (!ready || !a_color || !a_output || !a_cmdList)
 			return false;
+
+		// v0.8.28：优先用驱动 core 分配的真 params（若可用），否则自实现
+		NGXInstanceParameters* P = realParams ? realParams : &params;
 
 		auto createFeature = reinterpret_cast<PFN_NGXCreateFeature>(GetProcAddress(
 			ngxCoreModule ? ngxCoreModule : ngxModule, "NVSDK_NGX_D3D12_CreateFeature"));
@@ -445,33 +469,33 @@ namespace FrameGen
 				}
 			}
 
-			params.Set4("DLSSNR.Width", a_width);
-			params.Set4("DLSSNR.Height", a_height);
-			params.Set4("DLSSNR.InputWidth", a_width);
-			params.Set4("DLSSNR.InputHeight", a_height);
-			params.Set4("DLSSNR.OutputWidth", a_width);
-			params.Set4("DLSSNR.OutputHeight", a_height);
-			params.Set2("DLSSNR.ScalingRatio", 1.0f);		  // DLAA 模式（4K→4K 滤镜）
-			params.Set4("DLSSNR.Enabled", 1);
-			params.Set4("DLSSNR.DepthInverted", 0);			  // Skyrim depth: 近=0 远=1
-			params.Set4("DLSSNR.Hint.Render.Preset", 0);	  // 0=Auto (renodx: Preset #1/#2/#3)
-			params.Set4("PerfQualityValue", 2);				  // balanced-ish
-			params.Set4("DLSS.Mode", 0);
-			params.Set4("DLSS.Enable.Output.Subrects", 1);
+			P->Set4("DLSSNR.Width", a_width);
+			P->Set4("DLSSNR.Height", a_height);
+			P->Set4("DLSSNR.InputWidth", a_width);
+			P->Set4("DLSSNR.InputHeight", a_height);
+			P->Set4("DLSSNR.OutputWidth", a_width);
+			P->Set4("DLSSNR.OutputHeight", a_height);
+			P->Set2("DLSSNR.ScalingRatio", 1.0f);		  // DLAA 模式（4K→4K 滤镜）
+			P->Set4("DLSSNR.Enabled", 1);
+			P->Set4("DLSSNR.DepthInverted", 0);			  // Skyrim depth: 近=0 远=1
+			P->Set4("DLSSNR.Hint.Render.Preset", 0);	  // 0=Auto (renodx: Preset #1/#2/#3)
+			P->Set4("PerfQualityValue", 2);				  // balanced-ish
+			P->Set4("DLSS.Mode", 0);
+			P->Set4("DLSS.Enable.Output.Subrects", 1);
 			// v0.8.16：通用创建键（bridge 实锤）——DLSSNR.* 之外补无前缀 Width/Height 等
-			params.Set4("Width", a_width);
-			params.Set4("Height", a_height);
-			params.Set4("OutWidth", a_width);
-			params.Set4("OutHeight", a_height);
-			params.Set4("DLSS.Feature.Create.Flags", 107);
-			params.Set4("CreationNodeMask", 1u);
-			params.Set4("VisibilityNodeMask", 1u);
-			params.Set4("RTXValue", 0);
+			P->Set4("Width", a_width);
+			P->Set4("Height", a_height);
+			P->Set4("OutWidth", a_width);
+			P->Set4("OutHeight", a_height);
+			P->Set4("DLSS.Feature.Create.Flags", 107);
+			P->Set4("CreationNodeMask", 1u);
+			P->Set4("VisibilityNodeMask", 1u);
+			P->Set4("RTXValue", 0);
 			// v0.8.19：创建时也 Set 资源键（NR feature 创建可能绑定纹理）
-			params.Set7("DLSSNR.Color", a_color);
-			params.Set7("DLSSNR.Depth", a_depth);
-			params.Set7("DLSSNR.MVec", a_mvec);
-			params.Set7("DLSSNR.Output", a_output);
+			P->Set7("DLSSNR.Color", a_color);
+			P->Set7("DLSSNR.Depth", a_depth);
+			P->Set7("DLSSNR.MVec", a_mvec);
+			P->Set7("DLSSNR.Output", a_output);
 
 			DWORD code = 0;
 			NGXHandle* h = nullptr;
@@ -524,44 +548,44 @@ namespace FrameGen
 		// --- per-frame resources + params (DLSSNR.* keys) ---
 		// v0.8.26：Evaluate 只留 DLSSNR.* 键——去掉 DLSS.*（bridge 超分格式，NR 可能不认
 		// 且多余键干扰校验）+ 去掉 Backbuffer（我们没有真 backbuffer，传 Output 报错）
-		params.Set7("DLSSNR.Color", a_color);
-		params.Set7("DLSSNR.Depth", a_depth);
-		params.Set7("DLSSNR.MVec", a_mvec);
-		params.Set7("DLSSNR.Output", a_output);
-		params.Set4("DLSSNR.Enabled", 1);
+		P->Set7("DLSSNR.Color", a_color);
+		P->Set7("DLSSNR.Depth", a_depth);
+		P->Set7("DLSSNR.MVec", a_mvec);
+		P->Set7("DLSSNR.Output", a_output);
+		P->Set4("DLSSNR.Enabled", 1);
 		// v0.8.9：MV 缩放（Skyrim 引擎 mvec 语义 = 我们 DLSS 超分的 mvecScale 1.0）
-		params.Set2("DLSSNR.MVecScaleX", 1.0f);
-		params.Set2("DLSSNR.MVecScaleY", 1.0f);
+		P->Set2("DLSSNR.MVecScaleX", 1.0f);
+		P->Set2("DLSSNR.MVecScaleY", 1.0f);
 		// v0.8.7：NR 参数读 settings（GUI 滑块/INI 写入处）
 		auto& s = Get().settings;
-		params.Set2("DLSSNR.Intensity", s.nrIntensity);
-		params.Set2("DLSSNR.Style", s.nrStyle);
-		params.Set2("DLSSNR.LocalToneStrength", s.nrLocalTone);
-		params.Set2("DLSSNR.SkinStructureStrength", s.nrSkinStructure);
-		params.Set2("DLSSNR.LocalStructureStrength", s.nrLocalTone);
-		params.Set4("DLSSNR.Reset", 0);
+		P->Set2("DLSSNR.Intensity", s.nrIntensity);
+		P->Set2("DLSSNR.Style", s.nrStyle);
+		P->Set2("DLSSNR.LocalToneStrength", s.nrLocalTone);
+		P->Set2("DLSSNR.SkinStructureStrength", s.nrSkinStructure);
+		P->Set2("DLSSNR.LocalStructureStrength", s.nrLocalTone);
+		P->Set4("DLSSNR.Reset", 0);
 		// v0.8.27：UseAutoMask=1（PDPerfPlugin 键——自动遮罩，无需 UI 输入纹理）
-		params.Set4("DLSSNR.UseAutoMask", 1);
-		params.Set2("Sharpness", 0.0f);
-		params.Set2("Jitter.Offset.X", 0.0f);
-		params.Set2("Jitter.Offset.Y", 0.0f);
+		P->Set4("DLSSNR.UseAutoMask", 1);
+		P->Set2("Sharpness", 0.0f);
+		P->Set2("Jitter.Offset.X", 0.0f);
+		P->Set2("Jitter.Offset.Y", 0.0f);
 		// v0.8.25：NR 专属子矩形键（PDPerfPlugin 实锤——DLSSNR.ColorSubrectBaseX 无点号格式）
-		params.Set4("DLSSNR.ColorSubrectBaseX", 0u);
-		params.Set4("DLSSNR.ColorSubrectBaseY", 0u);
-		params.Set4("DLSSNR.ColorSubrectWidth", a_width);
-		params.Set4("DLSSNR.ColorSubrectHeight", a_height);
-		params.Set4("DLSSNR.DepthSubrectBaseX", 0u);
-		params.Set4("DLSSNR.DepthSubrectBaseY", 0u);
-		params.Set4("DLSSNR.DepthSubrectWidth", a_width);
-		params.Set4("DLSSNR.DepthSubrectHeight", a_height);
-		params.Set4("DLSSNR.MVecSubrectBaseX", 0u);
-		params.Set4("DLSSNR.MVecSubrectBaseY", 0u);
-		params.Set4("DLSSNR.MVecSubrectWidth", a_width);
-		params.Set4("DLSSNR.MVecSubrectHeight", a_height);
-		params.Set4("DLSSNR.OutputSubrectBaseX", 0u);
-		params.Set4("DLSSNR.OutputSubrectBaseY", 0u);
-		params.Set4("DLSSNR.OutputSubrectWidth", a_width);
-		params.Set4("DLSSNR.OutputSubrectHeight", a_height);
+		P->Set4("DLSSNR.ColorSubrectBaseX", 0u);
+		P->Set4("DLSSNR.ColorSubrectBaseY", 0u);
+		P->Set4("DLSSNR.ColorSubrectWidth", a_width);
+		P->Set4("DLSSNR.ColorSubrectHeight", a_height);
+		P->Set4("DLSSNR.DepthSubrectBaseX", 0u);
+		P->Set4("DLSSNR.DepthSubrectBaseY", 0u);
+		P->Set4("DLSSNR.DepthSubrectWidth", a_width);
+		P->Set4("DLSSNR.DepthSubrectHeight", a_height);
+		P->Set4("DLSSNR.MVecSubrectBaseX", 0u);
+		P->Set4("DLSSNR.MVecSubrectBaseY", 0u);
+		P->Set4("DLSSNR.MVecSubrectWidth", a_width);
+		P->Set4("DLSSNR.MVecSubrectHeight", a_height);
+		P->Set4("DLSSNR.OutputSubrectBaseX", 0u);
+		P->Set4("DLSSNR.OutputSubrectBaseY", 0u);
+		P->Set4("DLSSNR.OutputSubrectWidth", a_width);
+		P->Set4("DLSSNR.OutputSubrectHeight", a_height);
 
 		DWORD code = 0;
 		unsigned int r = Guarded([&] { return evalFeature(a_cmdList, handle, &params, nullptr); }, &code);

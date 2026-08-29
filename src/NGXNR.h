@@ -66,6 +66,17 @@ namespace FrameGen
 		virtual unsigned int Get(const char* name, ID3D12Resource** value) const = 0;// 14
 		virtual unsigned int Get(const char* name, void** value) const = 0;          // 15
 		virtual void Reset() = 0;                                                    // 16
+
+		// v0.8.28：便捷方法（非虚，转发到虚 Set）——让驱动 core 分配的真 params
+		// 对象也能用现有调用风格（Set4/Set2/Set7）
+		void Set4(const char* name, std::uint32_t value) { Set(name, value); }
+		void Set2(const char* name, float value) { Set(name, value); }
+		void Set7(const char* name, ID3D12Resource* value) { Set(name, value); }
+		void Set5(const char* name, std::uint32_t value) { Set(name, static_cast<int>(value)); }
+		void SetVoidPointer(const char* name, void* value) { Set(name, reinterpret_cast<std::uint64_t>(value)); }
+		void Set3(const char* name, void* value) { Set(name, reinterpret_cast<std::uint64_t>(value)); }
+		void Set6(const char* name, void* value) { Set(name, reinterpret_cast<std::uint64_t>(value)); }
+		void Set8(const char* name, void* value) { Set(name, reinterpret_cast<std::uint64_t>(value)); }
 	};
 
 	// v0.8.13：按 bridge 布局自实现参数对象——Set 存 map、Get 读 map（带类型容错）。
@@ -218,6 +229,11 @@ namespace FrameGen
 		NGXHandle* warmupHandle = nullptr;
 		// v0.8.23：GetCapabilityParameters 只查一次（core 就绪后）
 		bool capsQueried = false;
+		// v0.8.28：驱动 core 分配的真 params（AllocateParameters）——替代自实现
+		// OwnNGXParams（Evaluate 0xbad00005 可能是自实现 vtable 与驱动 core 预期不符）
+		NGXInstanceParameters* realParams = nullptr;
+		// DestroyParameters 函数指针（释放 realParams）
+		unsigned int(__cdecl* paramsDestroy)(NGXInstanceParameters*) = nullptr;
 
 	private:
 		ID3D12Device* device = nullptr;
