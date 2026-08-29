@@ -298,10 +298,41 @@ namespace FrameGen
 		if (!ready || !a_color || !a_output || !a_cmdList)
 			return false;
 
-		auto createFeature = reinterpret_cast<PFN_NGXCreateFeature>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_CreateFeature"));
-		auto evalFeature = reinterpret_cast<PFN_NGXEvaluateFeature>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_EvaluateFeature"));
+		auto createFeature = reinterpret_cast<PFN_NGXCreateFeature>(GetProcAddress(
+			ngxCoreModule ? ngxCoreModule : ngxModule, "NVSDK_NGX_D3D12_CreateFeature"));
+		auto evalFeature = reinterpret_cast<PFN_NGXEvaluateFeature>(GetProcAddress(
+			ngxCoreModule ? ngxCoreModule : ngxModule, "NVSDK_NGX_D3D12_EvaluateFeature"));
 		if (!createFeature || !evalFeature)
 			return false;
+
+		// v0.8.23：core 就绪后查 GetCapabilityParameters（驱动 nvngx.dll 提供）——
+		// 直接问 NR/超分支持性（SkyrimUpscaler 日志同款调用）。
+		if (coreInitOk && ngxCoreModule && !capsQueried) {
+			capsQueried = true;
+			auto capsFn = reinterpret_cast<PFN_NGXGetCaps>(GetProcAddress(ngxCoreModule, "NVSDK_NGX_D3D12_GetCapabilityParameters"));
+			if (capsFn) {
+				NGXInstanceParameters* caps = nullptr;
+				DWORD cc = 0;
+				unsigned int cr = Guarded([&] { return capsFn(&caps); }, &cc);
+				SKSE::log::info("[NGXNR] GetCapabilityParameters -> {} (rc={:#x} caps={})",
+					cc ? "faulted" : (cr == kNGXSuccess ? "ok" : "failed"), cc ? cc : cr, (void*)caps);
+				if (cc == 0 && cr == kNGXSuccess && caps) {
+					static const char* kIntKeys[] = {
+						"SuperSampling.Available",
+						"SuperSamplingDenoising.Available",
+						"SuperSampling.MinDriverVersionMajor",
+						"SuperSampling.MinDriverVersionMinor",
+						"DLSS.Available",
+						"DLSSNR.Available",
+					};
+					for (const char* k : kIntKeys) {
+						std::uint32_t v = 0;
+						unsigned int kr = Guarded([&] { return caps->Get(k, &v); }, &cc);
+						SKSE::log::info("[NGXNR]   caps[{}] = {} (rc={:#x})", k, kr == kNGXSuccess ? v : 0xFFFFFFFF, kr);
+					}
+				}
+			}
+		}
 
 		// --- (re)create on first frame / size change ---
 		// v0.8.8：DLSS-NR 参数键全部用 DLSSNR.* 前缀（nvngx_dlssnr.dll 字符串表
@@ -450,8 +481,8 @@ namespace FrameGen
 				// 已锁定 id：正常创建
 				r = Guarded([&] { return createFeature(a_cmdList, useId, &params, &h); }, &code);
 			} else if (!nrIdTriedAll) {
-				// v0.8.18：首次遍历 0..10 找 NR feature id（dlssnr 可能不是 1）
-				for (int id = 0; id <= 10; ++id) {
+				// v0.8.18：首次遍历找 NR feature id；v0.8.23 扩到 0..20 并改用驱动 core
+				for (int id = 0; id <= 20; ++id) {
 					h = nullptr;
 					r = Guarded([&] { return createFeature(a_cmdList, id, &params, &h); }, &code);
 					SKSE::log::info("[NGXNR] NR CreateFeature id={} -> rc={:#x} fault={:#x} h={}", id,

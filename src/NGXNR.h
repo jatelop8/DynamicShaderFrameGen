@@ -216,6 +216,8 @@ namespace FrameGen
 		// v0.8.21：warmup 的 dlss feature 不释放——dlss.dll 的 core 单例随其 feature
 		// 存活；立即 Release 可能连带销毁 core → dlssnr 找不到。保留到 Shutdown。
 		NGXHandle* warmupHandle = nullptr;
+		// v0.8.23：GetCapabilityParameters 只查一次（core 就绪后）
+		bool capsQueried = false;
 
 	private:
 		ID3D12Device* device = nullptr;
