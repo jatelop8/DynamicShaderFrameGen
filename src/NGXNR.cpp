@@ -1009,8 +1009,11 @@ namespace FrameGen
 							}
 							SKSE::log::info("[NGXNR]   realEval[+{:04x}]: {}", seg * 0x80, hex);
 						}
-						// handler 槽（0xB2+7+0x40336）+ handler 前 0x40 字节
-						uintptr_t handlerSlot = slotEval + 0xB2 + 7 + 0x40336;
+						// handler 槽：capstone 精确反汇编——call 指令在偏移 0xB4（6 字节），
+						// RIP-relative 目标 = [0xBA + 0x40336] = [起点 + 0x403F0]。
+						// v0.8.50-52 用 0xB2+7+0x40336 = 0x403EF 差 1 字节 → 读到垃圾
+						// （0x7ffb0796306000 页对齐假象 + VirtualQuery 失败的原因）
+						uintptr_t handlerSlot = slotEval + 0x403F0;
 						uintptr_t handler = 0;
 						MEMORY_BASIC_INFORMATION hmbi = {};
 						if (VirtualQuery(reinterpret_cast<LPCVOID>(handlerSlot), &hmbi, sizeof(hmbi)) &&
