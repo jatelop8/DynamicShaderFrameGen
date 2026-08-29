@@ -659,6 +659,38 @@ namespace FrameGen
 		if (!ready || !a_color || !a_output || !a_cmdList)
 			return false;
 
+		// v0.8.59：PDPerfPlugin 直调优先（SkyrimUpscaler 实锤跑通 NR 的完整路径）——
+		// 完整调用链（本机反汇编）：SetupDirectX(device,1) → D3D12 单例 →
+		// EvaluateDLSSNR(0x108 字节结构体) → vtable[30] → 0x1B740（检查+存储）→
+		// 0x1B7E0（资源绑定 + NR cubin 执行）。
+		// 结构体布局（0x1B7E0 反汇编）：+0x00=u32 类型码、+0x08=资源(绑定1)、
+		// +0x10=资源(绑定2)、+0x18=资源(绑定3)、+0x28=资源(绑定0)、
+		// +0x30..+0x48=更多资源槽（0=Color 1=Depth 2=MVec 3=Output 试探）。
+		if (pdSetupOk && pdNrAvailable && pdEvaluateDLSSNR) {
+			using PFN_EvalNR = unsigned int(__cdecl*)(const void*);
+			struct NRParams108 { std::uint64_t q[33]; };  // 0x108 = 33*8
+			NRParams108 p{};
+			p.q[0] = 1;                     // +0x00 类型码（featureId/类型）
+			p.q[1] = reinterpret_cast<std::uint64_t>(a_color);   // +0x08
+			p.q[2] = reinterpret_cast<std::uint64_t>(a_depth);   // +0x10
+			p.q[3] = reinterpret_cast<std::uint64_t>(a_mvec);    // +0x18
+			p.q[5] = reinterpret_cast<std::uint64_t>(a_output);  // +0x28
+			// 其余槽 0（可选参数——本地反汇编显示 0x1B7E0 还读 +0x30/+0x38/+0x40/+0x48 等槽）
+			DWORD code = 0;
+			unsigned int r = 0;
+			Guarded([&] { return r = reinterpret_cast<PFN_EvalNR>(pdEvaluateDLSSNR)(&p); }, &code);
+			lastEvaluateResult = code ? kNGXExceptionMarker : r;
+			lastEvaluateOk = (code == 0 && r != 0);
+			if (!lastEvaluateOk) {
+				static unsigned int lastLogged = 0;
+				if (lastEvaluateResult != lastLogged) {
+					lastLogged = lastEvaluateResult;
+					SKSE::log::warn("[NGXNR] PDPerfPlugin EvaluateDLSSNR {} rc={:#x}", code ? "FAULTED" : "failed", lastEvaluateResult);
+				}
+			}
+			return lastEvaluateOk;
+		}
+
 		// v0.8.31：独立 cmdList（PDPerfPlugin/bridge 模式）——插在 Present cmdList
 		// 里 Evaluate 恒 0xbad00005，独立 cmdList + 同 queue 串行执行可能解决
 		if (!nrAlloc) {
