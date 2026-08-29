@@ -584,6 +584,9 @@ namespace FrameGen
 				}
 				fg.dx12SwapChain.CreateSwapChain(adapter, *pDesc, fg.settings.frameGeneration, fg.settings.provider == 1, fg.settings.qualityMode);
 				fg.dx12SwapChain.CreateInterop();
+				// v0.8.5：NGXNR 初始化——游戏实际走的是这条 ENB 共存路径（v0.8 误加到
+				// CreateD3D12Proxy 分支，该分支在有 ENB 时不被执行 → NGXNR 从未初始化）
+				fg.ngxNR.Init(fg.dx12SwapChain.d3d12Device.get(), Streamline::PluginDir);
 				adapter->Release();
 			}
 			dxgiDevice->Release();
