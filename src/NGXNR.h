@@ -39,83 +39,129 @@ namespace FrameGen
 	// NGX return codes
 	inline constexpr unsigned int kNGXSuccess = 0x1;
 
-	// NGXInstanceParameters vtable — v0.8.10 改用 dlssg-to-fsr3 实战验证布局
-	// （Nukem9，劫持整个 NGX 层，槽位经多引擎验证）：
-	//   Set: 0=void* 1=float 2=void* 3=uint32 4=uint32 5=void* 6=ID3D12Resource* 7=void*
-	//   Get: 0=void** 1=float* 2=void* 3=uint32* 4=uint32* 5=void* 6=float* 7=void*
-	// 我们自实现该接口（存 map），NGX CreateFeature/EvaluateFeature 内部通过
-	// Get 读参数——不依赖 AllocateParameters（nvngx_dlssnr.dll 不导出）。
+	// NGXInstanceParameters vtable — v0.8.13 改为 dlss5-dx11-bridge 布局
+	// （MIT，BG3/FO4/Unity 实战验证的 NVSDK_NGX_Parameter 完整 17 方法）：
+	//   Set: 0=u64 1=float 2=double 3=uint 4=int 5=ID3D11Resource* 6=ID3D12Resource* 7=void*
+	//   Get: 8=u64* 9=float* 10=double* 11=uint* 12=int* 13=ID3D11Resource** 14=ID3D12Resource** 15=void**
+	//   Reset: 16
+	// v0.8.10 用的 dlssg-to-fsr3 布局（Set3=uint32、无 Reset）与 DLSS 超分系
+	// （nvngx_dlss.dll/dlssnr.dll 同一 SDK）的预期不符 → CreateFeature 参数校验
+	// 失败 0xbad00005（GetScratchBufferSize 同码 = 参数无效）。
 	struct NGXInstanceParameters
 	{
-		virtual void SetVoidPointer(const char* name, void* value) = 0;			 // 0
-		virtual void Set2(const char* name, float value) = 0;					 // 1
-		virtual void Set3(const char* name, void* value) = 0;					 // 2
-		virtual void Set4(const char* name, std::uint32_t value) = 0;			 // 3
-		virtual void Set5(const char* name, std::uint32_t value) = 0;			 // 4
-		virtual void Set6(const char* name, void* value) = 0;					 // 5
-		virtual void Set7(const char* name, ID3D12Resource* value) = 0;			 // 6
-		virtual void Set8(const char* name, void* value) = 0;					 // 7
-		virtual std::uint32_t GetVoidPointer(const char* name, void** value) = 0; // 8
-		virtual std::uint32_t Get2(const char* name, float* value) = 0;			 // 9
-		virtual std::uint32_t Get3(const char* name, void* value) = 0;			 // 10
-		virtual std::uint32_t Get4(const char* name, std::uint32_t* value) = 0;	 // 11
-		virtual std::uint32_t Get5(const char* name, std::uint32_t* value) = 0;	 // 12
-		virtual std::uint32_t Get6(const char* name, void* value) = 0;			 // 13
-		virtual std::uint32_t Get7(const char* name, float* value) = 0;			 // 14
-		virtual std::uint32_t Get8(const char* name, void* value) = 0;			 // 15
+		virtual unsigned int Set(const char* name, unsigned long long value) = 0;    // 0
+		virtual unsigned int Set(const char* name, float value) = 0;                 // 1
+		virtual unsigned int Set(const char* name, double value) = 0;                // 2
+		virtual unsigned int Set(const char* name, unsigned int value) = 0;          // 3
+		virtual unsigned int Set(const char* name, int value) = 0;                   // 4
+		virtual unsigned int Set(const char* name, ID3D11Resource* value) = 0;       // 5
+		virtual unsigned int Set(const char* name, ID3D12Resource* value) = 0;       // 6
+		virtual unsigned int Set(const char* name, void* value) = 0;                 // 7
+		virtual unsigned int Get(const char* name, unsigned long long* value) const = 0; // 8
+		virtual unsigned int Get(const char* name, float* value) const = 0;          // 9
+		virtual unsigned int Get(const char* name, double* value) const = 0;         // 10
+		virtual unsigned int Get(const char* name, unsigned int* value) const = 0;   // 11
+		virtual unsigned int Get(const char* name, int* value) const = 0;            // 12
+		virtual unsigned int Get(const char* name, ID3D11Resource** value) const = 0;// 13
+		virtual unsigned int Get(const char* name, ID3D12Resource** value) const = 0;// 14
+		virtual unsigned int Get(const char* name, void** value) const = 0;          // 15
+		virtual void Reset() = 0;                                                    // 16
 	};
 
-	// v0.8.10：自实现参数对象（dlssg-to-fsr3 同款思路——Set 存 map，Get 读 map）。
-	// 传给真实 NGX CreateFeature/EvaluateFeature，NGX 内部用 Get 读 Width/Height/
-	// DLSSNR.* 等；不依赖 AllocateParameters（snippet DLL 不导出）。
+	// v0.8.13：按 bridge 布局自实现参数对象——Set 存 map、Get 读 map（带类型容错）。
+	// 便捷方法 Set4/Set2/Set7 保留（映射到 Set(uint)/Set(float)/Set(ID3D12Resource*)）。
 	class OwnNGXParams : public NGXInstanceParameters
 	{
 	public:
-		void SetVoidPointer(const char* name, void* value) override { voids_[name] = value; }
-		void Set2(const char* name, float value) override { floats_[name] = value; }
-		void Set3(const char* name, void* value) override { voids_[name] = value; }
-		void Set4(const char* name, std::uint32_t value) override { uints_[name] = value; }
-		void Set5(const char* name, std::uint32_t value) override { uints_[name] = value; }
-		void Set6(const char* name, void* value) override { voids_[name] = value; }
-		void Set7(const char* name, ID3D12Resource* value) override { resources_[name] = value; }
-		void Set8(const char* name, void* value) override { voids_[name] = value; }
+		// --- bridge 布局的虚函数 ---
+		unsigned int Set(const char* name, unsigned long long value) override { u64s_[name] = value; return kNGXSuccess; }
+		unsigned int Set(const char* name, float value) override { floats_[name] = value; return kNGXSuccess; }
+		unsigned int Set(const char* name, double value) override { doubles_[name] = value; return kNGXSuccess; }
+		unsigned int Set(const char* name, unsigned int value) override { uints_[name] = value; return kNGXSuccess; }
+		unsigned int Set(const char* name, int value) override { uints_[name] = static_cast<std::uint32_t>(value); return kNGXSuccess; }
+		unsigned int Set(const char* name, ID3D11Resource* value) override { u64s_[name] = reinterpret_cast<std::uint64_t>(value); return kNGXSuccess; }
+		unsigned int Set(const char* name, ID3D12Resource* value) override { u64s_[name] = reinterpret_cast<std::uint64_t>(value); return kNGXSuccess; }
+		unsigned int Set(const char* name, void* value) override { u64s_[name] = reinterpret_cast<std::uint64_t>(value); return kNGXSuccess; }
 
-		std::uint32_t GetVoidPointer(const char* name, void** value) override
+		unsigned int Get(const char* name, unsigned long long* value) const override
 		{
-			auto it = voids_.find(name);
-			if (it != voids_.end()) { *value = it->second; return kNGXSuccess; }
-			auto it2 = resources_.find(name);
-			if (it2 != resources_.end()) { *value = it2->second; return kNGXSuccess; }
+			auto it = u64s_.find(name);
+			if (it != u64s_.end()) { *value = it->second; return kNGXSuccess; }
+			auto it2 = uints_.find(name);
+			if (it2 != uints_.end()) { *value = it2->second; return kNGXSuccess; }
+			auto it3 = floats_.find(name);
+			if (it3 != floats_.end()) { *value = static_cast<std::uint64_t>(it3->second); return kNGXSuccess; }
 			return 0xBAD00004;
 		}
-		std::uint32_t Get2(const char* name, float* value) override
+		unsigned int Get(const char* name, float* value) const override
 		{
 			auto it = floats_.find(name);
 			if (it != floats_.end()) { *value = it->second; return kNGXSuccess; }
+			auto it2 = uints_.find(name);
+			if (it2 != uints_.end()) { *value = static_cast<float>(it2->second); return kNGXSuccess; }
+			auto it3 = u64s_.find(name);
+			if (it3 != u64s_.end()) { *value = static_cast<float>(it3->second); return kNGXSuccess; }
 			return 0xBAD00004;
 		}
-		std::uint32_t Get3(const char* name, void* value) override
+		unsigned int Get(const char* name, double* value) const override
 		{
-			auto it = voids_.find(name);
-			if (it != voids_.end()) { *static_cast<void**>(value) = it->second; return kNGXSuccess; }
+			auto it = doubles_.find(name);
+			if (it != doubles_.end()) { *value = it->second; return kNGXSuccess; }
+			auto it2 = floats_.find(name);
+			if (it2 != floats_.end()) { *value = it2->second; return kNGXSuccess; }
 			return 0xBAD00004;
 		}
-		std::uint32_t Get4(const char* name, std::uint32_t* value) override
+		unsigned int Get(const char* name, unsigned int* value) const override
 		{
 			auto it = uints_.find(name);
 			if (it != uints_.end()) { *value = it->second; return kNGXSuccess; }
+			auto it2 = u64s_.find(name);
+			if (it2 != u64s_.end()) { *value = static_cast<std::uint32_t>(it2->second); return kNGXSuccess; }
 			return 0xBAD00004;
 		}
-		std::uint32_t Get5(const char* name, std::uint32_t* value) override { return Get4(name, value); }
-		std::uint32_t Get6(const char* name, void* value) override { return Get3(name, value); }
-		std::uint32_t Get7(const char* name, float* value) override { return Get2(name, value); }
-		std::uint32_t Get8(const char* name, void* value) override { return Get3(name, value); }
+		unsigned int Get(const char* name, int* value) const override
+		{
+			auto it = uints_.find(name);
+			if (it != uints_.end()) { *value = static_cast<int>(it->second); return kNGXSuccess; }
+			auto it2 = u64s_.find(name);
+			if (it2 != u64s_.end()) { *value = static_cast<int>(it2->second); return kNGXSuccess; }
+			return 0xBAD00004;
+		}
+		unsigned int Get(const char* name, ID3D11Resource** value) const override
+		{
+			auto it = u64s_.find(name);
+			if (it != u64s_.end()) { *value = reinterpret_cast<ID3D11Resource*>(it->second); return kNGXSuccess; }
+			return 0xBAD00004;
+		}
+		unsigned int Get(const char* name, ID3D12Resource** value) const override
+		{
+			auto it = u64s_.find(name);
+			if (it != u64s_.end()) { *value = reinterpret_cast<ID3D12Resource*>(it->second); return kNGXSuccess; }
+			return 0xBAD00004;
+		}
+		unsigned int Get(const char* name, void** value) const override
+		{
+			auto it = u64s_.find(name);
+			if (it != u64s_.end()) { *value = reinterpret_cast<void*>(it->second); return kNGXSuccess; }
+			return 0xBAD00004;
+		}
+		void Reset() override { floats_.clear(); doubles_.clear(); uints_.clear(); u64s_.clear(); }
+
+		// --- 便捷方法（现有调用兼容）---
+		void Set4(const char* name, std::uint32_t value) { Set(name, value); }
+		void Set2(const char* name, float value) { Set(name, value); }
+		void Set7(const char* name, ID3D12Resource* value) { Set(name, value); }
+		void Set5(const char* name, std::uint32_t value) { Set(name, static_cast<int>(value)); }
+		void SetVoidPointer(const char* name, void* value) { Set(name, value); }
+		void Set3(const char* name, void* value) { Set(name, reinterpret_cast<std::uint64_t>(value)); }
+		void Set6(const char* name, void* value) { Set(name, reinterpret_cast<std::uint64_t>(value)); }
+		void Set8(const char* name, void* value) { Set(name, reinterpret_cast<std::uint64_t>(value)); }
 
 	private:
 		std::unordered_map<std::string, float> floats_;
+		std::unordered_map<std::string, double> doubles_;
 		std::unordered_map<std::string, std::uint32_t> uints_;
-		std::unordered_map<std::string, void*> voids_;
-		std::unordered_map<std::string, ID3D12Resource*> resources_;
+		std::unordered_map<std::string, std::uint64_t> u64s_;
 	};
 
 	struct NGXHandle

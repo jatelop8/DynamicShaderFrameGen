@@ -233,12 +233,12 @@ namespace FrameGen
 				auto warmupRelease = reinterpret_cast<PFN_NGXReleaseFeature>(GetProcAddress(coreModule, "NVSDK_NGX_D3D12_ReleaseFeature"));
 				if (warmupCreate) {
 					OwnNGXParams wp;
+					wp.Set4("DLSS.Mode", 0);
 					wp.Set4("DLSS.Input.Width", a_width);
 					wp.Set4("DLSS.Input.Height", a_height);
 					wp.Set4("DLSS.Output.Width", a_width);
 					wp.Set4("DLSS.Output.Height", a_height);
 					wp.Set4("DLSS.Enable.Output.Subrects", 1);
-					wp.Set4("DLSS.Feature.Create.Flags", 107);
 					wp.Set4("DLSS.PerfQualityValue", 1);
 					wp.Set4("DLSS.DepthInverted", 0);
 					wp.Set4("DLSS.Hint.Render.Preset", 0);
@@ -274,7 +274,7 @@ namespace FrameGen
 			params.Set4("DLSSNR.Hint.Render.Preset", 0);	  // 0=Auto (renodx: Preset #1/#2/#3)
 			params.Set4("DLSSNR.Reset", 1);					  // 创建时重置内部状态
 			params.Set4("PerfQualityValue", 2);				  // balanced-ish
-			params.Set4("DLSS.Feature.Create.Flags", 107);
+			params.Set4("DLSS.Mode", 0);
 			params.Set4("DLSS.Enable.Output.Subrects", 1);
 			params.Set4("CreationNodeMask", 1u);
 			params.Set4("VisibilityNodeMask", 1u);
