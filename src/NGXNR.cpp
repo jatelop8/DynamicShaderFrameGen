@@ -501,6 +501,35 @@ namespace FrameGen
 		nvngxNrPresent = GetFileAttributesW(nrPath.c_str()) != INVALID_FILE_ATTRIBUTES;
 		SKSE::log::info("[NGXNR] nvngx_dlssnr.dll {}", nvngxNrPresent ? "present" : "NOT present (expected -> feature unavailable)");
 
+		// v0.8.42：反汇编实锤驱动 core 的 D3D12_EvaluateFeature @RVA 0xA4F4 是
+		// detour 跳板：mov rax, [0x18006E4B8]（全局函数指针）; push rax; ret——
+		// 真实实现在指针指向处。**读这个指针反汇编真实 Evaluate**，找 0xbad00005
+		// 到底从哪个检查来（不再猜参数键）。指针绝对地址 0x18006E4B8 基于驱动
+		// nvngx.dll 的固定基址 0x180000000——运行时 = 模块基址 + 0x6E4B8。
+		if (ngxCoreModule) {
+			uintptr_t modBase = reinterpret_cast<uintptr_t>(ngxCoreModule);
+			uintptr_t evalPtrAddr = modBase + 0x6E4B8;  // 全局函数指针槽（RVA 0x6E4B8）
+			uintptr_t realEval = *reinterpret_cast<uintptr_t*>(evalPtrAddr);
+			SKSE::log::info("[NGXNR] driver-core EvaluateFeature detour: global_ptr@{} = {} (real impl)",
+				(void*)evalPtrAddr, (void*)realEval);
+			if (realEval) {
+				// 反汇编真实实现：找 mov eax, 0xBAD00005 / 0xBAD00002 的检查
+				uint8_t* p = reinterpret_cast<uint8_t*>(realEval);
+				for (int i = 0; i < 0x200; ++i) {
+					uint32_t v = 0;
+					memcpy(&v, p + i, 4);
+					if (v == 0xBAD00005 || v == 0xBAD00002) {
+						SKSE::log::info("[NGXNR]   real impl @+{:#x}: error const {:#x} referenced (file rva={:#x})", i, v, i);
+					}
+				}
+				// 打印前 96 字节
+				char hex[300] = {};
+				for (int i = 0; i < 48; ++i)
+					sprintf(hex + i * 3, "%02X ", p[i]);
+				SKSE::log::info("[NGXNR]   real impl head: {}", hex);
+			}
+		}
+
 		// v0.8.10：无 GetCapabilityParameters（snippet 不导出）——supported 由
 		// CreateFeature 试错决定（Evaluate 首帧）。core 宿主 + snippet 都加载成功即 ready。
 		ready = coreModule != nullptr;
@@ -734,7 +763,7 @@ namespace FrameGen
 			P->Set4("DLSSNR.Enabled", 1);
 			P->Set4("DLSSNR.DepthInverted", 0);			  // Skyrim depth: 近=0 远=1
 			P->Set4("DLSSNR.Hint.Render.Preset", 0);	  // 0=Auto (renodx: Preset #1/#2/#3)
-			P->Set4("DLSS.Enable.Output.Subrects", 1);
+			P->Set4("DLSS.Enable.Output.Subrects", 0);
 			// v0.8.16：通用创建键（bridge 实锤）——DLSSNR.* 之外补无前缀 Width/Height 等
 			P->Set4("Width", a_width);
 			P->Set4("Height", a_height);
@@ -814,7 +843,7 @@ namespace FrameGen
 		P->Set7("DLSS.Input.Depth", a_depth);
 		P->Set7("DLSS.Input.MotionVectors", a_mvec);
 		P->Set7("DLSS.Output", a_output);
-		P->Set4("DLSS.Enable.Output.Subrects", 1);
+		P->Set4("DLSS.Enable.Output.Subrects", 0);
 		P->Set2("DLSS.Pre.Exposure", 1.0f);
 		P->Set2("DLSS.Exposure.Scale", 1.0f);
 		P->Set2("Sharpness", 0.0f);
