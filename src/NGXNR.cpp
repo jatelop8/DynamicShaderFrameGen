@@ -598,6 +598,53 @@ namespace FrameGen
 		// （之前 nrFeatureId=1 是驱动 core CreateFeature 的结果，不适用于 dlssnr）。
 		nrFeatureId = -1;
 		nrIdTriedAll = false;
+
+		// --- v0.8.58：PDPerfPlugin 直调探测（SkyrimUpscaler 实锤跑通 NR 的完整
+		// NGX 实现层——导出 SetupDirectX/EvaluateDLSSNR/IsDLSSNRAvailable + 全套
+		// NVSDK_NGX API，依赖仅 d3d12+系统 DLL+libxell/libxess_fg）---
+		// dlss.dll/dlssnr 的 Init_Ext 全 refused（都要自己的会话）、dlss.dll 哈希表
+		// 从未初始化（驱动 core CreateFeature 不注册 dlss 的表）——dlss 系路堵死。
+		// PDPerfPlugin = 独立实现（自带 DLSSNRBackendNGX），SetupDirectX(device,1)
+		// 创建 D3D12 单例后 EvaluateDLSSNR 直接跑 NR。
+		{
+			std::wstring pdDir = L"E:\\EJ\\mod\\mods\\SkyrimUpscalerAIOBuild\\UpscalerBasePlugin";
+			SetDllDirectoryW(pdDir.c_str());
+			pdModule = LoadLibraryW((pdDir + L"\\PDPerfPlugin.dll").c_str());
+			if (!pdModule) {
+				SKSE::log::warn("[NGXNR] PDPerfPlugin.dll load failed (err={}) - dlss path continues", (unsigned int)GetLastError());
+			} else {
+				SKSE::log::info("[NGXNR] PDPerfPlugin.dll loaded=0x{}", (void*)pdModule);
+				pdSetupDirectX = (void*)GetProcAddress(pdModule, "SetupDirectX");
+				pdIsNrAvailable = (void*)GetProcAddress(pdModule, "IsDLSSNRAvailable");
+				pdEvaluateDLSSNR = (void*)GetProcAddress(pdModule, "EvaluateDLSSNR");
+				pdSetFrameGenParams = (void*)GetProcAddress(pdModule, "SetFrameGenParams");
+				SKSE::log::info("[NGXNR]   SetupDirectX={} IsDLSSNRAvailable={} EvaluateDLSSNR={} SetFrameGenParams={}",
+					pdSetupDirectX, pdIsNrAvailable, pdEvaluateDLSSNR, pdSetFrameGenParams);
+				// SetupDirectX(device, 1) → D3D12 单例
+				using PFN_SetupDX = unsigned int(__cdecl*)(void*, int);
+				if (pdSetupDirectX) {
+					unsigned int setupRet = 0;
+					DWORD sc = 0;
+					Guarded([&] { return setupRet = reinterpret_cast<PFN_SetupDX>(pdSetupDirectX)(a_device, 1); }, &sc);
+					pdSetupOk = (sc == 0 && setupRet != 0);
+					SKSE::log::info("[NGXNR]   SetupDirectX(device,1) -> {} (rc={:#x} fault={:#x})",
+						pdSetupOk ? "ok" : "FAILED", setupRet, sc);
+				}
+				// IsDLSSNRAvailable()
+				if (pdIsNrAvailable) {
+					unsigned int availRet = 0;
+					DWORD ac = 0;
+					Guarded([&] { return availRet = reinterpret_cast<unsigned int(__cdecl*)()>(pdIsNrAvailable)(); }, &ac);
+					pdNrAvailable = (ac == 0 && availRet != 0);
+					SKSE::log::info("[NGXNR]   IsDLSSNRAvailable() -> {} (rc={:#x} fault={:#x})",
+						pdNrAvailable ? "TRUE" : "false", availRet, ac);
+				}
+				if (pdSetupOk && pdNrAvailable)
+					SKSE::log::info("[NGXNR]   PDPerfPlugin NR channel READY (D3D12 singleton + NR available)");
+			}
+			SetDllDirectoryW(nullptr);
+		}
+
 		SKSE::log::info("[NGXNR] DLSS-NR armed (feature created on first evaluate frame; core={})", coreInitOk ? "ok" : "MISSING");
 	}
 
