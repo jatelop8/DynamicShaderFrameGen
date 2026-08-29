@@ -540,8 +540,7 @@ namespace FrameGen
 		params.Set2("Sharpness", 0.0f);
 		params.Set2("Jitter.Offset.X", 0.0f);
 		params.Set2("Jitter.Offset.Y", 0.0f);
-		// v0.8.24：Evaluate 补 bridge 子矩形/曝光键（dlss5-dx11-bridge 1063-1079 实锤）——
-		// EvaluateFeature 0xbad00005（参数无效）缺这些
+		// v0.8.24：Evaluate 补 bridge 子矩形/曝光键（dlss5-dx11-bridge 1063-1079 实锤）
 		params.Set4("DLSS.Render.Subrect.Dimensions.Width", a_width);
 		params.Set4("DLSS.Render.Subrect.Dimensions.Height", a_height);
 		params.Set4("DLSS.Input.Color.Subrect.Base.X", 0u);
@@ -554,6 +553,30 @@ namespace FrameGen
 		params.Set4("DLSS.Output.Subrect.Base.Y", 0u);
 		params.Set2("DLSS.Pre.Exposure", 1.0f);
 		params.Set2("DLSS.Exposure.Scale", 1.0f);
+		// v0.8.25：NR 专属子矩形键（PDPerfPlugin 字符串表实锤——NR 用
+		// DLSSNR.ColorSubrectBaseX 无点号拼接格式，不是 DLSS.* 格式）
+		params.Set4("DLSSNR.ColorSubrectBaseX", 0u);
+		params.Set4("DLSSNR.ColorSubrectBaseY", 0u);
+		params.Set4("DLSSNR.ColorSubrectWidth", a_width);
+		params.Set4("DLSSNR.ColorSubrectHeight", a_height);
+		params.Set4("DLSSNR.DepthSubrectBaseX", 0u);
+		params.Set4("DLSSNR.DepthSubrectBaseY", 0u);
+		params.Set4("DLSSNR.DepthSubrectWidth", a_width);
+		params.Set4("DLSSNR.DepthSubrectHeight", a_height);
+		params.Set4("DLSSNR.MVecSubrectBaseX", 0u);
+		params.Set4("DLSSNR.MVecSubrectBaseY", 0u);
+		params.Set4("DLSSNR.MVecSubrectWidth", a_width);
+		params.Set4("DLSSNR.MVecSubrectHeight", a_height);
+		params.Set4("DLSSNR.OutputSubrectBaseX", 0u);
+		params.Set4("DLSSNR.OutputSubrectBaseY", 0u);
+		params.Set4("DLSSNR.OutputSubrectWidth", a_width);
+		params.Set4("DLSSNR.OutputSubrectHeight", a_height);
+		params.Set4("DLSSNR.BackbufferSubrectBaseX", 0u);
+		params.Set4("DLSSNR.BackbufferSubrectBaseY", 0u);
+		params.Set4("DLSSNR.BackbufferSubrectWidth", a_width);
+		params.Set4("DLSSNR.BackbufferSubrectHeight", a_height);
+		params.Set7("DLSSNR.Backbuffer", a_output);
+		params.Set2("DLSSNR.LocalStructureStrength", s.nrLocalTone);
 
 		DWORD code = 0;
 		unsigned int r = Guarded([&] { return evalFeature(a_cmdList, handle, &params, nullptr); }, &code);
