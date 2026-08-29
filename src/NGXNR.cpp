@@ -250,6 +250,16 @@ namespace FrameGen
 				wp.Set4("CreationNodeMask", 1u);
 				wp.Set4("VisibilityNodeMask", 1u);
 
+				// 诊断 v0.8.15：CreateFeature 反汇编实锤第一步 =
+				// cmdList->GetDevice(IID_ID3D12Device)（vtable 槽 7，非 QueryInterface）——
+				// 0xbad00005 = GetDevice 失败。直接验证我们的 cmdList 的 GetDevice。
+				{
+					ID3D12Device* devFromList = nullptr;
+					HRESULT gdHr = a_cmdList->GetDevice(__uuidof(ID3D12Device), (void**)&devFromList);
+					SKSE::log::info("[NGXNR] cmdList->GetDevice(IID_ID3D12Device) -> hr={:#x} dev={}",
+						static_cast<unsigned int>(gdHr), (void*)devFromList);
+				}
+
 				// 诊断：GetScratchBufferSize —— CreateFeature 的前置，不碰 cmdList
 				if (scratchSize) {
 					unsigned long long sbSize = 0;
