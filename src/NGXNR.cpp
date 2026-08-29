@@ -1020,6 +1020,66 @@ namespace FrameGen
 							hmbi.State == MEM_COMMIT && (hmbi.Protect & (PAGE_READONLY | PAGE_READWRITE)))
 							handler = *reinterpret_cast<uintptr_t*>(handlerSlot);
 						SKSE::log::info("[NGXNR]   handler_slot@{} = {}", (void*)handlerSlot, (void*)handler);
+						// v0.8.54：槽 = jmp rax 跳板（FF E0）！真正执行体 = handler 表项
+						// [single + featureId*0x98 + 0x24B8]，single = 真实现
+						// mov rdi,[rip+0x74989]（capstone：指令在 +0x18，目标 = +0x1F+0x74989 = +0x749A8）
+						{
+							uintptr_t singleSlot = slotEval + 0x749A8;
+							uintptr_t single = 0;
+							MEMORY_BASIC_INFORMATION smbi = {};
+							if (VirtualQuery(reinterpret_cast<LPCVOID>(singleSlot), &smbi, sizeof(smbi)) &&
+								smbi.State == MEM_COMMIT && (smbi.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+								single = *reinterpret_cast<uintptr_t*>(singleSlot);
+							SKSE::log::info("[NGXNR]   single_slot@{} = {} (handler table base)",
+								(void*)singleSlot, (void*)single);
+							// featureId 从 handle+4 读（若 handle 有效）
+							unsigned int hFid = 0;
+							if (handle)
+								memcpy(&hFid, reinterpret_cast<const void*>(reinterpret_cast<uintptr_t>(handle) + 4), 4);
+							// handler 表项 [single + fid*0x98 + 0x24B8]
+							uintptr_t tableEntry = 0;
+							uintptr_t tableAddr = 0;
+							if (single) {
+								tableAddr = single + static_cast<uintptr_t>(hFid) * 0x98 + 0x24B8;
+								MEMORY_BASIC_INFORMATION tmbi = {};
+								if (VirtualQuery(reinterpret_cast<LPCVOID>(tableAddr), &tmbi, sizeof(tmbi)) &&
+									tmbi.State == MEM_COMMIT && (tmbi.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+									tableEntry = *reinterpret_cast<uintptr_t*>(tableAddr);
+							}
+							SKSE::log::info("[NGXNR]   handler_table[{}]@{} = {} (real eval impl)",
+								hFid, (void*)tableAddr, (void*)tableEntry);
+							// dump 执行体机器码（前 0x180 字节，3 段）
+							if (tableEntry) {
+								MEMORY_BASIC_INFORMATION embi = {};
+								uintptr_t eAlloc = 0;
+								SIZE_T eRegion = 0;
+								if (VirtualQuery(reinterpret_cast<LPCVOID>(tableEntry), &embi, sizeof(embi)) && embi.State == MEM_COMMIT) {
+									eAlloc = reinterpret_cast<uintptr_t>(embi.AllocationBase);
+									eRegion = embi.RegionSize;
+								}
+								SKSE::log::info("[NGXNR]   impl module: allocBase={} region={:#x} rva={:#x}",
+									(void*)eAlloc, eRegion,
+									eAlloc && tableEntry >= eAlloc ? tableEntry - eAlloc : 0);
+								bool readable = VirtualQuery(reinterpret_cast<LPCVOID>(tableEntry), &embi, sizeof(embi)) &&
+									embi.State == MEM_COMMIT &&
+									(embi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE | PAGE_EXECUTE_READ |
+										PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY | PAGE_WRITECOPY));
+								if (readable) {
+									uint8_t* ep = reinterpret_cast<uint8_t*>(tableEntry);
+									for (int seg = 0; seg < 3; ++seg) {
+										char ehex[300] = {};
+										int c = 0;
+										for (int i = 0; i < 0x80; ++i) {
+											uint8_t b = ep[seg * 0x80 + i];
+											c += sprintf(ehex + c, "%02X ", b);
+										}
+										SKSE::log::info("[NGXNR]   impl[+{:04x}]: {}", seg * 0x80, ehex);
+									}
+								} else {
+									SKSE::log::warn("[NGXNR]   impl not readable (prot={:#x})", static_cast<unsigned int>(embi.Protect));
+								}
+							}
+						}
 						if (handler) {
 							// v0.8.52：Protect 检查放宽（PAGE_EXECUTE_WRITECOPY=0x80 之前漏检）+
 							// dump handler 前 0x180 字节（3 段）+ handler 模块基址（AllocationBase）
