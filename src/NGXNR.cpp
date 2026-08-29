@@ -287,6 +287,24 @@ namespace FrameGen
 							Guarded([&] { return warmupRelease(wh); }, &rcode);
 						}
 
+						// v0.8.19：core 建立后重试 dlssnr 的 Init_Ext——
+						// 之前（core MISSING）返回 0xbad00002；core ok 后可能注册 NR feature
+						// 类型，CreateFeature 才认。试 0x13..0x16。
+						auto nrInitExt2 = reinterpret_cast<PFN_NGXInitExt>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Init_Ext"));
+						if (nrInitExt2 && !initialized) {
+							wchar_t dpath[MAX_PATH] = {};
+							GetModuleFileNameW(nullptr, dpath, MAX_PATH);
+							if (wchar_t* sp = wcsrchr(dpath, L'\\'))
+								*(sp + 1) = L'\0';
+							for (int ver = 0x13; ver <= 0x16; ++ver) {
+								DWORD icode = 0;
+								unsigned int ir = Guarded([&] { return nrInitExt2(kAppId, dpath, device, ver, nullptr); }, &icode);
+								SKSE::log::info("[NGXNR] nr Init_Ext(0x{:02X}) after-core -> {} (rc={:#x})", ver,
+									icode ? "faulted" : (ir == kNGXSuccess ? "ok" : "refused"), icode ? icode : ir);
+								if (icode == 0 && ir == kNGXSuccess) { initialized = true; initVersion = ver; break; }
+							}
+						}
+
 						// v0.8.17：core 就绪后查 dlssnr 的 feature 支持性——
 						// GetFeatureRequirements(featureId, device, &req) 直接回答
 						// "NR 在 4080+此驱动上是否支持"。req 布局（NVSDK_NGX_FeatureRequirement）：
@@ -323,7 +341,6 @@ namespace FrameGen
 			params.Set4("DLSSNR.Enabled", 1);
 			params.Set4("DLSSNR.DepthInverted", 0);			  // Skyrim depth: 近=0 远=1
 			params.Set4("DLSSNR.Hint.Render.Preset", 0);	  // 0=Auto (renodx: Preset #1/#2/#3)
-			params.Set4("DLSSNR.Reset", 1);					  // 创建时重置内部状态
 			params.Set4("PerfQualityValue", 2);				  // balanced-ish
 			params.Set4("DLSS.Mode", 0);
 			params.Set4("DLSS.Enable.Output.Subrects", 1);
@@ -336,6 +353,11 @@ namespace FrameGen
 			params.Set4("CreationNodeMask", 1u);
 			params.Set4("VisibilityNodeMask", 1u);
 			params.Set4("RTXValue", 0);
+			// v0.8.19：创建时也 Set 资源键（NR feature 创建可能绑定纹理）
+			params.Set7("DLSSNR.Color", a_color);
+			params.Set7("DLSSNR.Depth", a_depth);
+			params.Set7("DLSSNR.MVec", a_mvec);
+			params.Set7("DLSSNR.Output", a_output);
 
 			DWORD code = 0;
 			NGXHandle* h = nullptr;
