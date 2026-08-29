@@ -109,15 +109,30 @@ namespace FrameGen
 		// guarded calls: a wrong signature must land in the log, never crash the game
 		// v0.8.65：__except 里打异常详情（代码 + 异常地址 + 访问违例地址）——
 		// SetupDirectX 崩 0xc0000005 时直接看到访问地址，反推真实全局
+		// v0.8.72：加崩溃地址的模块解析（GetModuleHandleEx）——崩在哪个 DLL + RVA，
+		// 一次定位（InitDLSSNR 崩 0x7ffb82fdbf2e 模块身份之前是死结）
 		static int LogGuardedFault(EXCEPTION_POINTERS* a_ep, DWORD* a_code)
 		{
 			*a_code = a_ep->ExceptionRecord->ExceptionCode;
 			uintptr_t access = 0;
 			if (a_ep->ExceptionRecord->NumberParameters >= 2)
 				access = static_cast<uintptr_t>(a_ep->ExceptionRecord->ExceptionInformation[1]);
-			SKSE::log::error("[NGXNR] Guarded fault: code={:#x} @{} access={}",
+			uintptr_t rip = reinterpret_cast<uintptr_t>(a_ep->ExceptionRecord->ExceptionAddress);
+			std::string modInfo = "?";
+			HMODULE hmod = nullptr;
+			if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+					reinterpret_cast<LPCWSTR>(rip), &hmod) && hmod) {
+				wchar_t wname[MAX_PATH] = {};
+				GetModuleFileNameW(hmod, wname, MAX_PATH);
+				std::wstring wn = wname;
+				auto slash = wn.find_last_of(L'\\');
+				if (slash != std::wstring::npos)
+					wn = wn.substr(slash + 1);
+				modInfo = w2a(wn) + "+0x" + fmt::format("{:x}", rip - reinterpret_cast<uintptr_t>(hmod));
+			}
+			SKSE::log::error("[NGXNR] Guarded fault: code={:#x} @{} ({}) access={}",
 				a_ep->ExceptionRecord->ExceptionCode,
-				(void*)a_ep->ExceptionRecord->ExceptionAddress, (void*)access);
+				(void*)rip, modInfo, (void*)access);
 			return EXCEPTION_EXECUTE_HANDLER;
 		}
 		template <class Fn, class... Args>
