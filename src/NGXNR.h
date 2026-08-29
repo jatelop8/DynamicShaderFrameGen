@@ -238,6 +238,16 @@ namespace FrameGen
 		void* pdCapsFn = nullptr;
 		void* pdAllocParams = nullptr;
 		void* pdReleaseFeature = nullptr;
+		// v0.8.62：InitDLSSNR——PD 的 NR 初始化入口（单例 vtable[29]）。
+		// 反汇编实锤：EvaluateDLSSNR 检查 "DLSSNR: Evaluate called before Init
+		// for id=%d"（0x1c3f0 找已初始化 id 条目）——**必须先 Init 才能 Evaluate**！
+		// 且 v0.8.60 的"标准 API 优先"是错的：PD 的 NVSDK_NGX_D3D12_Create/
+		// EvaluateFeature 只是驱动 core（nvngx.dll）的薄包装（静态解析 [0xAE848]/
+		// [0xAE850]）——Evaluate 仍会 5。真正绕开 5 的路径 = SetupDirectX +
+		// InitDLSSNR + EvaluateDLSSNR（结构体 0x108，PD 自己的 NR 执行器 vtable[26]）。
+		void* pdInitDLSSNR = nullptr;
+		bool pdNrInitOk = false;      // InitDLSSNR 成功（执行器已分配，[0x8CDAE] 单例非空）
+		unsigned int pdNrInitResult = 0;
 		bool pdCapsQueried = false;
 		// v0.8.33：dlssnr snippet 在 core 会话上的注册状态——它的 Init_Ext 负责把
 		// NR feature 类型注册进 core；不注册则 dlssnr CreateFeature 恒 0xbad00002。
