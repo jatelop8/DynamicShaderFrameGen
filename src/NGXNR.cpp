@@ -448,58 +448,72 @@ namespace FrameGen
 
 		DWORD code = 0;
 		NGXFeatureCommonInfo fci{};  // v0.8.12：非空 FeatureCommonInfo（排除参数缺失）
-		// 3a) v0.8.57 重大修正：**无条件**调 dlss.dll（coreModule）的 Init_Ext——
-		// dlss.dll 的 CreateFeature（@0x2C8B0）需要它自己的 Init_Ext 建立内部状态
-		// （FNV 哈希表初始化 + feature 注册），否则查表恒失败（v0.8.55/56 日志：
-		// dlss_table 全垃圾 + handler 表项空 = dlss.dll 状态从未建立）。
-		// 旧代码 `!coreInitOk` gate 在驱动 core 会话成功后（coreInitOk=true）挡住，
-		// dlss.dll Init_Ext 从未执行过！
-		if (coreModule && initExt12) {
-			for (int ver = 0x13; ver <= 0x16 && !dlssInitOk; ++ver) {
-				unsigned int r = Guarded([&] { return initExt12(kAppId, dataPath, a_device, ver, &fci); }, &code);
-				SKSE::log::info("[NGXNR] dlss Init_Ext(0x{:02X}) -> {} (rc={:#x})", ver,
-					code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r);
+		// v0.18 重大修正：3a/3b/3c 直测段默认**禁用**——v0.17 实锤闪退：
+		//   3c 直测 dlssnr Init_Ext（7-patch 后进入真初始化路径）在游戏环境
+		//   （有 sl.interposer/驱动 D3D12 栈）跳转到无效地址 0x7FFC9FABA6CC
+		//   （crash-2026-08-29-22-12-32.log：R15="nr Init_Ext after-core"、
+		//   崩溃地址无任何模块归属）→ EXCEPTION_ACCESS_VIOLATION 且穿透 SEH。
+		//   harness 干净环境成功 ≠ 游戏安全。直测只应存在于独立 harness。
+		//   dlss/dlssnr 的正规初始化由 Streamline sl.dlss_nr（feature 1004）
+		//   内部完成，本插件只负责 Prepare 补丁 + 查询验证。
+		if (Get().settings.nrDirectTest) {
+			// 3a) v0.8.57 重大修正：**无条件**调 dlss.dll（coreModule）的 Init_Ext——
+			// dlss.dll 的 CreateFeature（@0x2C8B0）需要它自己的 Init_Ext 建立内部状态
+			// （FNV 哈希表初始化 + feature 注册），否则查表恒失败（v0.8.55/56 日志：
+			// dlss_table 全垃圾 + handler 表项空 = dlss.dll 状态从未建立）。
+			// 旧代码 `!coreInitOk` gate 在驱动 core 会话成功后（coreInitOk=true）挡住，
+			// dlss.dll Init_Ext 从未执行过！
+			if (coreModule && initExt12) {
+				for (int ver = 0x13; ver <= 0x16 && !dlssInitOk; ++ver) {
+					unsigned int r = Guarded([&] { return initExt12(kAppId, dataPath, a_device, ver, &fci); }, &code);
+					SKSE::log::info("[NGXNR] dlss Init_Ext(0x{:02X}) -> {} (rc={:#x})", ver,
+						code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r);
+					if (code == 0 && r == kNGXSuccess) {
+						dlssInitOk = true;
+						dlssInitVersion = ver;
+					}
+				}
+				if (dlssInitOk)
+					SKSE::log::info("[NGXNR] dlss.dll internal state established (table will init on CreateFeature)");
+				else
+					SKSE::log::warn("[NGXNR] dlss.dll Init_Ext refused - CreateFeature may not register its hash table");
+			}
+			// 3b) 备选：dlss.dll 的 D3D11_Init（3 参。反汇编 0x2B440 = stub 0xBAD00001——
+			// v0.8.12 修正：先前把 0x2B420（GetScratchBufferSize）误认为 D3D11_Init）
+			if (!coreInitOk && init11) {
+				void* dummy = nullptr;
+				unsigned int r = Guarded([&] { return init11(kAppId, dataPath, &dummy); }, &code);
+				SKSE::log::info("[NGXNR] core D3D11_Init -> {} (rc={:#x})", code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r);
 				if (code == 0 && r == kNGXSuccess) {
-					dlssInitOk = true;
-					dlssInitVersion = ver;
+					coreInitOk = true;
+					coreInitResult = r;
+					SKSE::log::info("[NGXNR] NGX core session established via D3D11_Init (SkyrimUpscaler pattern)");
 				}
 			}
-			if (dlssInitOk)
-				SKSE::log::info("[NGXNR] dlss.dll internal state established (table will init on CreateFeature)");
-			else
-				SKSE::log::warn("[NGXNR] dlss.dll Init_Ext refused - CreateFeature may not register its hash table");
-		}
-		// 3b) 备选：dlss.dll 的 D3D11_Init（3 参。反汇编 0x2B440 = stub 0xBAD00001——
-		// v0.8.12 修正：先前把 0x2B420（GetScratchBufferSize）误认为 D3D11_Init）
-		if (!coreInitOk && init11) {
-			void* dummy = nullptr;
-			unsigned int r = Guarded([&] { return init11(kAppId, dataPath, &dummy); }, &code);
-			SKSE::log::info("[NGXNR] core D3D11_Init -> {} (rc={:#x})", code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r);
-			if (code == 0 && r == kNGXSuccess) {
-				coreInitOk = true;
-				coreInitResult = r;
-				SKSE::log::info("[NGXNR] NGX core session established via D3D11_Init (SkyrimUpscaler pattern)");
-			}
-		}
-		// 3c) v0.8.33 修正：驱动 core 会话建立后，**无条件**重试 dlssnr 的 Init_Ext——
-		// 它负责把 NR feature 类型注册进 core 会话（v0.8.19 的推理，但旧代码
-		// `!initialized` gate 在驱动 core 成功后是 false，从未执行过！）。
-		// dlssnr 的 CreateFeature 需要它自己的 Init_Ext 先注册。
-		if (nrInitExt) {
-			for (int ver = 0x13; ver <= 0x16 && !snippetInitialized; ++ver) {
-				unsigned int r = Guarded([&] { return nrInitExt(kAppId, dataPath, a_device, ver, &fci); }, &code);
-				SKSE::log::info("[NGXNR] nr Init_Ext(0x{:02X}) after-core -> {} (rc={:#x})", ver,
-					code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r);
-				if (code == 0 && r == kNGXSuccess) {
-					snippetInitialized = true;
-					snippetInitResult = r;
-					initVersion = ver;
+			// 3c) v0.8.33 修正：驱动 core 会话建立后，**无条件**重试 dlssnr 的 Init_Ext——
+			// 它负责把 NR feature 类型注册进 core 会话（v0.8.19 的推理，但旧代码
+			// `!initialized` gate 在驱动 core 成功后是 false，从未执行过！）。
+			// dlssnr 的 CreateFeature 需要它自己的 Init_Ext 先注册。
+			// ★ v0.18：此处是 v0.17 闪退点（见上注释），仅 NRDirectTest=1 时执行。
+			if (nrInitExt) {
+				for (int ver = 0x13; ver <= 0x16 && !snippetInitialized; ++ver) {
+					unsigned int r = Guarded([&] { return nrInitExt(kAppId, dataPath, a_device, ver, &fci); }, &code);
+					SKSE::log::info("[NGXNR] nr Init_Ext(0x{:02X}) after-core -> {} (rc={:#x})", ver,
+						code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r);
+					if (code == 0 && r == kNGXSuccess) {
+						snippetInitialized = true;
+						snippetInitResult = r;
+						initVersion = ver;
+					}
 				}
+				if (snippetInitialized)
+					SKSE::log::info("[NGXNR] dlssnr snippet registered into core session (rc={:#x})", snippetInitResult);
+				else
+					SKSE::log::warn("[NGXNR] dlssnr Init_Ext all refused - NR feature registration failed (rc={:#x})", snippetInitResult);
 			}
-			if (snippetInitialized)
-				SKSE::log::info("[NGXNR] dlssnr snippet registered into core session (rc={:#x})", snippetInitResult);
-			else
-				SKSE::log::warn("[NGXNR] dlssnr Init_Ext all refused - NR feature registration failed (rc={:#x})", snippetInitResult);
+		} else {
+			// v0.18：直测禁用（部署默认）——dlssnr 初始化交给 Streamline 1004 通道
+			SKSE::log::info("[NGXNR] direct Init_Ext tests DISABLED (NRDirectTest=0) - dlssnr init delegated to Streamline channel");
 		}
 		if (!coreInitOk)
 			SKSE::log::warn("[NGXNR] no NGX core session (rc={:#x}) - will try dlss.dll warmup CreateFeature on first evaluate frame", coreInitResult);
@@ -793,6 +807,26 @@ namespace FrameGen
 				interposer = LoadLibraryW(L"sl.interposer.dll");
 			SKSE::log::info("[NGXNR] v0.12 sl.interposer = {}",
 				(void*)interposer);
+			// v0.18：数据点——sl.dlss_nr.dll 是否被 Streamline 加载。
+			// v0.17 崩溃转储（crash-2026-08-29-22-12-32.log）MODULES 无 sl.dlss_nr.dll
+			// → interposer 未加载 NR 桥 → feature 1004 永不注册（v0.12 实测
+			// slGetFeatureFunction(1004) 恒 31 的根因）。featuresNR 声明了 1004 但仍
+			// 不加载 = interposer 版本不识别 1004 枚举或需新版 SDK 桥。
+			HMODULE slNrMod = GetModuleHandleW(L"sl.dlss_nr.dll");
+			SKSE::log::info("[NGXNR] sl.dlss_nr.dll loaded by Streamline: {} (mod={})",
+				slNrMod ? "YES" : "NO (1004 will NOT register)", (void*)slNrMod);
+			if (slNrMod) {
+				using PFN_slIsFeatureLoaded = long long(__cdecl*)(unsigned long long, bool&);
+				auto fnLoaded = reinterpret_cast<PFN_slIsFeatureLoaded>(GetProcAddress(interposer, "slIsFeatureLoaded"));
+				if (fnLoaded) {
+					bool nrLoaded = false;
+					DWORD lc = 0;
+					Guarded([&] { return (unsigned int)fnLoaded(1004, nrLoaded); }, &lc);
+					SKSE::log::info("[NGXNR] slIsFeatureLoaded(1004) = {} (fault={:#x})", nrLoaded, lc);
+				} else {
+					SKSE::log::warn("[NGXNR] slIsFeatureLoaded not exported by interposer");
+				}
+			}
 			if (interposer && ngxModule) {
 				using PFN_slGetFeatureRequirements = long long(__cdecl*)(unsigned long long, void*);
 				using PFN_slGetFeatureFunction = long long(__cdecl*)(unsigned long long, const char*, void*&);
@@ -834,20 +868,25 @@ namespace FrameGen
 		// AllocateParameters 的 realParams 直调 dlssnr Init_Ext，确认游戏环境里
 		// dlssnr 能否独立初始化（返回 1=成功 → sl.dlss_nr 没走 Init_Ext 或另有原因；
 		// 返回 bad00002 → dlssnr 内部还有关卡，需 NvAPI_Status 定位）。
-		if (ngxModule && coreInitOk && realParams) {
-			auto nrInitExtFn = reinterpret_cast<PFN_NGXInitExt>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Init_Ext"));
-			if (nrInitExtFn) {
-				DWORD g2 = 0;
-				unsigned int ir2 = 0;
-				Guarded([&] { return ir2 = nrInitExtFn(0x1337, L"", device, initVersion, realParams); }, &g2);
-				SKSE::log::info("[NGXNR] v0.14 dlssnr Init_Ext direct (core session, ver={:#x}) -> {:#x} (fault={:#x})",
-					initVersion, ir2, g2);
+		// ★ v0.18：与 3c 同源风险（直测 dlssnr Init_Ext 真路径），默认禁用。
+		if (Get().settings.nrDirectTest) {
+			if (ngxModule && coreInitOk && realParams) {
+				auto nrInitExtFn = reinterpret_cast<PFN_NGXInitExt>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Init_Ext"));
+				if (nrInitExtFn) {
+					DWORD g2 = 0;
+					unsigned int ir2 = 0;
+					Guarded([&] { return ir2 = nrInitExtFn(0x1337, L"", device, initVersion, realParams); }, &g2);
+					SKSE::log::info("[NGXNR] v0.14 dlssnr Init_Ext direct (core session, ver={:#x}) -> {:#x} (fault={:#x})",
+						initVersion, ir2, g2);
+				} else {
+					SKSE::log::warn("[NGXNR] v0.14 dlssnr NVSDK_NGX_D3D12_Init_Ext NOT exported");
+				}
 			} else {
-				SKSE::log::warn("[NGXNR] v0.14 dlssnr NVSDK_NGX_D3D12_Init_Ext NOT exported");
+				SKSE::log::info("[NGXNR] v0.14 dlssnr direct init skipped (ngxModule={} coreInitOk={} realParams={})",
+					(void*)ngxModule, coreInitOk, (void*)realParams);
 			}
 		} else {
-			SKSE::log::info("[NGXNR] v0.14 dlssnr direct init skipped (ngxModule={} coreInitOk={} realParams={})",
-				(void*)ngxModule, coreInitOk, (void*)realParams);
+			SKSE::log::info("[NGXNR] v0.14 dlssnr direct init skipped (NRDirectTest=0)");
 		}
 
 		// --- v0.8.58：PDPerfPlugin 直调探测（SkyrimUpscaler 实锤跑通 NR 的完整
@@ -1652,18 +1691,21 @@ namespace FrameGen
 						// v0.8.19：core 建立后重试 dlssnr 的 Init_Ext——
 						// 之前（core MISSING）返回 0xbad00002；core ok 后可能注册 NR feature
 						// 类型，CreateFeature 才认。试 0x13..0x16。
-						auto nrInitExt2 = reinterpret_cast<PFN_NGXInitExt>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Init_Ext"));
-						if (nrInitExt2 && !initialized) {
-							wchar_t dpath[MAX_PATH] = {};
-							GetModuleFileNameW(nullptr, dpath, MAX_PATH);
-							if (wchar_t* sp = wcsrchr(dpath, L'\\'))
-								*(sp + 1) = L'\0';
-							for (int ver = 0x13; ver <= 0x16; ++ver) {
-								DWORD icode = 0;
-								unsigned int ir = Guarded([&] { return nrInitExt2(kAppId, dpath, device, ver, nullptr); }, &icode);
-								SKSE::log::info("[NGXNR] nr Init_Ext(0x{:02X}) after-core -> {} (rc={:#x})", ver,
-									icode ? "faulted" : (ir == kNGXSuccess ? "ok" : "refused"), icode ? icode : ir);
-								if (icode == 0 && ir == kNGXSuccess) { initialized = true; initVersion = ver; break; }
+						// ★ v0.18：与 3c 同源崩溃风险，仅 NRDirectTest=1 时执行。
+						if (Get().settings.nrDirectTest) {
+							auto nrInitExt2 = reinterpret_cast<PFN_NGXInitExt>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Init_Ext"));
+							if (nrInitExt2 && !initialized) {
+								wchar_t dpath[MAX_PATH] = {};
+								GetModuleFileNameW(nullptr, dpath, MAX_PATH);
+								if (wchar_t* sp = wcsrchr(dpath, L'\\'))
+									*(sp + 1) = L'\0';
+								for (int ver = 0x13; ver <= 0x16; ++ver) {
+									DWORD icode = 0;
+									unsigned int ir = Guarded([&] { return nrInitExt2(kAppId, dpath, device, ver, nullptr); }, &icode);
+									SKSE::log::info("[NGXNR] nr Init_Ext(0x{:02X}) after-core -> {} (rc={:#x})", ver,
+										icode ? "faulted" : (ir == kNGXSuccess ? "ok" : "refused"), icode ? icode : ir);
+									if (icode == 0 && ir == kNGXSuccess) { initialized = true; initVersion = ver; break; }
+								}
 							}
 						}
 

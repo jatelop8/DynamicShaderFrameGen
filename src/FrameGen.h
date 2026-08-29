@@ -107,6 +107,7 @@ namespace FrameGen
 		float nrLocalTone = 0.0f;      // DLSSNR.LocalToneStrength（0-1）
 		float nrSkinStructure = 0.0f;  // DLSSNR.SkinStructureStrength（0-1）
 		int  streamlineLogLevel = 0;   // 0=Off 1=Default 2=Verbose
+		bool nrDirectTest = false;     // v0.18：NR 直测开关（开发用，默认关——直测 dlssnr Init_Ext 在游戏环境闪退，仅 harness 可开）
 		// v0.7.2：Skyrim 键码 = DIK 扫描码（Home=199/0xC7），不是 VK 码（0x24 无效——
 		// SKSE GetIDCode 返回 DIK）。菜单/插帧统一走 PollHomeKey 每帧轮询 VK_HOME。
 		std::uint32_t toggleKey = 0xC7;  // 保留（INI 兼容），实际用 VK_HOME 轮询
