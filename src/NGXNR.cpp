@@ -64,6 +64,8 @@ namespace FrameGen
 	// ------------------------------------------------------------------
 	void NGXNR::Init(ID3D12Device* a_device, const wchar_t* a_pluginDir)
 	{
+		SKSE::log::info("[NGXNR] Init called: device={} initialized={} dir={}", (void*)a_device, initialized,
+			a_pluginDir ? w2a(a_pluginDir) : "(null)");
 		if (initialized || !a_device)
 			return;
 		device = a_device;
