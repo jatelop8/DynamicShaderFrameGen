@@ -1,31 +1,26 @@
 #pragma once
-// v0.8: DLSS Neural Radiance (DLSS-NR) via direct NGX calls (renodx-style).
+// v0.8.1: DLSS Neural Radiance (DLSS-NR) via direct NGX calls.
 //
-// WHY NOT STREAMLINE:
-//   - Streamline is a process-global single instance bound to ONE device
-//     (slInit + slSetD3DDevice, confirmed in official ProgrammingGuide).
-//   - Our existing SL instance is D3D11 (DLSS upscaling, FSR3 mode).
-//   - sl.dlss_nr.dll manifest declares rhi = ["d3d12","vk"] (verified by
-//     extracting the embedded manifest: id 1004, priority 100) -> SL will
-//     never load it on a D3D11 instance.
-//   - NGX (NVSDK_NGX_D3D12_Init) is an independent framework - it does NOT
-//     go through Streamline, so it coexists with our D3D11 SL instance with
-//     zero conflict. renodx-dlss5 uses exactly this approach (it hooks
-//     slEvaluateFeature only for NGX/Streamline deduplication).
+// Interface verified against NIGos/dlss5-dx11-bridge (MIT) — the NGX entry
+// points are undocumented; that project recovered the real signatures from
+// disassembly and proved them on multiple engines (BG3 / Fallout 4 / Unity).
+// Three corrections vs v0.8:
+//   1. NVSDK_NGX_D3D12_CreateFeature(cmdList, feature_id, params, &handle)
+//      — feature_id is a plain int, hardcoded 1 (SuperSampling). DLSS-NR is
+//      NOT a separate feature: it is SuperSampling + DLSSNR.* params.
+//   2. Per-frame call is NVSDK_NGX_D3D12_EvaluateFeature, not UpdateFeature.
+//   3. Init must NEGOTIATE the SDK version (0x13..0x16) across
+//      NVSDK_NGX_D3D12_Init_Ext / _Init_ProjectID; a hardcoded constant
+//      faults the whole D3D12 session on other drivers.
+//   4. GPU capability gate: GetCapabilityParameters ->
+//      "SuperSamplingDenoising.Available" (0 on RTX 40 = no sm_120 kernel).
 //
-// REQUIREMENTS (runtime files, NOT redistributed):
-//   - nvngx_dlss.dll        (NGX core runtime, exports NVSDK_NGX_*)
-//   - nvngx_dlssnr.dll      (DLSS-NR feature, 158 MB, sm_120 only = RTX 50xx)
-//   User drops these into the mod's Streamline folder. If missing or the GPU
-//   has no matching cubin (e.g. RTX 4080 / sm89), feature creation fails and
-//   the menu item is greyed out - never a crash.
+// Architecture: NGX is independent of Streamline (which is single-instance
+// per process bound to one device — ours is D3D11 for DLSS upscaling). We
+// init NGX on our own D3D12 device via shared textures, zero conflict.
 //
-// INTERFACE (reverse-engineered from nvngx_dlssnr.dll strings, verified):
-//   feature id 1004 "sl.dlss_nr" (Streamline id; NGX feature enum probed)
-//   params: DLSSNR.Color / .MVec / .Depth / .Output (ID3D12Resource*)
-//           DLSSNR.Intensity / .Style / .LocalToneStrength /
-//           .SkinStructureStrength / .LocalStructureStrength / .Reset / ...
-//   NGX parameter object = NGXInstanceParameters (vtable, Set/Get by name)
+// Runtime files (NOT redistributed): nvngx_dlss.dll + nvngx_dlssnr.dll
+// dropped into the mod's Streamline folder by the user.
 
 #include <cstdint>
 
@@ -34,54 +29,50 @@ typedef struct HINSTANCE__* HMODULE;
 
 struct ID3D12Device;
 struct ID3D12Resource;
+struct ID3D11Resource;
 struct ID3D12GraphicsCommandList;
 
 namespace FrameGen
 {
-	// NGXInstanceParameters vtable (from sl.common.dll / nvngx_dlss.dll),
-	// same layout as dlssg-to-fsr3's reverse-engineered header.
+	// NGXInstanceParameters vtable (from dlssg-to-fsr3 + dlss5-dx11-bridge,
+	// same layout, slot order verified by both projects):
+	//   Set: 0=u64 1=float 2=double 3=uint 4=int 5=ID3D11Resource* 6=ID3D12Resource* 7=void*
+	//   Get: 0=u64 1=float 2=double 3=uint 4=int 5=ID3D11Resource* 6=float 7=void*  (+Unknown)
 	struct NGXInstanceParameters
 	{
-		virtual void SetVoidPointer(const char* name, void* value) = 0;			   // vtable 0
-		virtual void Set2(const char* name, float value) = 0;					   // 8
-		virtual void Set3(const char* name, void* unknown) = 0;					   // 10
-		virtual void Set4(const char* name, std::uint32_t value) = 0;			   // 18
-		virtual void Set5(const char* name, std::uint32_t value) = 0;			   // 20
-		virtual void Set6(const char* name, void* unknown) = 0;					   // 28
-		virtual void Set7(const char* name, ID3D12Resource* value) = 0;			   // 30
-		virtual void Set8(const char* name, void* value) = 0;					   // 38
-		virtual std::uint32_t GetVoidPointer(const char* name, void** value) = 0;  // 40
-		virtual std::uint32_t Get2(const char* name, float* value) = 0;			   // 48
-		virtual std::uint32_t Get3(const char* name, void* value) = 0;			   // 50
-		virtual std::uint32_t Get4(const char* name, std::uint32_t* value) = 0;	   // 58
-		virtual std::uint32_t Get5(const char* name, std::uint32_t* value) = 0;	   // 60
-		virtual std::uint32_t Get6(const char* name, void* unknown) = 0;		   // 68
-		virtual std::uint32_t Get7(const char* name, float* value) = 0;			   // 70
-		virtual std::uint32_t Get8(const char* name, void* unknown) = 0;		   // 78
+		virtual void Set(const char* name, unsigned long long value) = 0;	 // 0
+		virtual void Set(const char* name, float value) = 0;				 // 1
+		virtual void Set(const char* name, double value) = 0;				 // 2
+		virtual void Set(const char* name, unsigned int value) = 0;		 // 3
+		virtual void Set(const char* name, int value) = 0;					 // 4
+		virtual void Set(const char* name, ID3D11Resource* value) = 0;		 // 5
+		virtual void Set(const char* name, ID3D12Resource* value) = 0;		 // 6
+		virtual void Set(const char* name, void* value) = 0;				 // 7
+		virtual unsigned int Get0(const char* name, unsigned long long* value) const = 0;	 // 8
+		virtual unsigned int Get1(const char* name, float* value) const = 0;				 // 9
+		virtual unsigned int Get2(const char* name, void* value) const = 0;				 // 10
+		virtual unsigned int Get3(const char* name, unsigned int* value) const = 0;		 // 11
+		virtual unsigned int Get4(const char* name, int* value) const = 0;					 // 12
+		virtual unsigned int Get5(const char* name, ID3D11Resource** value) const = 0;		 // 13
+		virtual unsigned int Get6(const char* name, float* value) const = 0;				 // 14
+		virtual unsigned int Get7(const char* name, void** value) const = 0;				 // 15
 		virtual void Unknown() = 0;
 	};
 
-	// NGX return codes (NGX_SUCCESS == 0x1, verified in dlssg-to-fsr3)
-	inline constexpr std::uint32_t kNGXSuccess = 0x1;
-	inline constexpr std::uint32_t kNGXFeatureNotFound = 0xBAD00004;
-	inline constexpr std::uint32_t kNGXInvalidParameter = 0xBAD00005;
-
-	// Feature create parameter passed to NVSDK_NGX_D3D12_CreateFeature
-	struct NGXFeatureCreateParameter
+	struct NGXHandle
 	{
-		std::uint32_t feature;	 // NVSDK_NGX_Feature id (probed)
-		std::uint32_t sdkVersion;
-		std::uint32_t apiVersion;
+		unsigned int id = 0;
 	};
 
-	// DLSS-NR via NGX. All NVSDK_NGX_* resolved at runtime from nvngx_dlss.dll.
+	// NGX return codes
+	inline constexpr unsigned int kNGXSuccess = 0x1;
+
 	class NGXNR
 	{
 	public:
-		bool initialized = false;   // NGX D3D12 initialized
+		bool initialized = false;   // NGX D3D12 session initialised
 		bool featureCreated = false;
-		bool supported = false;	   // feature id probe succeeded (GPU capable)
-		std::uint32_t featureId = 0;  // probed NVSDK_NGX_Feature id
+		bool supported = false;     // SuperSamplingDenoising.Available == 1 (RTX 50 only)
 
 		// settings (mirrored by INI/GUI)
 		bool enable = true;
@@ -90,30 +81,30 @@ namespace FrameGen
 		float localToneStrength = 0.0f;
 		float skinStructureStrength = 0.0f;
 
-		// Runtime resources (D3D12 side of our shared textures)
 		void Init(ID3D12Device* a_device, const wchar_t* a_pluginDir);
 		void Shutdown();
-		// Probe NVSDK_NGX_Feature id for DLSS-NR by trial (distinguishes
-		// "invalid feature" from "architecture not supported")
-		std::uint32_t ProbeFeatureId(NGXInstanceParameters* a_params, std::uint32_t a_maxTries = 24);
-		// Evaluate one frame. Returns true when the feature ran.
+		// Per-frame: bind resources + params, run NVSDK_NGX_D3D12_EvaluateFeature.
+		// a_cmdList must be an OPEN direct command list (recorded, executed later).
+		// Returns true when the feature ran successfully.
 		bool Evaluate(ID3D12Resource* a_color, ID3D12Resource* a_depth, ID3D12Resource* a_mvec,
-			ID3D12Resource* a_output, std::uint32_t a_width, std::uint32_t a_height,
+			ID3D12Resource* a_output, unsigned int a_width, unsigned int a_height,
 			ID3D12GraphicsCommandList* a_cmdList);
 
-		// state for GUI
-		bool nvngxPresent = false;	   // nvngx_dlss.dll found
-		bool nvngxNrPresent = false;   // nvngx_dlssnr.dll found
+		// state for GUI/log
+		bool nvngxPresent = false;
+		bool nvngxNrPresent = false;
 		bool lastEvaluateOk = false;
-		std::uint32_t lastCreateResult = 0;
-		std::uint32_t lastEvaluateResult = 0;
+		unsigned int lastCreateResult = 0;
+		unsigned int lastEvaluateResult = 0;
+		int initVersion = 0;   // negotiated SDK version (0x13..0x16)
 
 	private:
 		ID3D12Device* device = nullptr;
 		HMODULE ngxModule = nullptr;
 		NGXInstanceParameters* params = nullptr;
-		void* handle = nullptr;	 // NVSDK_NGX_Handle*
-		std::uint32_t outWidth = 0;
-		std::uint32_t outHeight = 0;
+		NGXHandle* handle = nullptr;
+		unsigned int outWidth = 0;
+		unsigned int outHeight = 0;
+		bool needCreate = true;
 	};
 }  // namespace FrameGen

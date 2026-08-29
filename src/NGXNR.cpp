@@ -1,3 +1,7 @@
+// NGX entry-point signatures and negotiation logic derived from
+//   dlss5-dx11-bridge (c) 2026 NIGos — MIT License
+//   https://github.com/NIGos/dlss5-dx11-bridge
+//   (recovered from disassembly; proven on BG3 / Fallout 4 / Unity)
 #include "NGXNR.h"
 
 #include <SKSE/SKSE.h>
@@ -8,33 +12,29 @@
 namespace FrameGen
 {
 	// ------------------------------------------------------------------
-	// NGX function signatures (stable public NGX SDK API, resolved at runtime)
+	// NGX function signatures — recovered from disassembly by the
+	// dlss5-dx11-bridge project (MIT) and proven on multiple engines.
 	// ------------------------------------------------------------------
-	using PFN_NGX_D3D12_Init = std::uint32_t(__cdecl*)(unsigned long long a_appId,
-		const wchar_t* a_dataPath, ID3D12Device* a_device,
-		const void* a_featureInfo, std::uint32_t a_sdkVersion);
-	using PFN_NGX_D3D12_GetParameters = std::uint32_t(__cdecl*)(NGXInstanceParameters** a_params);
-	using PFN_NGX_D3D12_CreateFeature = std::uint32_t(__cdecl*)(const NGXFeatureCreateParameter* a_create,
-		const NGXInstanceParameters* a_params, void** a_handle);
-	using PFN_NGX_D3D12_UpdateFeature = std::uint32_t(__cdecl*)(void* a_handle,
-		const NGXInstanceParameters* a_params, ID3D12GraphicsCommandList* a_cmdList,
-		const unsigned long long* a_renderRes, void* a_elapsed);
-	using PFN_NGX_D3D12_Shutdown = std::uint32_t(__cdecl*)();
+	using PFN_NGXInitExt = unsigned int(__cdecl*)(unsigned long long a_appId,
+		const wchar_t* a_dataPath, ID3D12Device* a_device, int a_version, const void* a_featureInfo);
+	using PFN_NGXInitProjectID = unsigned int(__cdecl*)(const char* a_project, int a_engineType,
+		const char* a_version, const wchar_t* a_dataPath, ID3D12Device* a_device,
+		int a_sdkVersion, const void* a_featureInfo);
+	using PFN_NGXAllocParams = unsigned int(__cdecl*)(NGXInstanceParameters** a_params);
+	using PFN_NGXCreateFeature = unsigned int(__cdecl*)(ID3D12GraphicsCommandList* a_cmdList,
+		int a_featureId, NGXInstanceParameters* a_params, NGXHandle** a_handle);
+	using PFN_NGXEvaluateFeature = unsigned int(__cdecl*)(ID3D12GraphicsCommandList* a_cmdList,
+		const NGXHandle* a_handle, const NGXInstanceParameters* a_params, void* a_callback);
+	using PFN_NGXReleaseFeature = unsigned int(__cdecl*)(NGXHandle* a_handle);
+	using PFN_NGXGetCaps = unsigned int(__cdecl*)(NGXInstanceParameters** a_caps);
 
 	namespace
 	{
-		// NGX SDK version as packed by NVSDK_NGX_Version (major<<16 | minor<<8 | patch)
-		// matches NGX rel_310_8 (3.10.8) seen in nvngx_dlssnr.dll build path
-		constexpr std::uint32_t kNGXSDKVersion = 0x00031008;
-		constexpr unsigned long long kAppId = 0x4E525832;  // 'NRX2'
+		constexpr unsigned long long kAppId = 0x1000000ULL;
+		constexpr const char* kProjectId = "a0f57b54-1daf-4934-90ae-c4035c19df04";  // bridge's tested GUID
+		constexpr int kFeatureSuperSampling = 1;  // DLSS-NR is a sub-mode of SuperSampling
+		constexpr unsigned int kNGXExceptionMarker = 0x7FFFFFFF;
 
-		// Common NGX parameter names (stable across NGX SDK versions)
-		constexpr const char* kParamPerfQuality = "PerfQualityValue";
-		constexpr const char* kParamWidth = "DLSSNR.Width";
-		constexpr const char* kParamHeight = "DLSSNR.Height";
-		constexpr const char* kParamHintPreset = "DLSSNR.Hint.Render.Preset";
-
-		// wide -> utf8 helper (avoid CommonLib stl dependency in this TU)
 		std::string w2a(const std::wstring& a_w)
 		{
 			if (a_w.empty())
@@ -44,10 +44,23 @@ namespace FrameGen
 			WideCharToMultiByte(CP_UTF8, 0, a_w.c_str(), static_cast<int>(a_w.size()), &s[0], len, nullptr, nullptr);
 			return s;
 		}
+
+		// guarded calls: a wrong signature must land in the log, never crash the game
+		template <class Fn, class... Args>
+		unsigned int Guarded(Fn a_fn, DWORD* a_code, Args&&... a_args)
+		{
+			*a_code = 0;
+			__try {
+				return a_fn(std::forward<Args>(a_args)...);
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				*a_code = GetExceptionCode();
+				return kNGXExceptionMarker;
+			}
+		}
 	}  // namespace
 
 	// ------------------------------------------------------------------
-	// Init: load nvngx_dlss.dll, resolve exports, init NGX on D3D12 device
+	// Init: load nvngx_dlss.dll, negotiate NGX SDK version, query caps
 	// ------------------------------------------------------------------
 	void NGXNR::Init(ID3D12Device* a_device, const wchar_t* a_pluginDir)
 	{
@@ -55,178 +68,173 @@ namespace FrameGen
 			return;
 		device = a_device;
 
-		// 1. locate + load nvngx_dlss.dll (NGX core)
 		std::wstring ngxDll = std::wstring(a_pluginDir) + L"\\nvngx_dlss.dll";
 		ngxModule = LoadLibraryW(ngxDll.c_str());
 		if (!ngxModule) {
-			SKSE::log::warn("[NGXNR] nvngx_dlss.dll not found at {} - DLSS-NR disabled (no crash)",
-				w2a(ngxDll));
+			SKSE::log::warn("[NGXNR] nvngx_dlss.dll not found at {} - DLSS-NR disabled (no crash)", w2a(ngxDll));
 			nvngxPresent = false;
 			return;
 		}
 		nvngxPresent = true;
 
-		auto pInit = reinterpret_cast<PFN_NGX_D3D12_Init>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Init"));
-		auto pGetParams = reinterpret_cast<PFN_NGX_D3D12_GetParameters>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_GetParameters"));
-		if (!pInit || !pGetParams) {
-			SKSE::log::warn("[NGXNR] nvngx_dlss.dll missing required exports - DLSS-NR disabled");
+		auto initExt = reinterpret_cast<PFN_NGXInitExt>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Init_Ext"));
+		auto initProject = reinterpret_cast<PFN_NGXInitProjectID>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Init_ProjectID"));
+		auto allocParams = reinterpret_cast<PFN_NGXAllocParams>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_AllocateParameters"));
+		auto getCaps = reinterpret_cast<PFN_NGXGetCaps>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_GetCapabilityParameters"));
+		if (!initExt && !initProject) {
+			SKSE::log::warn("[NGXNR] nvngx_dlss.dll missing Init entry points - DLSS-NR disabled");
 			return;
 		}
 
-		// 2. NVSDK_NGX_D3D12_Init
-		const std::uint32_t rc = pInit(kAppId, nullptr, a_device, nullptr, kNGXSDKVersion);
-		if (rc != kNGXSuccess) {
-			SKSE::log::warn("[NGXNR] NVSDK_NGX_D3D12_Init failed rc={:#x} - DLSS-NR disabled", rc);
-			return;
-		}
-		SKSE::log::info("[NGXNR] NGX D3D12 initialized (appId={:#x}, sdk={:#x})", kAppId, kNGXSDKVersion);
+		// The SDK version constant is undocumented and moved between NGX
+		// releases; negotiate across 0x13..0x16 (verified working range).
+		// A hardcoded value faults the whole D3D12 session on other drivers.
+		wchar_t dataPath[MAX_PATH] = {};
+		GetModuleFileNameW(nullptr, dataPath, MAX_PATH);
+		if (wchar_t* s = wcsrchr(dataPath, L'\\'))
+			*(s + 1) = L'\0';
 
-		// 3. parameters object
-		if (pGetParams(&params) != kNGXSuccess || !params) {
-			SKSE::log::warn("[NGXNR] NVSDK_NGX_D3D12_GetParameters failed - DLSS-NR disabled");
+		DWORD code = 0;
+		bool inited = false;
+		for (int ver = 0x13; ver <= 0x16 && !inited; ++ver) {
+			if (initExt) {
+				unsigned int r = Guarded([&] { return initExt(kAppId, dataPath, a_device, ver, nullptr); }, &code);
+				SKSE::log::info("[NGXNR] Init_Ext(0x{:02X}) -> {}", ver,
+					code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"));
+				if (code == 0 && r == kNGXSuccess) { inited = true; initVersion = ver; break; }
+			}
+			if (initProject) {
+				unsigned int r = Guarded([&] { return initProject(kProjectId, 0, "1.0", dataPath, a_device, ver, nullptr); }, &code);
+				SKSE::log::info("[NGXNR] Init_ProjectID(0x{:02X}) -> {}", ver,
+					code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"));
+				if (code == 0 && r == kNGXSuccess) { inited = true; initVersion = ver; break; }
+			}
+		}
+		if (!inited) {
+			SKSE::log::warn("[NGXNR] no NGX D3D12 init entry point accepted by this driver - DLSS-NR disabled");
 			return;
 		}
+		SKSE::log::info("[NGXNR] NGX D3D12 session initialised (version 0x{:02X})", initVersion);
 		initialized = true;
 
-		// 4. check nvngx_dlssnr.dll presence (informational)
+		// nvngx_dlssnr.dll presence (informational; without it the feature
+		// will fail at creation and the menu stays greyed out)
 		std::wstring nrDll = std::wstring(a_pluginDir) + L"\\nvngx_dlssnr.dll";
 		nvngxNrPresent = GetFileAttributesW(nrDll.c_str()) != INVALID_FILE_ATTRIBUTES;
 		SKSE::log::info("[NGXNR] nvngx_dlssnr.dll {}",
-			nvngxNrPresent ? "present - DLSS-NR feature available" : "NOT present - feature will fail (expected)");
+			nvngxNrPresent ? "present" : "NOT present (expected -> feature unavailable)");
 
-		// 5. probe feature id (works on any GPU: distinguishes enum vs hardware)
-		featureId = ProbeFeatureId(params);
-		if (featureId == 0) {
-			SKSE::log::warn("[NGXNR] DLSS-NR feature probe failed - not supported on this GPU (RTX 4080 has no sm_120 cubin)");
+		// GPU capability gate: SuperSamplingDenoising.Available is 0 on
+		// hardware without the FP8 Blackwell kernel (RTX 40) — nothing else
+		// matters then. This is the clean graceful-degradation check.
+		if (getCaps) {
+			NGXInstanceParameters* caps = nullptr;
+			unsigned int r = Guarded([&] { return getCaps(&caps); }, &code);
+			if (code == 0 && r == kNGXSuccess && caps) {
+				int avail = 0;
+				unsigned int rc = caps->Get4("SuperSamplingDenoising.Available", &avail);
+				SKSE::log::info("[NGXNR] SuperSamplingDenoising.Available = {} (query {:#x})",
+					rc == kNGXSuccess ? avail : -1, rc);
+				supported = (rc == kNGXSuccess && avail != 0);
+			} else {
+				SKSE::log::warn("[NGXNR] capability query failed/faulted - DLSS-NR treated as unsupported");
+			}
+		}
+		if (!supported) {
+			SKSE::log::warn("[NGXNR] DLSS-NR not available on this GPU (RTX 40 lacks sm_120 FP8 kernel) - menu greyed, no crash");
 			return;
 		}
-		supported = true;
-		SKSE::log::info("[NGXNR] DLSS-NR feature id {} probed OK - feature ready", featureId);
+
+		// parameters object for feature creation + per-frame evaluation
+		if (allocParams) {
+			NGXInstanceParameters* p = nullptr;
+			unsigned int r = Guarded([&] { return allocParams(&p); }, &code);
+			if (code == 0 && r == kNGXSuccess && p)
+				params = p;
+		}
+		if (!params) {
+			SKSE::log::warn("[NGXNR] AllocateParameters failed - DLSS-NR disabled");
+			supported = false;
+			return;
+		}
+		needCreate = true;
+		SKSE::log::info("[NGXNR] DLSS-NR ready (feature created on first evaluate frame)");
 	}
 
 	// ------------------------------------------------------------------
-	// Probe NVSDK_NGX_Feature id for DLSS-NR.
-	// Logic: try ids 1..maxTries; a successful CreateFeature returns
-	// kNGXSuccess; "feature not found" (0xBAD00004) means wrong id, keep
-	// going; any OTHER return means the id was accepted but hardware/
-	// parameters failed -> remember as candidate (still proves the id).
-	// ------------------------------------------------------------------
-	std::uint32_t NGXNR::ProbeFeatureId(NGXInstanceParameters* a_params, std::uint32_t a_maxTries)
-	{
-		if (!a_params)
-			return 0;
-
-		auto pCreate = reinterpret_cast<PFN_NGX_D3D12_CreateFeature>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_CreateFeature"));
-		if (!pCreate)
-			return 0;
-
-		std::uint32_t candidate = 0;
-		std::uint32_t candidateRc = 0;
-		for (std::uint32_t id = 1; id <= a_maxTries; ++id) {
-			// minimal create parameters: width/height + perf quality
-			a_params->Set4(kParamWidth, 3840);
-			a_params->Set4(kParamHeight, 2160);
-			a_params->Set5(kParamPerfQuality, 1);	 // ePerfQualityHigh? value unimportant for probe
-			a_params->Set5(kParamHintPreset, 0);
-
-			NGXFeatureCreateParameter create{};
-			create.feature = id;
-			create.sdkVersion = kNGXSDKVersion;
-			create.apiVersion = 0;
-
-			void* h = nullptr;
-			const std::uint32_t rc = pCreate(&create, a_params, &h);
-			if (rc == kNGXSuccess) {
-				SKSE::log::info("[NGXNR] probe: feature id {} -> SUCCESS", id);
-				if (h)
-					handle = h;	 // keep the created feature (50-series path)
-				return id;
-			}
-			if (rc == kNGXFeatureNotFound) {
-				continue;  // wrong id
-			}
-			// other error: id plausibly correct but hardware/params rejected
-			if (!candidate) {
-				candidate = id;
-				candidateRc = rc;
-			}
-			SKSE::log::info("[NGXNR] probe: feature id {} -> rc={:#x} ({})", id, rc,
-				rc == kNGXFeatureNotFound ? "not found" : "accepted-but-failed");
-			// keep probing a few more to catch late-listed ids
-		}
-		if (candidate) {
-			SKSE::log::info("[NGXNR] probe candidate: feature id {} rc={:#x} (hardware/param rejected)", candidate, candidateRc);
-			return candidate;
-		}
-		return 0;
-	}
-
-	// ------------------------------------------------------------------
-	// Evaluate: bind resources + params, run NVSDK_NGX_D3D12_UpdateFeature
+	// Evaluate: (re)create feature on demand, bind resources, evaluate
 	// ------------------------------------------------------------------
 	bool NGXNR::Evaluate(ID3D12Resource* a_color, ID3D12Resource* a_depth, ID3D12Resource* a_mvec,
-		ID3D12Resource* a_output, std::uint32_t a_width, std::uint32_t a_height,
+		ID3D12Resource* a_output, unsigned int a_width, unsigned int a_height,
 		ID3D12GraphicsCommandList* a_cmdList)
 	{
 		lastEvaluateOk = false;
-		if (!initialized || !featureId || !handle || !params || !a_color || !a_output)
+		if (!initialized || !supported || !params || !a_color || !a_output || !a_cmdList)
 			return false;
 
-		auto pUpdate = reinterpret_cast<PFN_NGX_D3D12_UpdateFeature>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_UpdateFeature"));
-		if (!pUpdate)
+		auto createFeature = reinterpret_cast<PFN_NGXCreateFeature>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_CreateFeature"));
+		auto evalFeature = reinterpret_cast<PFN_NGXEvaluateFeature>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_EvaluateFeature"));
+		if (!createFeature || !evalFeature)
 			return false;
 
-		// recreate feature on resolution change (NGX requires matching dims)
-		if (a_width != outWidth || a_height != outHeight) {
-			auto pCreate = reinterpret_cast<PFN_NGX_D3D12_CreateFeature>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_CreateFeature"));
-			if (pCreate) {
-				if (handle) {
-					// release old feature (best-effort; NGX may reuse handle)
-					handle = nullptr;
-				}
-				params->Set4(kParamWidth, a_width);
-				params->Set4(kParamHeight, a_height);
-				params->Set5(kParamPerfQuality, 1);
-				NGXFeatureCreateParameter create{};
-				create.feature = featureId;
-				create.sdkVersion = kNGXSDKVersion;
-				create.apiVersion = 0;
-				void* h = nullptr;
-				const std::uint32_t rc = pCreate(&create, params, &h);
-				lastCreateResult = rc;
-				if (rc == kNGXSuccess && h) {
-					handle = h;
-					outWidth = a_width;
-					outHeight = a_height;
-					SKSE::log::info("[NGXNR] feature (re)created {}x{} rc={:#x}", a_width, a_height, rc);
-				} else {
-					SKSE::log::warn("[NGXNR] feature recreate failed {}x{} rc={:#x}", a_width, a_height, rc);
-					return false;
-				}
+		// --- (re)create on first frame / size change ---
+		if (needCreate || a_width != outWidth || a_height != outHeight) {
+			params->Set("Width", a_width);
+			params->Set("Height", a_height);
+			params->Set("OutWidth", a_width);
+			params->Set("OutHeight", a_height);
+			params->Set("PerfQualityValue", 2);			  // balanced-ish; NR ignores for filter use
+			params->Set("DLSS.Feature.Create.Flags", 107);
+			params->Set("DLSS.Enable.Output.Subrects", 1);
+			params->Set("CreationNodeMask", 1u);
+			params->Set("VisibilityNodeMask", 1u);
+			params->Set("RTXValue", 0);
+
+			DWORD code = 0;
+			NGXHandle* h = nullptr;
+			unsigned int r = Guarded([&] { return createFeature(a_cmdList, kFeatureSuperSampling, params, &h); }, &code);
+			lastCreateResult = code ? kNGXExceptionMarker : r;
+			if (code != 0) {
+				SKSE::log::warn("[NGXNR] CreateFeature FAULTED (code {:#x}) - DLSS-NR disabled this frame", code);
+				return false;
 			}
+			if (r != kNGXSuccess || !h) {
+				SKSE::log::warn("[NGXNR] CreateFeature failed {:#x} - DLSS-NR disabled ({}x{})", r, a_width, a_height);
+				return false;
+			}
+			handle = h;
+			outWidth = a_width;
+			outHeight = a_height;
+			featureCreated = true;
+			needCreate = false;
+			SKSE::log::info("[NGXNR] feature created {}x{} handle={}", a_width, a_height, (void*)h);
 		}
 
-		// bind resources (vtable slots: Set7 = resource, Set2 = float, Set4/5 = uint)
-		params->Set7("DLSSNR.Color", a_color);
-		params->Set7("DLSSNR.MVec", a_mvec);
-		params->Set7("DLSSNR.Depth", a_depth);
-		params->Set7("DLSSNR.Output", a_output);
-		params->Set2("DLSSNR.Intensity", intensity);
-		params->Set2("DLSSNR.Style", style);
-		params->Set2("DLSSNR.LocalToneStrength", localToneStrength);
-		params->Set2("DLSSNR.SkinStructureStrength", skinStructureStrength);
-		params->Set4("DLSSNR.Reset", 0);
+		// --- per-frame resources + params ---
+		params->Set("Color", a_color);
+		params->Set("Depth", a_depth);
+		params->Set("MotionVectors", a_mvec);
+		params->Set("Output", a_output);
+		// NR neural filter params (renodx-style; NGX recognises these keys)
+		params->Set("DLSSNR.Intensity", intensity);
+		params->Set("DLSSNR.Style", style);
+		params->Set("DLSSNR.LocalToneStrength", localToneStrength);
+		params->Set("DLSSNR.SkinStructureStrength", skinStructureStrength);
+		params->Set("DLSSNR.Reset", 0);
+		params->Set("Sharpness", 0.0f);
+		params->Set("Jitter.Offset.X", 0.0f);
+		params->Set("Jitter.Offset.Y", 0.0f);
 
-		const unsigned long long res[2] = { a_width, a_height };
-		const std::uint32_t rc = pUpdate(handle, params, a_cmdList, res, nullptr);
-		lastEvaluateResult = rc;
-		lastEvaluateOk = (rc == kNGXSuccess);
-		if (!lastEvaluateOk && (lastEvaluateResult & 0xFFFF0000) != 0xBAD00000) {
-			// log only once per unique error to avoid spam
-			static std::uint32_t lastLogged = 0;
+		DWORD code = 0;
+		unsigned int r = Guarded([&] { return evalFeature(a_cmdList, handle, params, nullptr); }, &code);
+		lastEvaluateResult = code ? kNGXExceptionMarker : r;
+		lastEvaluateOk = (code == 0 && r == kNGXSuccess);
+		if (!lastEvaluateOk) {
+			static unsigned int lastLogged = 0;
 			if (lastEvaluateResult != lastLogged) {
 				lastLogged = lastEvaluateResult;
-				SKSE::log::warn("[NGXNR] UpdateFeature rc={:#x}", rc);
+				SKSE::log::warn("[NGXNR] EvaluateFeature {} {:#x}",
+					code ? "faulted" : "failed", code ? code : r);
 			}
 		}
 		return lastEvaluateOk;
@@ -235,9 +243,17 @@ namespace FrameGen
 	void NGXNR::Shutdown()
 	{
 		if (ngxModule) {
-			if (auto pShutdown = reinterpret_cast<PFN_NGX_D3D12_Shutdown>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Shutdown"))) {
-				const std::uint32_t rc = pShutdown();
-				SKSE::log::info("[NGXNR] NGX D3D12 shutdown rc={:#x}", rc);
+			if (handle) {
+				if (auto release = reinterpret_cast<PFN_NGXReleaseFeature>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_ReleaseFeature"))) {
+					DWORD code = 0;
+					Guarded([&] { return release(handle); }, &code);
+				}
+				handle = nullptr;
+			}
+			if (auto shutdown = reinterpret_cast<unsigned int(__cdecl*)()>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Shutdown"))) {
+				DWORD code = 0;
+				Guarded([&] { return shutdown(); }, &code);
+				SKSE::log::info("[NGXNR] NGX D3D12 shutdown");
 			}
 			FreeLibrary(ngxModule);
 			ngxModule = nullptr;

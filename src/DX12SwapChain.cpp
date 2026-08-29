@@ -745,19 +745,38 @@ namespace FrameGen
 		if (!dlssgMode && ImguiMenu::GetSingleton()->visible)
 			ImguiMenu::GetSingleton()->Draw(Get());
 
-		// v0.8：DLSS-NR（FSR3 模式）——fence 已 Signal/Wait（D3D11 完成 colorOut 写入），
-		// 在 D3D12 cmdList 上跑 NGX：colorOut → nrOut。NR 开启且成功 → 拷贝源切 nrOut。
+		// v0.8.1：DLSS-NR（FSR3 模式）——fence 已 Signal/Wait（D3D11 完成 colorOut 写入），
+		// 在 D3D12 cmdList 上跑 NGX：colorOut → nrOut。NGX 输入资源状态要求
+		// （dlss5-dx11-bridge 验证）：Color/Depth/MV = NON_PIXEL_SHADER_RESOURCE，
+		// Output = UNORDERED_ACCESS；评估后转回 COMMON（拷贝段/D3D11 写需要）。
 		// 4080/缺文件 → Evaluate 返回 false → useNr=false → 拷贝仍用 colorOut（画面不变）。
 		bool useNr = false;
 		if (!dlssgMode && Get().ngxNR.initialized && Get().ngxNR.supported && Get().settings.enableDLSSNR &&
 			colorOutWrapped && nrOutWrapped && depthWrapped && mvecWrapped) {
+			auto* cmdList = commandLists[frameIndex].get();
+			{
+				std::vector<D3D12_RESOURCE_BARRIER> barriers;
+				barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(colorOutWrapped->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
+				barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(depthWrapped->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
+				barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(mvecWrapped->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
+				barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(nrOutWrapped->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+				cmdList->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+			}
 			useNr = Get().ngxNR.Evaluate(
 				colorOutWrapped->resource.get(),
 				depthWrapped->resource.get(),
 				mvecWrapped->resource.get(),
 				nrOutWrapped->resource.get(),
 				swapChainDesc.Width, swapChainDesc.Height,
-				commandLists[frameIndex].get());
+				cmdList);
+			{
+				std::vector<D3D12_RESOURCE_BARRIER> barriers;
+				barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(colorOutWrapped->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON));
+				barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(depthWrapped->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON));
+				barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(mvecWrapped->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON));
+				barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(nrOutWrapped->resource.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
+				cmdList->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+			}
 			// 诊断（节流）：NR 运行状态
 			static std::uint32_t nrDiag = 0;
 			if (++nrDiag % 180 == 1) {
