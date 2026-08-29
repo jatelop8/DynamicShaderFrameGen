@@ -967,6 +967,12 @@ namespace FrameGen
 			//   [0x14]=u32 [0x18]=byte(0) [0x1c]=u32
 			if (!pdNrInitTried) {
 				pdNrInitTried = true;
+				// ★★★ cfg 必须 ≥0x200 字节（v0.8.73 实锤根因）★★★
+				// InitDLSSNR 内部 0x1ADA0 里 call 0x1A880（executor ctor 延续代码）
+				// 用 rdi=cfg 初始化 cfg+0x78..0x1e8 全部字段（写 ~0x170 字节）。
+				// 旧结构体只有 0x100 → cfg+0x100..0x1e8 写穿栈 → nvngx 调用
+				// CreateCommittedResource 时参数从被踩的栈读 → pHeapProperties=1
+				// → D3D12Core.dll+0x7bf2e 崩（access=0x9）。rest 扩到 0x1E0。
 				struct NRInitCfg {
 					std::uint32_t id;
 					std::uint32_t width;
@@ -977,7 +983,7 @@ namespace FrameGen
 					std::uint8_t b18;
 					std::uint8_t pad[3];
 					std::uint32_t u1c;
-					std::uint8_t rest[0xE0];
+					std::uint8_t rest[0x1E0];
 				};
 				NRInitCfg cfg{};
 				cfg.id = 0;                  // ★ SkyrimUpscaler 用 0（v0.8.63 用 1 是错的）
@@ -1024,6 +1030,58 @@ namespace FrameGen
 							(void*)coreModule, (void*)ngxModule,
 							modBase(L"d3d12.dll"), modBase(L"dxgi.dll"), modBase(L"d3d11.dll"));
 					}
+					// v0.8.73：崩溃模块已实锤 D3D12Core.dll+0x7bf2e（CreateCommittedResource
+					// 内部，pHeapProperties=1）。崩溃前 dump 两块关键状态：
+					// ① 单例 obj 0x78/0x88/0x90/0x98/0xa0（0x32380 里 executor ctor 的
+					//    device 参数 = 单例->0x90！此前只补了 0x88/0x98/0xa0）
+					// ② PD 的 NGX 函数表 [0xC0E9C]/[0xC0EBC]（0x1EB20 调 [0xC0EBC]，
+					//    0x1D660 枚举 nvngx_dlssnr 填充）——校验指向是否有效
+					{
+						uintptr_t pdB = reinterpret_cast<uintptr_t>(pdModule);
+						auto safeRead = [](uintptr_t addr) -> uintptr_t {
+							MEMORY_BASIC_INFORMATION sm = {};
+							if (VirtualQuery(reinterpret_cast<LPCVOID>(addr), &sm, sizeof(sm)) &&
+								sm.State == MEM_COMMIT && (sm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+								return *reinterpret_cast<uintptr_t*>(addr);
+							return 0;
+						};
+						uintptr_t single = safeRead(pdB + 0xC1268);
+						SKSE::log::info("[NGXNR]   PD single obj={}", (void*)single);
+						if (single) {
+							uintptr_t v78 = safeRead(single + 0x78);
+							uintptr_t v88 = safeRead(single + 0x88);
+							uintptr_t v90 = safeRead(single + 0x90);
+							uintptr_t v98 = safeRead(single + 0x98);
+							uintptr_t va0 = safeRead(single + 0xa0);
+							SKSE::log::info("[NGXNR]   PD single 0x78(exec)={} 0x88={} 0x90(dev-arg)={} 0x98={} 0xa0={}",
+								(void*)v78, (void*)v88, (void*)v90, (void*)v98, (void*)va0);
+							if (v90 == 0) {
+								*reinterpret_cast<uintptr_t*>(single + 0x90) = reinterpret_cast<uintptr_t>(device);
+								SKSE::log::info("[NGXNR]   PD single 0x90 patched -> {}", (void*)device);
+							}
+						}
+						// NGX 函数表槽
+						for (auto slot : { 0xC0E9C, 0xC0EBC }) {
+							uintptr_t v = safeRead(pdB + slot);
+							HMODULE owner = nullptr;
+							if (v && GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+								GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(v), &owner) && owner) {
+								wchar_t wnm[160] = {};
+								GetModuleFileNameW(owner, wnm, 160);
+								char nm[200] = {};
+								WideCharToMultiByte(CP_ACP, 0, wnm, -1, nm, 200, nullptr, nullptr);
+								SKSE::log::info("[NGXNR]   PD ngx-tbl[{:#x}] = {} ({})", slot, (void*)v, nm);
+							} else {
+								SKSE::log::info("[NGXNR]   PD ngx-tbl[{:#x}] = {} (no owner)", slot, (void*)v);
+							}
+						}
+						// 单例->0x78 执行器若已建，读其 device 槽 0x8/0x10
+						uintptr_t ex0 = safeRead(pdB + 0xC1268) ? safeRead(safeRead(pdB + 0xC1268) + 0x78) : 0;
+						if (ex0) {
+							uintptr_t e8 = safeRead(ex0 + 8), e10 = safeRead(ex0 + 0x10);
+							SKSE::log::info("[NGXNR]   PD executor 0x8={} 0x10(dev)={}", (void*)e8, (void*)e10);
+						}
+					}
 					DWORD ic = 0;
 					unsigned int ir = 0;
 					Guarded([&] { return ir = reinterpret_cast<unsigned int(__cdecl*)(const void*)>(pdInitDLSSNR)(&cfg); }, &ic);
@@ -1035,7 +1093,7 @@ namespace FrameGen
 					// Init 成功后读执行器确认——v0.8.71 修正：执行器在 [0xC1268] 单例
 					// 的 +0x78（0x32380 里 mov [rbx+0x78], rax；旧诊断读 0x8CDAE 是
 					// .rdata 数据，纯误导）
-					if (pdNrInitOk && pdModule) {
+					if (pdModule) {
 						uintptr_t single = 0;
 						MEMORY_BASIC_INFORMATION sm = {};
 						if (VirtualQuery(reinterpret_cast<LPCVOID>(reinterpret_cast<uintptr_t>(pdModule) + 0xC1268), &sm, sizeof(sm)) &&
@@ -1047,6 +1105,18 @@ namespace FrameGen
 							ex = *reinterpret_cast<uintptr_t*>(single + 0x78);
 						SKSE::log::info("[NGXNR]   PD executor@[0xC1268]+0x78 = {} ({} 执行器)",
 							(void*)ex, ex ? "READY" : "EMPTY");
+						if (ex) {
+							auto safeRead2 = [](uintptr_t addr) -> uintptr_t {
+								MEMORY_BASIC_INFORMATION sm2 = {};
+								if (VirtualQuery(reinterpret_cast<LPCVOID>(addr), &sm2, sizeof(sm2)) &&
+									sm2.State == MEM_COMMIT && (sm2.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+									return *reinterpret_cast<uintptr_t*>(addr);
+								return 0;
+							};
+							SKSE::log::info("[NGXNR]   PD executor 0x8={} 0x10(dev)={} 0x48={} 0x20={}",
+								(void*)safeRead2(ex + 8), (void*)safeRead2(ex + 0x10),
+								(void*)safeRead2(ex + 0x48), (void*)safeRead2(ex + 0x20));
+						}
 					}
 				} else {
 					SKSE::log::warn("[NGXNR] InitDLSSNR NOT exported - EvaluateDLSSNR will fail 'before Init'");
