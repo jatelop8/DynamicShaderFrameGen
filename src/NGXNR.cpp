@@ -564,32 +564,29 @@ namespace FrameGen
 			printTex("Output", a_output);
 		}
 
-		// v0.8.32 重大修正：Create/Evaluate 必须走 snippet（nvngx_dlssnr.dll）
-		// 自己的导出（@0x15750/@0x159C0 真实实现）——它内部转发驱动 core 并
-		// 处理 DLSSNR.* 专属键（PopulateParameters_Impl @0x15F20）。
-		// v0.8.23 错误：优先走 ngxCoreModule（驱动 nvngx.dll）的 Create/Evaluate——
-		// 驱动 core 不认 DLSSNR.* 键 → feature 建错类型 → Evaluate 恒 0xbad00005。
-		// v0.8.34：Streamline 插件分发通道优先（slGetFeatureFunction 拿的
-		// NGX_D3D12_CREATE_DLSSNR_EXT / NGX_D3D12_EVALUATE_DLSSNR_EXT——PDPerfPlugin
-		// 实测路径，裸 NGX 直调全 0xbad00002），fallback dlssnr snippet，最后驱动 core。
+		// v0.8.40 重大修正：标准 Init（5 参）成功后，**Create/Evaluate 优先用
+		// 驱动 core（nvngx.dll）**——它是会话宿主，dlssnr snippet 的 CreateFeature
+		// 不认标准 Init 会话（v0.8.39 日志实锤：core Init ok 但 dlssnr 仍全 2）。
+		// v0.8.32 改 snippet 优先是错的（当时标准 Init 从未成功，驱动 core 只有
+		// Init_Ext 会话）。SkyrimUpscaler 模式 = 标准 Init + 驱动 core API。
 		auto createFeature = reinterpret_cast<PFN_NGXCreateFeature>(slNrCreateFn);
 		auto evalFeature = reinterpret_cast<PFN_NGXEvaluateFeature>(slNrEvalFn);
 		if (!createFeature)
+			createFeature = reinterpret_cast<PFN_NGXCreateFeature>(GetProcAddress(
+				ngxCoreModule ? ngxCoreModule : ngxModule, "NVSDK_NGX_D3D12_CreateFeature"));
+		if (!evalFeature)
+			evalFeature = reinterpret_cast<PFN_NGXEvaluateFeature>(GetProcAddress(
+				ngxCoreModule ? ngxCoreModule : ngxModule, "NVSDK_NGX_D3D12_EvaluateFeature"));
+		if (!createFeature || !evalFeature)
 			createFeature = reinterpret_cast<PFN_NGXCreateFeature>(GetProcAddress(
 				ngxModule, "NVSDK_NGX_D3D12_CreateFeature"));
 		if (!evalFeature)
 			evalFeature = reinterpret_cast<PFN_NGXEvaluateFeature>(GetProcAddress(
 				ngxModule, "NVSDK_NGX_D3D12_EvaluateFeature"));
 		if (!createFeature || !evalFeature)
-			createFeature = reinterpret_cast<PFN_NGXCreateFeature>(GetProcAddress(
-				ngxCoreModule, "NVSDK_NGX_D3D12_CreateFeature"));
-		if (!evalFeature)
-			evalFeature = reinterpret_cast<PFN_NGXEvaluateFeature>(GetProcAddress(
-				ngxCoreModule, "NVSDK_NGX_D3D12_EvaluateFeature"));
-		if (!createFeature || !evalFeature)
 			return false;
-		SKSE::log::info("[NGXNR] using CreateFeature@{} EvaluateFeature@{} (SL={} snippet={})",
-			(void*)createFeature, (void*)evalFeature, (void*)slNrCreateFn, (void*)ngxModule);
+		SKSE::log::info("[NGXNR] using CreateFeature@{} EvaluateFeature@{} (core={} SL={} snippet={})",
+			(void*)createFeature, (void*)evalFeature, (void*)ngxCoreModule, (void*)slNrCreateFn, (void*)ngxModule);
 
 		// v0.8.23：core 就绪后查 GetCapabilityParameters（驱动 nvngx.dll 提供）——
 		// 直接问 NR/超分支持性（SkyrimUpscaler 日志同款调用）。
@@ -764,7 +761,9 @@ namespace FrameGen
 				// v0.8.18：首次遍历找 NR feature id；v0.8.23 扩到 0..20 并改用驱动 core
 				// v0.8.32：改用 snippet（dlssnr）CreateFeature 后重新遍历——6 优先
 				// （dlssnr 反汇编 mov ecx,6：NVSDK NGXFeature 枚举中 DLSS-NR 极可能=6）
-				const int order[] = { 6, 0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20 };
+				// v0.8.40：改回驱动 core 路径后——**0 优先**（SkyrimUpscaler 实测
+				// 用 id=0 NGX_D3D11_CREATE_DLSS_EXT 成功！），6 次之
+				const int order[] = { 0, 6, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20 };
 				for (int id : order) {
 					h = nullptr;
 					r = Guarded([&] { return createFeature(L, id, &params, &h); }, &code);
