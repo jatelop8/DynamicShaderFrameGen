@@ -329,20 +329,26 @@ namespace FrameGen
 		// 用与 FG 设备相同的 adapter（D3D11<->D3D12 共享纹理要求同 adapter）。
 		if (!nrDevice) {
 			IDXGIDevice* dxgiDev = nullptr;
-			if (SUCCEEDED(a_device->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDev))) {
+			HRESULT qiHr = a_device->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDev);
+			if (SUCCEEDED(qiHr) && dxgiDev) {
 				IDXGIAdapter* ad = nullptr;
-				dxgiDev->GetAdapter(&ad);
-				if (ad) {
+				HRESULT adHr = dxgiDev->GetAdapter(&ad);
+				if (SUCCEEDED(adHr) && ad) {
 					for (auto fl : { D3D_FEATURE_LEVEL_12_0, D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 }) {
 						HRESULT hr = D3D12CreateDevice(ad, fl, __uuidof(ID3D12Device), (void**)&nrDevice);
 						if (SUCCEEDED(hr) && nrDevice) {
 							SKSE::log::info("[NGXNR] v0.19 independent D3D12 device created (feature level {:#x}, from FG adapter)", (int)fl);
 							break;
 						}
+						SKSE::log::warn("[NGXNR] v0.19 D3D12CreateDevice(FL {:#x}) failed hr={:#x}", (int)fl, static_cast<unsigned int>(hr));
 					}
 					ad->Release();
+				} else {
+					SKSE::log::warn("[NGXNR] v0.19 GetAdapter failed hr={:#x}", static_cast<unsigned int>(adHr));
 				}
 				dxgiDev->Release();
+			} else {
+				SKSE::log::warn("[NGXNR] v0.19 QI(IDXGIDevice) failed hr={:#x}", static_cast<unsigned int>(qiHr));
 			}
 			if (!nrDevice)
 				SKSE::log::warn("[NGXNR] v0.19 failed to create independent D3D12 device - falling back to FG device");
@@ -1274,6 +1280,14 @@ namespace FrameGen
 		//   OutputWidth/OutputHeight/Output.Width/Output.Height/Scale/Upscaling/ScalingRatio
 		// 资源绑定（addon 字符串）：DLSSNR.Color/Depth/MVec/Output + Subrect*/MVecScale*/DepthInverted
 		// 若 Init/Create 成功 → nr9Ready，每帧 EvaluateFeature(cmdlist, handle, params)
+		// ★v0.20：v0.9 直连段整体 gate 到 NRDirectTest（默认关）——
+		// ①该段用旧认知（Init=真实现），实测 Init=0x13f50 stub（bad00001），
+		//   Init_Ext 才是真实现（v0.8.10 修正）；②行 1337 的 Init_Ext **裸调**
+		//   （无 Guard）+ FG 共享设备 → v0.19 闪退点（crash 无 dump，日志停在
+		//   "v0.9 Init -> 0xbad00001" 后无 "v0.9 Init_Ext" 行即死）——补丁后的
+		//   Init_Ext 真路径在 FG 设备上 Cubin Init 跳驱动 API（同 v0.17 根因）。
+		// v0.19 正规路径（独立设备 + 3c Init_Ext 注册）取代此盲试段。
+		if (Get().settings.nrDirectTest) {
 		DWORD fc9 = 0;
 		if (!nr9InitTried) {
 			nr9InitTried = true;
@@ -1357,7 +1371,11 @@ namespace FrameGen
 					SKSE::log::info("[NGXNR] v0.9 EvaluateFeature -> {:#x} (fault={:#x})", nr9EvalRc, fc9);
 			}
 		}
-		if (pdSetupOk && pdNrAvailable && pdEvaluateDLSSNR) {
+		}  // end NRDirectTest gate (v0.20)
+		// ★v0.20：PD 段同样 gate——InitDLSSNR 在 FG 共享设备上裸初始化 NR 执行器，
+		// v0.8.73 曾在 D3D12Core+0x7bf2e 崩（cfg 写穿栈，修复未在游戏验证）。
+		// 只有 NRDirectTest=1（开发）才允许 PD 段激活；部署默认全关。
+		if (Get().settings.nrDirectTest && pdSetupOk && pdNrAvailable && pdEvaluateDLSSNR) {
 			// --- 首帧 NR 初始化（照抄 SkyrimUpscaler 序列）---
 			// 反汇编 SkyrimUpscaler.dll 调用点实锤（0x1f02c1/0x1f02ce/0x1f037c/
 			// 0x1f0386/0x1f03c3）：SetMotionScaleX/Y(0, float) → ReleaseDLSSNR()
