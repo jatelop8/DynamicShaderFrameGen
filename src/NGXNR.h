@@ -229,11 +229,13 @@ namespace FrameGen
 		NGXHandle* warmupHandle = nullptr;
 		// v0.8.23：GetCapabilityParameters 只查一次（core 就绪后）
 		bool capsQueried = false;
-		// v0.8.28：驱动 core 分配的真 params（AllocateParameters）——替代自实现
-		// OwnNGXParams（Evaluate 0xbad00005 可能是自实现 vtable 与驱动 core 预期不符）
+		// v0.8.28：驱动 core 分配的真 params（AllocateParameters）——v0.8.29 回退
+		// （vtable 与接口不符，CreateFeature 变 5）。保留分配仅诊断。
 		NGXInstanceParameters* realParams = nullptr;
 		// DestroyParameters 函数指针（释放 realParams）
 		unsigned int(__cdecl* paramsDestroy)(NGXInstanceParameters*) = nullptr;
+		// v0.8.29：资源格式诊断只打一次
+		bool resDiagDone = false;
 
 	private:
 		ID3D12Device* device = nullptr;

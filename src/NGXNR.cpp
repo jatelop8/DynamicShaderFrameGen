@@ -319,8 +319,27 @@ namespace FrameGen
 		if (!ready || !a_color || !a_output || !a_cmdList)
 			return false;
 
-		// v0.8.28：优先用驱动 core 分配的真 params（若可用），否则自实现
-		NGXInstanceParameters* P = realParams ? realParams : &params;
+		// v0.8.29：回退 OwnNGXParams——v0.8.28 真 params（AllocateParameters）vtable
+		// 与我们接口不符，CreateFeature 从成功变 0xbad00005（日志实锤）。自实现
+		// params 的 vtable 与驱动 core 的 CreateFeature 预期一致（此前成功）。
+		NGXInstanceParameters* P = &params;
+
+		// v0.8.29：资源格式诊断（首帧一次）——Evaluate 0xbad00005 可能是资源格式
+		if (!resDiagDone) {
+			resDiagDone = true;
+			auto printTex = [](const char* tag, ID3D12Resource* r) {
+				if (!r) { SKSE::log::info("[NGXNR]   {} = NULL", tag); return; }
+				D3D12_RESOURCE_DESC d = r->GetDesc();
+				SKSE::log::info("[NGXNR]   {} = {}x{} fmt={:#x} dims={} flags={:#x}", tag,
+					d.Width, d.Height, static_cast<int>(d.Format), static_cast<int>(d.Dimension),
+					static_cast<int>(d.Flags));
+			};
+			SKSE::log::info("[NGXNR] NR resource diag:");
+			printTex("Color", a_color);
+			printTex("Depth", a_depth);
+			printTex("MVec", a_mvec);
+			printTex("Output", a_output);
+		}
 
 		auto createFeature = reinterpret_cast<PFN_NGXCreateFeature>(GetProcAddress(
 			ngxCoreModule ? ngxCoreModule : ngxModule, "NVSDK_NGX_D3D12_CreateFeature"));
