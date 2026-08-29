@@ -501,25 +501,27 @@ namespace FrameGen
 		nvngxNrPresent = GetFileAttributesW(nrPath.c_str()) != INVALID_FILE_ATTRIBUTES;
 		SKSE::log::info("[NGXNR] nvngx_dlssnr.dll {}", nvngxNrPresent ? "present" : "NOT present (expected -> feature unavailable)");
 
-		// v0.8.42：反汇编实锤驱动 core 的 D3D12_EvaluateFeature @RVA 0xA4F4 是
-		// detour 跳板：mov rax, [0x18006E4B8]（全局函数指针）; push rax; ret——
-		// 真实实现在指针指向处。**读这个指针反汇编真实 Evaluate**，找 0xbad00005
-		// 到底从哪个检查来（不再猜参数键）。指针绝对地址 0x18006E4B8 基于驱动
-		// nvngx.dll 的固定基址 0x180000000——运行时 = 模块基址 + 0x6E4B8。
+		// v0.8.42→v0.8.43 修正：detour 跳板是**双指针**结构——
+		//   [0x18006E4B8] = 初始化完成标志（非空自旋等待；v0.8.42 误读为函数指针）
+		//   [0x18006E3E0] = 真实函数指针（mov rax,[0x18006E3E0]; push rax; ret 跳它）
+		// v0.8.42 日志实锤：读 0x6E4B8 得到 0x7ffb032ae4c0（=自身+8 附近，数据区不是代码）
+		// → 真实实现指针 RVA = 0x6E3E0（0x18006E3E0 基于固定基址 0x180000000）。
 		if (ngxCoreModule) {
 			uintptr_t modBase = reinterpret_cast<uintptr_t>(ngxCoreModule);
-			uintptr_t evalPtrAddr = modBase + 0x6E4B8;  // 全局函数指针槽（RVA 0x6E4B8）
-			uintptr_t realEval = *reinterpret_cast<uintptr_t*>(evalPtrAddr);
-			SKSE::log::info("[NGXNR] driver-core EvaluateFeature detour: global_ptr@{} = {} (real impl)",
-				(void*)evalPtrAddr, (void*)realEval);
-			if (realEval) {
-				// 反汇编真实实现：找 mov eax, 0xBAD00005 / 0xBAD00002 的检查
+			uintptr_t flagAddr = modBase + 0x6E4B8;   // 初始化标志（非空=已就绪）
+			uintptr_t fnPtrAddr = modBase + 0x6E3E0;   // 真实函数指针
+			uintptr_t realEval = *reinterpret_cast<uintptr_t*>(fnPtrAddr);
+			SKSE::log::info("[NGXNR] driver-core EvaluateFeature detour: flag@{}={} fn_ptr@{}={}",
+				reinterpret_cast<void*>(flagAddr), reinterpret_cast<void*>(*reinterpret_cast<uintptr_t*>(flagAddr)),
+				reinterpret_cast<void*>(fnPtrAddr), reinterpret_cast<void*>(realEval));
+			if (realEval && realEval > modBase && realEval < modBase + 0x80000) {
+				// 扫描真实实现前 0x200 字节找 0xBAD00005/2 引用（mov eax/lea 该常量）
 				uint8_t* p = reinterpret_cast<uint8_t*>(realEval);
 				for (int i = 0; i < 0x200; ++i) {
 					uint32_t v = 0;
 					memcpy(&v, p + i, 4);
 					if (v == 0xBAD00005 || v == 0xBAD00002) {
-						SKSE::log::info("[NGXNR]   real impl @+{:#x}: error const {:#x} referenced (file rva={:#x})", i, v, i);
+						SKSE::log::info("[NGXNR]   real impl @+{:#x}: error const {:#x} referenced (rva={:#x})", i, v, realEval - modBase + i);
 					}
 				}
 				// 打印前 96 字节
@@ -527,6 +529,8 @@ namespace FrameGen
 				for (int i = 0; i < 48; ++i)
 					sprintf(hex + i * 3, "%02X ", p[i]);
 				SKSE::log::info("[NGXNR]   real impl head: {}", hex);
+			} else {
+				SKSE::log::warn("[NGXNR]   real impl out of range ({}) - fn_ptr not populated yet", reinterpret_cast<void*>(realEval));
 			}
 		}
 
