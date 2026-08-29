@@ -219,6 +219,7 @@ namespace FrameGen
 
 	private:
 		ID3D12Device* device = nullptr;
+		HMODULE ngxCoreModule = nullptr; // v0.8.22：驱动 NGX core（nvngx.dll，SkyrimUpscaler 同款）
 		HMODULE coreModule = nullptr; // v0.8.11：nvngx_dlss.dll（NGX core 宿主，自举 core 会话）
 		HMODULE ngxModule = nullptr;  // nvngx_dlssnr.dll（执行 CreateFeature/Evaluate 的 NR snippet）
 		OwnNGXParams params;          // v0.8.10：自实现参数对象（值成员，无需 AllocateParameters）

@@ -39,6 +39,13 @@ namespace FrameGen
 	// succeed afterwards on the same nvngx_dlss.dll).
 	using PFN_NGXInit11 = unsigned int(__cdecl*)(unsigned long long a_appId,
 		const wchar_t* a_dataPath, void* a_param);
+	// v0.8.22：标准 NVSDK_NGX_D3D12_Init（3 参：appId, dataPath, FeatureCommonInfo）——
+	// 驱动 nvngx.dll（NGX core）的真实现（SkyrimUpscaler 日志 Init=1 Success 实锤）
+	using PFN_NGXInitStd = unsigned int(__cdecl*)(unsigned long long a_appId,
+		const wchar_t* a_dataPath, const void* a_featureCommonInfo);
+	using PFN_NGXInitProjectID = unsigned int(__cdecl*)(const char* a_project, int a_engineType,
+		const char* a_version, const wchar_t* a_dataPath, ID3D12Device* a_device,
+		int a_sdkVersion, const void* a_featureInfo);
 
 	// v0.8.12：NVSDK_NGX_FeatureCommonInfo（Init_Ext/CreateFeature 的第 5 参）。
 	// dlss5-dx11-bridge 传 nullptr 在 BG3 成功（BG3 有 SL core）；Skyrim 无 core，
@@ -51,6 +58,31 @@ namespace FrameGen
 		std::uint32_t reserved[1] = {};
 		void* userData = nullptr;
 	};
+
+	// v0.8.22：加载驱动自带的 NGX core（nvngx.dll）——SkyrimUpscaler Build 13 同款
+	// 机制（PDPerfPlugin 的 NGXLoadCoreLibrary）。驱动路径随更新变化，遍历
+	// DriverStore 找 nv_dispi.inf_amd64_*\nvngx.dll。
+	std::wstring FindNvngxCorePath()
+	{
+		const wchar_t* kStore = L"C:\\Windows\\System32\\DriverStore\\FileRepository";
+		// 1) 遍历 nv_dispi.inf_amd64_* 目录找 nvngx.dll
+		std::wstring pat = std::wstring(kStore) + L"\\nv_dispi.inf_amd64_*";
+		WIN32_FIND_DATAW fd{};
+		HANDLE h = FindFirstFileW(pat.c_str(), &fd);
+		if (h != INVALID_HANDLE_VALUE) {
+			do {
+				if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+					std::wstring cand = std::wstring(kStore) + L"\\" + fd.cFileName + L"\\nvngx.dll";
+					if (GetFileAttributesW(cand.c_str()) != INVALID_FILE_ATTRIBUTES) {
+						FindClose(h);
+						return cand;
+					}
+				}
+			} while (FindNextFileW(h, &fd));
+			FindClose(h);
+		}
+		return {};
+	}
 
 	namespace
 	{
@@ -115,6 +147,65 @@ namespace FrameGen
 		//   → nvngx_dlss.dll 自举 NGX core（Init 3 参真实现 + CreateFeature 自举），
 		//     dlssnr 只是外围 snippet。正确顺序：先 dlss.dll 建 core，再 dlssnr 跑 NR。
 		// ------------------------------------------------------------------
+		// v0.8.22 重大破译（SkyrimUpscaler Build 13 = PDPerfPlugin.dll 实锤）：
+		//   dlss/dlssnr 的 Init 都是 stub、Init_Ext 全 0xbad00002——**真正的 NGX core
+		//   初始化在驱动自带的 nvngx.dll 里**（PDPerfPlugin 的 NGXLoadCoreLibrary +
+		//   NVSDK_NGX_D3D12_Init）。我们一直用 snippet 的 stub Init，方向全错。
+		//   正确顺序：① 加载驱动 nvngx.dll → Init（真实现，建立 D3D12 NGX 会话）
+		//   ② 再加载 dlssnr.dll → CreateFeature（此时 core 已就绪）。
+
+		// data path = directory of the game exe (NGX writes its logs there)
+		wchar_t dataPath[MAX_PATH] = {};
+		GetModuleFileNameW(nullptr, dataPath, MAX_PATH);
+		if (wchar_t* s = wcsrchr(dataPath, L'\\'))
+			*(s + 1) = L'\0';
+
+		// --- 0) v0.8.22：加载驱动 NGX core（nvngx.dll）并初始化 ---
+		{
+			std::wstring ngxCp = FindNvngxCorePath();
+			if (ngxCp.empty()) {
+				SKSE::log::warn("[NGXNR] driver nvngx.dll NOT found in DriverStore - NGX core unavailable");
+			} else {
+				ngxCoreModule = LoadLibraryExW(ngxCp.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+				if (!ngxCoreModule) {
+					SKSE::log::warn("[NGXNR] failed to load driver nvngx.dll ({}) err={:#x}", w2a(ngxCp), GetLastError());
+				} else {
+					SKSE::log::info("[NGXNR] driver NGX core nvngx.dll loaded: {}", w2a(ngxCp));
+					auto initStd = reinterpret_cast<PFN_NGXInitStd>(GetProcAddress(ngxCoreModule, "NVSDK_NGX_D3D12_Init"));
+					auto initExtCore = reinterpret_cast<PFN_NGXInitExt>(GetProcAddress(ngxCoreModule, "NVSDK_NGX_D3D12_Init_Ext"));
+					auto initProjCore = reinterpret_cast<PFN_NGXInitProjectID>(GetProcAddress(ngxCoreModule, "NVSDK_NGX_D3D12_Init_ProjectID"));
+					NGXFeatureCommonInfo fciCore{};
+					DWORD cc = 0;
+					// 1) 标准 Init（3 参）——SkyrimUpscaler 同款（返回 1 = Success）
+					if (initStd) {
+						unsigned int r = Guarded([&] { return initStd(kAppId, dataPath, &fciCore); }, &cc);
+						SKSE::log::info("[NGXNR] core[ngx] Init(3-arg) -> {} (rc={:#x})",
+							cc ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), cc ? cc : r);
+						if (cc == 0 && r == kNGXSuccess) { coreInitOk = true; initialized = true; coreInitResult = r; }
+					}
+					// 2) Init_Ext（5 参）版本协商
+					if (!coreInitOk && initExtCore) {
+						for (int ver = 0x13; ver <= 0x16; ++ver) {
+							unsigned int r = Guarded([&] { return initExtCore(kAppId, dataPath, a_device, ver, &fciCore); }, &cc);
+							SKSE::log::info("[NGXNR] core[ngx] Init_Ext(0x{:02X}) -> {} (rc={:#x})", ver,
+								cc ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), cc ? cc : r);
+							if (cc == 0 && r == kNGXSuccess) { coreInitOk = true; initialized = true; initVersion = ver; coreInitResult = r; break; }
+						}
+					}
+					// 3) Init_ProjectID（7 参）
+					if (!coreInitOk && initProjCore) {
+						unsigned int r = Guarded([&] { return initProjCore("a0f57b54-1daf-4934-90ae-c4035c19df04", 0, "1.0", dataPath, a_device, 0x13, &fciCore); }, &cc);
+						SKSE::log::info("[NGXNR] core[ngx] Init_ProjectID -> {} (rc={:#x})",
+							cc ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), cc ? cc : r);
+						if (cc == 0 && r == kNGXSuccess) { coreInitOk = true; initialized = true; coreInitResult = r; }
+					}
+					if (coreInitOk)
+						SKSE::log::info("[NGXNR] NGX core established via driver nvngx.dll (SkyrimUpscaler pattern)");
+					else
+						SKSE::log::warn("[NGXNR] driver nvngx.dll loaded but Init refused - falling back to dlss.dll warmup");
+				}
+			}
+		}
 
 		// --- 1) 加载 NGX core 宿主 nvngx_dlss.dll ---
 		std::wstring corePath = std::wstring(a_pluginDir) + L"\\nvngx_dlss.dll";
@@ -146,12 +237,6 @@ namespace FrameGen
 		auto nrInit = reinterpret_cast<PFN_NGXInit>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Init"));
 		SKSE::log::info("[NGXNR] entry: core[dlss]: Init_Ext={} D3D11_Init={} | nr[dlssnr]: Init_Ext={} Init={}",
 			(void*)initExt12, (void*)init11, (void*)nrInitExt, (void*)nrInit);
-
-		// data path = directory of the game exe (NGX writes its logs there)
-		wchar_t dataPath[MAX_PATH] = {};
-		GetModuleFileNameW(nullptr, dataPath, MAX_PATH);
-		if (wchar_t* s = wcsrchr(dataPath, L'\\'))
-			*(s + 1) = L'\0';
 
 		DWORD code = 0;
 		NGXFeatureCommonInfo fci{};  // v0.8.12：非空 FeatureCommonInfo（排除参数缺失）
@@ -471,6 +556,15 @@ namespace FrameGen
 			// 这里只卸载模块。进程退出期，泄漏可接受；显式卸载避免重复 Shutdown。
 			FreeLibrary(coreModule);
 			coreModule = nullptr;
+		}
+		if (ngxCoreModule) {
+			// v0.8.22：驱动 NGX core（nvngx.dll）
+			if (auto shutdown = reinterpret_cast<unsigned int(__cdecl*)()>(GetProcAddress(ngxCoreModule, "NVSDK_NGX_D3D12_Shutdown"))) {
+				DWORD code = 0;
+				Guarded([&] { return shutdown(); }, &code);
+			}
+			FreeLibrary(ngxCoreModule);
+			ngxCoreModule = nullptr;
 		}
 		initialized = false;
 		featureCreated = false;
