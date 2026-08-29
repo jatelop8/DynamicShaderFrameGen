@@ -958,6 +958,103 @@ namespace FrameGen
 		// → 0x1B7E0（资源绑定 + 执行器 vtable[26] 执行——PD 自己的管线）。
 		// v0.8.63：InitDLSSNR 移到 Evaluate 首帧——cfg 需要宽高（0xa7f0 实锤
 		// cfg+4=W +8=H +0x10=缩放 1.0）；Init 时无尺寸，cfg 宽高 0 引擎建 0×0 必败。
+		//
+		// ============ v0.9 直连 NGX（RenoDX DLSS5 项目实锤，用户指定路线）============
+		// RenoDX renodx-dlss5.addon64 反汇编 + 补丁版 nvngx_dlssnr.dll 导出表（55 个
+		// NVSDK_NGX_*）证实：补丁版 dlssnr = 自包含 NGX 运行时——
+		//   Init (RVA 0x15cf0) = 真实现，成功返回 1（NVSDK_NGX_Result_Success=0x1）
+		//   Init_Ext (RVA 0x13f50) = 0xbad00001（FAIL_FeatureNotSupported，stub）
+		//   CreateFeature/EvaluateFeature/ReleaseFeature/Shutdown1 = 标准 NGX 签名
+		//   （CreateFeature(cmdlist, featureId=18, params, &handle)）
+		//   无 AllocateParameters → 参数对象由驱动 core nvngx.dll 创建（v0.8.39 实锤有）
+		//   feature 18 = NVSDK_NGX_Feature_Reserved18（DLSS-NR，SDK 未公开）
+		// 参数名（addon 字符串实锤）：DLSSNR.Width/Height/InputWidth/InputHeight/
+		//   OutputWidth/OutputHeight/Output.Width/Output.Height/Scale/Upscaling/ScalingRatio
+		// 资源绑定（addon 字符串）：DLSSNR.Color/Depth/MVec/Output + Subrect*/MVecScale*/DepthInverted
+		// 若 Init/Create 成功 → nr9Ready，每帧 EvaluateFeature(cmdlist, handle, params)
+		DWORD fc9 = 0;
+		if (!nr9InitTried) {
+			nr9InitTried = true;
+			// 1) Init（dlssnr 真实现；版本先试 SDK API=0x15，失败日志再试候选）
+			using PFN_NGXInit9 = int(__cdecl*)(unsigned long long, const wchar_t*, ID3D12Device*, unsigned int);
+			auto fnInit9 = ngxModule ? reinterpret_cast<PFN_NGXInit9>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Init")) : nullptr;
+			if (fnInit9) {
+				nr9InitRc = static_cast<unsigned int>(fnInit9(kAppId, L"", device, 0x15));
+				SKSE::log::info("[NGXNR] v0.9 Init({:#x},'',dev,0x15) -> {:#x}", kAppId, nr9InitRc);
+				if (nr9InitRc == 1) {
+					// 2) AllocateParameters（驱动 core）
+					using PFN_Alloc9 = int(__cdecl*)(void**);
+					auto fnAlloc9 = coreModule ? reinterpret_cast<PFN_Alloc9>(GetProcAddress(coreModule, "NVSDK_NGX_D3D12_AllocateParameters")) : nullptr;
+					if (fnAlloc9) {
+						void* p = nullptr;
+						unsigned int ar = 0;
+						Guarded([&] { return ar = static_cast<unsigned int>(fnAlloc9(&p)); }, &fc9);
+						SKSE::log::info("[NGXNR] v0.9 AllocateParameters -> {:#x} params={}", ar, p);
+						if (ar == 1 && p) {
+							nr9Params = p;
+							// 3) Set 参数（NVSDK_NGX_Parameter vtable：slot3=Set(name,uint) slot4=Set(name,float)）
+							auto setUI = [&](const char* n, unsigned int v) -> int {
+								uintptr_t* vt = *reinterpret_cast<uintptr_t**>(p);
+								return reinterpret_cast<int(__cdecl*)(void*, const char*, unsigned int)>(vt[3])(p, n, v);
+							};
+							auto setF = [&](const char* n, float v) -> int {
+								uintptr_t* vt = *reinterpret_cast<uintptr_t**>(p);
+								return reinterpret_cast<int(__cdecl*)(void*, const char*, float)>(vt[4])(p, n, v);
+							};
+							unsigned s1 = static_cast<unsigned>(setUI("DLSSNR.Width", a_width));
+							unsigned s2 = static_cast<unsigned>(setUI("DLSSNR.Height", a_height));
+							unsigned s3 = static_cast<unsigned>(setUI("DLSSNR.InputWidth", a_width));
+							unsigned s4 = static_cast<unsigned>(setUI("DLSSNR.InputHeight", a_height));
+							unsigned s5 = static_cast<unsigned>(setUI("DLSSNR.OutputWidth", a_width));
+							unsigned s6 = static_cast<unsigned>(setUI("DLSSNR.OutputHeight", a_height));
+							unsigned s7 = static_cast<unsigned>(setF("DLSSNR.Scale", 1.0f));
+							SKSE::log::info("[NGXNR] v0.9 Set: W/H/InW/InH/OutW/OutH/Scale -> {:#x}/{:#x}/{:#x}/{:#x}/{:#x}/{:#x}/{:#x}",
+								s1, s2, s3, s4, s5, s6, s7);
+							// 4) CreateFeature(feature 18)
+							using PFN_Create9 = int(__cdecl*)(ID3D12GraphicsCommandList*, int, void*, void**);
+							auto fnCreate9 = reinterpret_cast<PFN_Create9>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_CreateFeature"));
+							if (fnCreate9) {
+								void* h = nullptr;
+								Guarded([&] { return nr9CreateRc = static_cast<unsigned int>(fnCreate9(a_cmdList, 18, p, &h)); }, &fc9);
+								SKSE::log::info("[NGXNR] v0.9 CreateFeature(18) -> {:#x} handle={} (fault={:#x})", nr9CreateRc, h, fc9);
+								if (nr9CreateRc == 1 && h) {
+									nr9Handle = h;
+									nr9Ready = true;
+									SKSE::log::info("[NGXNR] v0.9 NR feature READY (handle={}) - direct NGX path armed", h);
+								}
+							}
+						}
+					} else {
+						SKSE::log::warn("[NGXNR] v0.9 AllocateParameters NOT exported by driver core - direct NGX path unavailable");
+					}
+				} else {
+					// Init 失败：试 Init_Ext（stub 预期 bad00001）确认 + 打版本诊断
+					using PFN_NGXInitExt9 = int(__cdecl*)(unsigned long long, const wchar_t*, ID3D12Device*, unsigned int, void*);
+					auto fnInitExt9 = reinterpret_cast<PFN_NGXInitExt9>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Init_Ext"));
+					if (fnInitExt9) {
+						unsigned int ie = static_cast<unsigned int>(fnInitExt9(kAppId, L"", device, 0x15, nullptr));
+						SKSE::log::info("[NGXNR] v0.9 Init_Ext -> {:#x} (expect 0xbad00001 stub)", ie);
+					}
+				}
+			} else {
+				SKSE::log::warn("[NGXNR] v0.9 NVSDK_NGX_D3D12_Init NOT exported by nvngx_dlssnr.dll");
+			}
+		}
+		// 每帧 EvaluateFeature（Phase 1：先空参数试——Create 通了 Evaluate 是否返回 1）
+		if (nr9Ready && ngxModule) {
+			using PFN_Eval9 = int(__cdecl*)(ID3D12GraphicsCommandList*, void*, void*, void*);
+			auto fnEval9 = reinterpret_cast<PFN_Eval9>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_EvaluateFeature"));
+			if (fnEval9) {
+				Guarded([&] { return nr9EvalRc = static_cast<unsigned int>(fnEval9(a_cmdList, nr9Handle, nr9Params, nullptr)); }, &fc9);
+				if (nr9EvalRc == 1) {
+					lastEvaluateOk = true;
+					lastEvaluateResult = 1;
+					return true;
+				}
+				if (nr9EvalRc != 0 || fc9)  // 只打变化/非零
+					SKSE::log::info("[NGXNR] v0.9 EvaluateFeature -> {:#x} (fault={:#x})", nr9EvalRc, fc9);
+			}
+		}
 		if (pdSetupOk && pdNrAvailable && pdEvaluateDLSSNR) {
 			// --- 首帧 NR 初始化（照抄 SkyrimUpscaler 序列）---
 			// 反汇编 SkyrimUpscaler.dll 调用点实锤（0x1f02c1/0x1f02ce/0x1f037c/

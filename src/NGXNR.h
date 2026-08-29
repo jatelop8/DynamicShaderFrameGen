@@ -304,5 +304,16 @@ namespace FrameGen
 		unsigned int outWidth = 0;
 		unsigned int outHeight = 0;
 		bool needCreate = true;
+		// ===== v0.9 直连 NGX（RenoDX 验证序列）=====
+		// 补丁版 nvngx_dlssnr.dll 自包含 NGX 运行时（55 导出）：Init=真实现(成功=1)/
+		// Init_Ext=0xbad00001(FeatureNotSupported)/CreateFeature/EvaluateFeature 标准签名；
+		// 参数对象由驱动 core nvngx.dll 的 AllocateParameters 创建（dlssnr 无此导出）
+		bool nr9InitTried = false;    // Init+Create 只试一次
+		bool nr9Ready = false;        // CreateFeature(18) 成功
+		void* nr9Params = nullptr;    // NVSDK_NGX_Parameter*（AllocateParameters）
+		void* nr9Handle = nullptr;    // NVSDK_NGX_Handle*（CreateFeature）
+		unsigned int nr9InitRc = 0;   // Init 返回码（1=Success）
+		unsigned int nr9CreateRc = 0; // CreateFeature 返回码（1=Success）
+		unsigned int nr9EvalRc = 0;   // 最近一次 EvaluateFeature 返回码
 	};
 }  // namespace FrameGen
