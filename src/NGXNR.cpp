@@ -653,47 +653,55 @@ namespace FrameGen
 				if (pdSetupOk && pdNrAvailable)
 					SKSE::log::info("[NGXNR]   PDPerfPlugin NR channel READY (D3D12 singleton + NR available)");
 
-				// v0.8.62：InitDLSSNR（NR 初始化入口）——反汇编实锤 EvaluateDLSSNR
+				// v0.8.62/63：InitDLSSNR（NR 初始化入口）——反汇编实锤 EvaluateDLSSNR
 				// 先检查 "DLSSNR: Evaluate called before Init for id=%d"（0x1c3f0 找已
-				// 初始化 id 条目）——**必须先 Init 才能 Evaluate**！v0.8.59/60 从未调过
-				// InitDLSSNR，即使走结构体路径也会被 "before Init" 挡回。
-				// InitDLSSNR(rcx=配置结构体)：读单例 [rip+0x8CDAE]（≠ SetupDirectX 存的
-				// [0x8D7D8]！）→ vtable[29] (0x32380) → 分配 0x5C0 NR 执行器 →
-				// [单例+0x78]=执行器 → 0x1b320(arg1)。arg1 布局未知——先试零结构体。
+				// 初始化 id 条目）——**必须先 Init 才能 Evaluate**！
+				// v0.8.63 修正：**InitDLSSNR 移到 Evaluate 首帧**——反汇编 0xa7f0 实锤
+				// cfg+4=Width、cfg+8=Height（存 float+int + 缩放 1.0 = DLAA），
+				// Init 时不知道渲染尺寸，cfg 宽高=0 引擎建 0×0 必失败！
+				// cfg 布局（0x1b320/0xa7f0/0x1aff0 反汇编）：
+				//   [0]=id(u32) [4]=Width(u32) [8]=Height(u32) [0xc]=mode(u32)
+				//   [0x10]=float 缩放(1.0=DLAA) [0x18..]=更多（0x1aff0 读 [0xc]/[0x10]）
+				// 依赖链：0x1ada0 填执行器[8]=D3D12 device（全局 [0xa6015].[0x98]，
+				// SetupDirectX 建的 NGX 上下文）→ 0x1ae70 检查（"cannot initialize
+				// NGX without a D3D12 device"）。
 				{
-					// 诊断：SetupDirectX 后 [0x8CDAE] 单例是否已填
+					// 诊断：SetupDirectX 后 [0x8CDAE]（InitDLSSNR 读的单例）与
+					// [0xa6015]（0x1ada0 读的 NGX 上下文，[0x98]=device）是否已填
 					uintptr_t pdBase = reinterpret_cast<uintptr_t>(pdModule);
-					uintptr_t nrSingletonSlot = pdBase + 0x8CDAE;
-					uintptr_t nrSingleton = 0;
-					MEMORY_BASIC_INFORMATION sm = {};
-					if (VirtualQuery(reinterpret_cast<LPCVOID>(nrSingletonSlot), &sm, sizeof(sm)) &&
-						sm.State == MEM_COMMIT && (sm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
-						nrSingleton = *reinterpret_cast<uintptr_t*>(nrSingletonSlot);
-					SKSE::log::info("[NGXNR]   PD NR singleton slot@{} = {} (SetupDirectX filled {})",
-						(void*)nrSingletonSlot, (void*)nrSingleton,
-						nrSingleton ? "YES" : "NO");
-					// InitDLSSNR 调用（Guarded 保护，arg1 = 0 初始化结构体）
-					if (pdInitDLSSNR) {
-						struct NRInitArgs { std::uint64_t q[33]; };  // 0x108
-						NRInitArgs a{};
-						a.q[0] = 1;  // id/类型（0x1c3f0 用 [rdx] 找 id）
-						DWORD ic = 0;
-						unsigned int ir = 0;
-						Guarded([&] { return ir = reinterpret_cast<unsigned int(__cdecl*)(const void*)>(pdInitDLSSNR)(&a); }, &ic);
-						pdNrInitOk = (ic == 0 && ir != 0);
-						pdNrInitResult = ic ? kNGXExceptionMarker : ir;
-						SKSE::log::info("[NGXNR]   InitDLSSNR(&cfg) -> {} (rc={:#x} fault={:#x})",
-							pdNrInitOk ? "ok" : "FAILED", pdNrInitResult, ic);
-						if (pdNrInitOk) {
-							// 重读单例确认执行器分配
-							uintptr_t s2 = 0;
-							if (VirtualQuery(reinterpret_cast<LPCVOID>(nrSingletonSlot), &sm, sizeof(sm)) &&
-								sm.State == MEM_COMMIT && (sm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
-								s2 = *reinterpret_cast<uintptr_t*>(nrSingletonSlot);
-							SKSE::log::info("[NGXNR]   PD NR singleton after InitDLSSNR = {}", (void*)s2);
-						}
-					} else {
-						SKSE::log::warn("[NGXNR]   InitDLSSNR NOT exported - EvaluateDLSSNR will fail 'before Init'");
+					auto readGlobal = [&](uintptr_t rva, const char* tag) -> uintptr_t {
+						uintptr_t slot = pdBase + rva;
+						uintptr_t v = 0;
+						MEMORY_BASIC_INFORMATION sm = {};
+						if (VirtualQuery(reinterpret_cast<LPCVOID>(slot), &sm, sizeof(sm)) &&
+							sm.State == MEM_COMMIT && (sm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+							v = *reinterpret_cast<uintptr_t*>(slot);
+						SKSE::log::info("[NGXNR]   PD {} slot@{} = {}", tag, (void*)slot, (void*)v);
+						return v;
+					};
+					uintptr_t s1 = readGlobal(0x8CDAE, "NR singleton");
+					uintptr_t s2 = readGlobal(0xa6015, "NGX ctx");
+					if (s1) {
+						// VirtualQuery 保护读取（v0.8.47 教训：单例可能是 0x2000000 哨兵）
+						uintptr_t v78 = 0, vt = 0;
+						MEMORY_BASIC_INFORMATION sm = {};
+						if (VirtualQuery(reinterpret_cast<LPCVOID>(s1 + 0x78), &sm, sizeof(sm)) &&
+							sm.State == MEM_COMMIT && (sm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+							v78 = *reinterpret_cast<uintptr_t*>(s1 + 0x78);
+						if (VirtualQuery(reinterpret_cast<LPCVOID>(s1), &sm, sizeof(sm)) &&
+							sm.State == MEM_COMMIT && (sm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+							vt = *reinterpret_cast<uintptr_t*>(s1);
+						SKSE::log::info("[NGXNR]   PD NR singleton[0x78]={} vtable={} (InitDLSSNR target ready)",
+							(void*)v78, (void*)vt);
+					}
+					if (s2) {
+						uintptr_t dev = 0;
+						MEMORY_BASIC_INFORMATION sm = {};
+						if (VirtualQuery(reinterpret_cast<LPCVOID>(s2 + 0x98), &sm, sizeof(sm)) &&
+							sm.State == MEM_COMMIT && (sm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+							dev = *reinterpret_cast<uintptr_t*>(s2 + 0x98);
+						SKSE::log::info("[NGXNR]   PD NGX ctx[0x98] (device) = {} (expect {})",
+							(void*)dev, (void*)a_device);
 					}
 				}
 				// v0.8.60：SetupDirectX 成功后查 PDPerfPlugin 的 Caps（标准 API）——
@@ -742,22 +750,64 @@ namespace FrameGen
 		if (!ready || !a_color || !a_output || !a_cmdList)
 			return false;
 
-		// v0.8.59/62：PDPerfPlugin 结构体直调（SkyrimUpscaler 实锤跑通 NR 的完整路径）。
+		// v0.8.59/62/63：PDPerfPlugin 结构体直调（SkyrimUpscaler 实锤跑通 NR 的完整路径）。
 		// v0.8.60 曾改"标准 NGX API 优先"——**那是错的**：反汇编实锤 PD 的
 		// NVSDK_NGX_D3D12_Create/EvaluateFeature 只是驱动 nvngx.dll 的薄包装
 		// （静态 GetProcAddress 解析 [0xAE848]/[0xAE850]）——Evaluate 仍会
 		// 0xbad00005（驱动执行体查 dlss.dll 空表）。真正绕开 5 的路径 =
-		// SetupDirectX(device,1) 建 D3D12 单例 + InitDLSSNR 初始化 NR 执行器 +
+		// SetupDirectX(device,1) 建 D3D12 单例 + InitDLSSNR(cfg) 初始化 NR 执行器 +
 		// 每帧 EvaluateDLSSNR(0x108 结构体) → vtable[30] → 0x1B740（检查+存储）
 		// → 0x1B7E0（资源绑定 + 执行器 vtable[26] 执行——PD 自己的管线）。
-		// 结构体布局（0x1B7E0 反汇编）：+0x00=u32 类型码、+0x08=资源(绑定1)、
-		// +0x10=资源(绑定2)、+0x18=资源(绑定3)、+0x28=资源(绑定0)、
-		// +0x30..+0x48=更多资源槽（0=Color 1=Depth 2=MVec 3=Output 试探）。
-		if (pdSetupOk && pdNrAvailable && pdEvaluateDLSSNR && pdNrInitOk) {
+		// v0.8.63：InitDLSSNR 移到 Evaluate 首帧——cfg 需要宽高（0xa7f0 实锤
+		// cfg+4=W +8=H +0x10=缩放 1.0）；Init 时无尺寸，cfg 宽高 0 引擎建 0×0 必败。
+		if (pdSetupOk && pdNrAvailable && pdEvaluateDLSSNR) {
+			// --- 首帧 InitDLSSNR（cfg 带宽高）---
+			if (!pdNrInitTried) {
+				pdNrInitTried = true;
+				struct NRInitCfg {
+					std::uint32_t id;
+					std::uint32_t width;
+					std::uint32_t height;
+					std::uint32_t mode;
+					float scaling;
+					std::uint8_t rest[0xE8];
+				};
+				NRInitCfg cfg{};
+				cfg.id = 1;                  // feature id（0x1aff0 注册，0x1c3f0 查找）
+				cfg.width = a_width;         // ★ 0xa7f0: 对象[0x298]=float(W) [0x2b0]=W
+				cfg.height = a_height;       // ★ 0xa7f0: 对象[0x29c]=float(H) [0x2b4]=H
+				cfg.mode = 0;                // 0x1aff0: cmp [cfg+0xc],3 → mode
+				cfg.scaling = 1.0f;          // ★ DLAA 1:1（0xa7f0 也写 [0x2a4]=1.0）
+				if (pdInitDLSSNR) {
+					DWORD ic = 0;
+					unsigned int ir = 0;
+					Guarded([&] { return ir = reinterpret_cast<unsigned int(__cdecl*)(const void*)>(pdInitDLSSNR)(&cfg); }, &ic);
+					pdNrInitOk = (ic == 0 && ir != 0);
+					pdNrInitResult = ic ? kNGXExceptionMarker : ir;
+					SKSE::log::info("[NGXNR] InitDLSSNR(id={} {}x{} mode={} scale={}) -> {} (rc={:#x} fault={:#x})",
+						cfg.id, cfg.width, cfg.height, cfg.mode, cfg.scaling,
+						pdNrInitOk ? "ok" : "FAILED", pdNrInitResult, ic);
+					// Init 成功后读执行器确认（单例[0x78] = 执行器）——VirtualQuery 保护
+					if (pdNrInitOk && pdModule) {
+						uintptr_t s = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pdModule) + 0x8CDAE);
+						uintptr_t ex = 0;
+						MEMORY_BASIC_INFORMATION sm = {};
+						if (s && VirtualQuery(reinterpret_cast<LPCVOID>(s + 0x78), &sm, sizeof(sm)) &&
+							sm.State == MEM_COMMIT && (sm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+							ex = *reinterpret_cast<uintptr_t*>(s + 0x78);
+						SKSE::log::info("[NGXNR]   PD executor@single+0x78 = {}", (void*)ex);
+					}
+				} else {
+					SKSE::log::warn("[NGXNR] InitDLSSNR NOT exported - EvaluateDLSSNR will fail 'before Init'");
+				}
+			}
+			if (!pdNrInitOk)
+				return false;
+
 			using PFN_EvalNR = unsigned int(__cdecl*)(const void*);
 			struct NRParams108 { std::uint64_t q[33]; };  // 0x108 = 33*8
 			NRParams108 p{};
-			p.q[0] = 1;                     // +0x00 类型码（featureId/类型）
+			p.q[0] = 1;                     // +0x00 类型码/feature id（0x1B740 用 [rdx] 查 id）
 			p.q[1] = reinterpret_cast<std::uint64_t>(a_color);   // +0x08
 			p.q[2] = reinterpret_cast<std::uint64_t>(a_depth);   // +0x10
 			p.q[3] = reinterpret_cast<std::uint64_t>(a_mvec);    // +0x18
