@@ -523,20 +523,28 @@ namespace FrameGen
 				MEMORY_BASIC_INFORMATION mbi = {};
 				if (VirtualQuery(reinterpret_cast<LPCVOID>(realEval), &mbi, sizeof(mbi)) &&
 					mbi.State == MEM_COMMIT && (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
-					// v0.8.47：反汇编实锤 5 = 单例 handler 表空！
-					//   mov rdi,[rip+0x74989]（+0x25 处）→ 单例指针（驱动层数据段）
-					//   movsxd rax,[rsi+4]（rsi=handle）→ featureId
-					//   imul rcx,rax,0x98; cmp [rcx+rdi+0x24B8],0 → 表空返回 5
-					// 日志：单例地址 + handle+4（featureId）+ 表内容——直接验证。
+					// v0.8.47→v0.8.48 修复闪退：single=0x2000000（未初始化哨兵值，非有效指针）
+					// v0.8.47 直接解引用 single+id*0x98+0x24B8 → 访问违例崩溃。
+					// 所有指针读取加 VirtualQuery 保护（可读才读）。
 					uint8_t* p = reinterpret_cast<uint8_t*>(realEval);
 					uintptr_t singlePtrAddr = realEval + 0x25 + 7 + 0x74989;  // mov rdi,[rip+0x74989]
-					uintptr_t single = *reinterpret_cast<uintptr_t*>(singlePtrAddr);
+					uintptr_t single = 0;
+					{
+						MEMORY_BASIC_INFORMATION sm = {};
+						if (VirtualQuery(reinterpret_cast<LPCVOID>(singlePtrAddr), &sm, sizeof(sm)) &&
+							sm.State == MEM_COMMIT && (sm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+							single = *reinterpret_cast<uintptr_t*>(singlePtrAddr);
+					}
 					SKSE::log::info("[NGXNR]   real-impl globals: single_ptr_addr={} single={}", reinterpret_cast<void*>(singlePtrAddr), reinterpret_cast<void*>(single));
 					if (single) {
-						// 表 [single + id*0x98 + 0x24B8] for id 0..6
+						// 表 [single + id*0x98 + 0x24B8] for id 0..6（读前先 VirtualQuery 保护）
 						for (int id = 0; id <= 6; ++id) {
 							uintptr_t slot = single + id * 0x98 + 0x24B8;
-							uintptr_t h = *reinterpret_cast<uintptr_t*>(slot);
+							MEMORY_BASIC_INFORMATION hm = {};
+							uintptr_t h = 0;
+							if (VirtualQuery(reinterpret_cast<LPCVOID>(slot), &hm, sizeof(hm)) &&
+								hm.State == MEM_COMMIT && (hm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+								h = *reinterpret_cast<uintptr_t*>(slot);
 							SKSE::log::info("[NGXNR]     handler[{}] @{} = {}", id, reinterpret_cast<void*>(slot), reinterpret_cast<void*>(h));
 						}
 					}
