@@ -228,22 +228,39 @@ namespace FrameGen
 			// 0xbad00002——CreateFeature 才是自举入口（SkyrimUpscaler 同款：Init 占位
 			// + CreateFeature 成功）。dlssnr 的 CreateFeature 需要 dlss.dll 建立的
 			// NGX core 单例；先让 dlss.dll 建一次（随后立即释放），dlssnr 就能找到。
-			if (!coreInitOk && coreModule) {
+			// v0.8.14：热身只试一次（warmupTried）；先调 GetScratchBufferSize 诊断——
+			// CreateFeature 内部第一步就是它（不碰 cmdList），同样返回 0xbad00005
+			// 即实锤 "core 未初始化"，而非 vtable/参数问题。
+			if (!coreInitOk && coreModule && !warmupTried) {
+				warmupTried = true;
 				auto warmupCreate = reinterpret_cast<PFN_NGXCreateFeature>(GetProcAddress(coreModule, "NVSDK_NGX_D3D12_CreateFeature"));
 				auto warmupRelease = reinterpret_cast<PFN_NGXReleaseFeature>(GetProcAddress(coreModule, "NVSDK_NGX_D3D12_ReleaseFeature"));
+				auto scratchSize = reinterpret_cast<unsigned int(__cdecl*)(int, NGXInstanceParameters*, unsigned long long*)>(
+					GetProcAddress(coreModule, "NVSDK_NGX_D3D12_GetScratchBufferSize"));
+				OwnNGXParams wp;
+				wp.Set4("DLSS.Mode", 0);
+				wp.Set4("DLSS.Input.Width", a_width);
+				wp.Set4("DLSS.Input.Height", a_height);
+				wp.Set4("DLSS.Output.Width", a_width);
+				wp.Set4("DLSS.Output.Height", a_height);
+				wp.Set4("DLSS.Enable.Output.Subrects", 1);
+				wp.Set4("DLSS.PerfQualityValue", 1);
+				wp.Set4("DLSS.DepthInverted", 0);
+				wp.Set4("DLSS.Hint.Render.Preset", 0);
+				wp.Set4("CreationNodeMask", 1u);
+				wp.Set4("VisibilityNodeMask", 1u);
+
+				// 诊断：GetScratchBufferSize —— CreateFeature 的前置，不碰 cmdList
+				if (scratchSize) {
+					unsigned long long sbSize = 0;
+					DWORD scode = 0;
+					unsigned int sr = Guarded([&] { return scratchSize(1, &wp, &sbSize); }, &scode);
+					scratchSizeResult = scode ? kNGXExceptionMarker : sr;
+					SKSE::log::info("[NGXNR] GetScratchBufferSize(1) -> {} (rc={:#x} size={})",
+						scode ? "faulted" : (sr == kNGXSuccess ? "ok" : "failed"), scode ? scode : sr, sbSize);
+				}
+
 				if (warmupCreate) {
-					OwnNGXParams wp;
-					wp.Set4("DLSS.Mode", 0);
-					wp.Set4("DLSS.Input.Width", a_width);
-					wp.Set4("DLSS.Input.Height", a_height);
-					wp.Set4("DLSS.Output.Width", a_width);
-					wp.Set4("DLSS.Output.Height", a_height);
-					wp.Set4("DLSS.Enable.Output.Subrects", 1);
-					wp.Set4("DLSS.PerfQualityValue", 1);
-					wp.Set4("DLSS.DepthInverted", 0);
-					wp.Set4("DLSS.Hint.Render.Preset", 0);
-					wp.Set4("CreationNodeMask", 1u);
-					wp.Set4("VisibilityNodeMask", 1u);
 					NGXHandle* wh = nullptr;
 					DWORD wcode = 0;
 					unsigned int wr = Guarded([&] { return warmupCreate(a_cmdList, 1, &wp, &wh); }, &wcode);
@@ -289,8 +306,14 @@ namespace FrameGen
 				return false;
 			}
 			if (r != kNGXSuccess || !h) {
-				SKSE::log::warn("[NGXNR] CreateFeature failed {:#x} - DLSS-NR disabled ({}x{} core={})", r, a_width, a_height,
-					coreInitOk ? "ok" : "MISSING");
+				// v0.8.14：节流（首次 + 每 180 帧），避免每帧刷屏
+				static unsigned int lastLogged = 0;
+				static unsigned int frameCount = 0;
+				if (++frameCount % 180 == 1 || r != lastLogged) {
+					lastLogged = r;
+					SKSE::log::warn("[NGXNR] CreateFeature failed {:#x} - DLSS-NR disabled ({}x{} core={})", r, a_width, a_height,
+						coreInitOk ? "ok" : "MISSING");
+				}
 				return false;
 			}
 			handle = h;

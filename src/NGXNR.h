@@ -206,6 +206,9 @@ namespace FrameGen
 		unsigned int coreInitResult = 0;  // 最近一次 core 初始化返回码
 		// v0.8.12：dlss.dll 热身 CreateFeature 结果（区分"缺 core" vs "其他原因"）
 		unsigned int warmupResult = 0;    // 0=未执行 1=成功 其他=返回码
+		// v0.8.14：热身只试一次（失败后不每帧重试刷屏）；GetScratchBufferSize 诊断
+		bool warmupTried = false;
+		unsigned int scratchSizeResult = 0;  // 0=未执行 1=成功 其他=返回码（core 缺失实锤）
 
 	private:
 		ID3D12Device* device = nullptr;
