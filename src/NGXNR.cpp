@@ -501,37 +501,47 @@ namespace FrameGen
 		nvngxNrPresent = GetFileAttributesW(nrPath.c_str()) != INVALID_FILE_ATTRIBUTES;
 		SKSE::log::info("[NGXNR] nvngx_dlssnr.dll {}", nvngxNrPresent ? "present" : "NOT present (expected -> feature unavailable)");
 
-		// v0.8.42→v0.8.43 修正：detour 跳板是**双指针**结构——
-		//   [0x18006E4B8] = 初始化完成标志（非空自旋等待；v0.8.42 误读为函数指针）
-		//   [0x18006E3E0] = 真实函数指针（mov rax,[0x18006E3E0]; push rax; ret 跳它）
-		// v0.8.42 日志实锤：读 0x6E4B8 得到 0x7ffb032ae4c0（=自身+8 附近，数据区不是代码）
-		// → 真实实现指针 RVA = 0x6E3E0（0x18006E3E0 基于固定基址 0x180000000）。
-		// v0.8.43 日志实锤：fn_ptr=0x7ffb0b427730 → RVA=0x87730（超出旧 0x80000 范围被误杀）→ 放宽到 0x200000
+		// v0.8.42→v0.8.45 修正（逐轮逼近）：
+		//   v0.8.42 读 0x6E4B8 → 数据区（是"初始化标志"，非函数指针）
+		//   v0.8.43 读 0x6E3E0（Init 跳板的目标）→ RVA 0x87730 超出模块（Init 的槽，不是 Evaluate 的）
+		//   v0.8.45 精确反汇编 EvaluateFeature @0xA4F4：
+		//     mov rax,[0x18006E4B8]   ← 标志（等非空）
+		//     mov rax,[0x18006E3C0]   ← ★ Evaluate 专属函数指针槽（RVA 0x6E3C0）
+		//     push rax; ret           ← 跳真实实现
+		//   CreateFeature @0xA466 用 0x18006E3B0（RVA 0x6E3B0）——每个 API 独立槽！
+		//   真实实现不在模块内（驱动 detour 到 nvwgf2umx/驱动层）→ 去掉范围校验直接读+dump
 		if (ngxCoreModule) {
 			uintptr_t modBase = reinterpret_cast<uintptr_t>(ngxCoreModule);
 			uintptr_t flagAddr = modBase + 0x6E4B8;   // 初始化标志（非空=已就绪）
-			uintptr_t fnPtrAddr = modBase + 0x6E3E0;   // 真实函数指针
+			uintptr_t fnPtrAddr = modBase + 0x6E3C0;   // ★ Evaluate 专属函数指针（RVA 0x6E3C0）
 			uintptr_t realEval = *reinterpret_cast<uintptr_t*>(fnPtrAddr);
 			SKSE::log::info("[NGXNR] driver-core EvaluateFeature detour: flag@{}={} fn_ptr@{}={}",
 				reinterpret_cast<void*>(flagAddr), reinterpret_cast<void*>(*reinterpret_cast<uintptr_t*>(flagAddr)),
 				reinterpret_cast<void*>(fnPtrAddr), reinterpret_cast<void*>(realEval));
-			if (realEval && realEval > modBase && realEval < modBase + 0x200000) {
-				// 扫描真实实现前 0x200 字节找 0xBAD00005/2 引用（mov eax/lea 该常量）
-				uint8_t* p = reinterpret_cast<uint8_t*>(realEval);
-				for (int i = 0; i < 0x200; ++i) {
-					uint32_t v = 0;
-					memcpy(&v, p + i, 4);
-					if (v == 0xBAD00005 || v == 0xBAD00002) {
-						SKSE::log::info("[NGXNR]   real impl @+{:#x}: error const {:#x} referenced (rva={:#x})", i, v, realEval - modBase + i);
+			if (realEval) {
+				// 真实实现可能在任何模块（驱动层）——用 VirtualQuery 检查可读再读
+				MEMORY_BASIC_INFORMATION mbi = {};
+				if (VirtualQuery(reinterpret_cast<LPCVOID>(realEval), &mbi, sizeof(mbi)) &&
+					mbi.State == MEM_COMMIT && (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
+					// 扫描真实实现前 0x200 字节找 0xBAD00005/2 引用（mov eax/lea 该常量）
+					uint8_t* p = reinterpret_cast<uint8_t*>(realEval);
+					for (int i = 0; i < 0x200; ++i) {
+						uint32_t v = 0;
+						memcpy(&v, p + i, 4);
+						if (v == 0xBAD00005 || v == 0xBAD00002) {
+							SKSE::log::info("[NGXNR]   real impl @+{:#x}: error const {:#x} referenced", i, v);
+						}
 					}
+					// 打印前 96 字节
+					char hex[300] = {};
+					for (int i = 0; i < 48; ++i)
+						sprintf(hex + i * 3, "%02X ", p[i]);
+					SKSE::log::info("[NGXNR]   real impl head: {}", hex);
+				} else {
+					SKSE::log::warn("[NGXNR]   real impl not readable ({})", reinterpret_cast<void*>(realEval));
 				}
-				// 打印前 96 字节
-				char hex[300] = {};
-				for (int i = 0; i < 48; ++i)
-					sprintf(hex + i * 3, "%02X ", p[i]);
-				SKSE::log::info("[NGXNR]   real impl head: {}", hex);
 			} else {
-				SKSE::log::warn("[NGXNR]   real impl out of range ({}) - fn_ptr not populated yet", reinterpret_cast<void*>(realEval));
+				SKSE::log::warn("[NGXNR]   fn_ptr empty - EvaluateFeature not armed by driver yet");
 			}
 		}
 
