@@ -2,12 +2,14 @@
 //   dlss5-dx11-bridge (c) 2026 NIGos — MIT License
 //   https://github.com/NIGos/dlss5-dx11-bridge
 //   (recovered from disassembly; proven on BG3 / Fallout 4 / Unity)
+// v0.8.8: Get()/settings live in FrameGen. CommonLib rule: Windows.h must come
+// AFTER CommonLib - FrameGen.h first, then SKSE (which manages Windows.h).
+#include "FrameGen.h"
 #include "NGXNR.h"
 
 #include <SKSE/SKSE.h>
 
 #include <d3d12.h>
-#include <Windows.h>
 
 namespace FrameGen
 {
@@ -210,12 +212,17 @@ namespace FrameGen
 			return false;
 
 		// --- (re)create on first frame / size change ---
+		// v0.8.8：DLSS-NR 参数键全部用 DLSSNR.* 前缀（nvngx_dlssnr.dll 字符串表
+		// 实锤：DLSSNR.Color/Depth/MVec/Output/Width/Height/Enabled/ScalingRatio/
+		// DepthInverted/Reset...）。无前缀通用 DLSS 键（Color/Depth/Output）NR 不认。
 		if (needCreate || a_width != outWidth || a_height != outHeight) {
-			params->Set("Width", a_width);
-			params->Set("Height", a_height);
-			params->Set("OutWidth", a_width);
-			params->Set("OutHeight", a_height);
-			params->Set("PerfQualityValue", 2);			  // balanced-ish; NR ignores for filter use
+			params->Set("DLSSNR.Width", a_width);
+			params->Set("DLSSNR.Height", a_height);
+			params->Set("DLSSNR.ScalingRatio", 1.0f);		  // DLAA 模式（4K→4K 滤镜）
+			params->Set("DLSSNR.Enabled", 1);
+			params->Set("DLSSNR.DepthInverted", 0);			  // Skyrim depth: 近=0 远=1
+			params->Set("DLSSNR.Reset", 1);					  // 创建时重置内部状态
+			params->Set("PerfQualityValue", 2);				  // balanced-ish; NR uses for ratio
 			params->Set("DLSS.Feature.Create.Flags", 107);
 			params->Set("DLSS.Enable.Output.Subrects", 1);
 			params->Set("CreationNodeMask", 1u);
@@ -242,16 +249,19 @@ namespace FrameGen
 			SKSE::log::info("[NGXNR] feature created {}x{} handle={}", a_width, a_height, (void*)h);
 		}
 
-		// --- per-frame resources + params ---
-		params->Set("Color", a_color);
-		params->Set("Depth", a_depth);
-		params->Set("MotionVectors", a_mvec);
-		params->Set("Output", a_output);
-		// NR neural filter params (renodx-style; NGX recognises these keys)
-		params->Set("DLSSNR.Intensity", intensity);
-		params->Set("DLSSNR.Style", style);
-		params->Set("DLSSNR.LocalToneStrength", localToneStrength);
-		params->Set("DLSSNR.SkinStructureStrength", skinStructureStrength);
+		// --- per-frame resources + params (DLSSNR.* keys, v0.8.8) ---
+		params->Set("DLSSNR.Color", a_color);
+		params->Set("DLSSNR.Depth", a_depth);
+		params->Set("DLSSNR.MVec", a_mvec);
+		params->Set("DLSSNR.Output", a_output);
+		params->Set("DLSSNR.Enabled", 1);
+		// v0.8.7：NR 参数读 settings（GUI 滑块/INI 写入处）——原用本对象成员
+		// (intensity/style/...) 从未被赋值，滑块无效。Get() = FrameGen 命名空间自由函数。
+		auto& s = Get().settings;
+		params->Set("DLSSNR.Intensity", s.nrIntensity);
+		params->Set("DLSSNR.Style", s.nrStyle);
+		params->Set("DLSSNR.LocalToneStrength", s.nrLocalTone);
+		params->Set("DLSSNR.SkinStructureStrength", s.nrSkinStructure);
 		params->Set("DLSSNR.Reset", 0);
 		params->Set("Sharpness", 0.0f);
 		params->Set("Jitter.Offset.X", 0.0f);

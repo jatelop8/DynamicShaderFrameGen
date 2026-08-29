@@ -85,7 +85,13 @@ namespace FrameGen
 
 		// v0.7.17：FG 输入 = colorOut（DLSS 超分结果 4K；失败时 = 引擎画面兜底）。
 		// v0.7.13 曾改回 swapChainBufferWrapped（UI 保留）但 kFRAMEBUFFER 方案已弃。
-		auto HUDLessColor = sc.colorOutWrapped ? sc.colorOutWrapped->resource.get() : (sc.swapChainBufferWrapped ? sc.swapChainBufferWrapped->resource.get() : nullptr);
+		// v0.8.7：NR 激活时 FG 输入改 nrOut——NR 在 fence 后写 nrOut，本段（fence 前）
+		// 读到的正好是上一帧的 NR 结果（= 本帧呈现内容），生成的插帧与呈现帧风格
+		// 一致；否则插帧帧无 NR 风格，与呈现帧交替 → 闪烁。
+		auto& ngx = fg.ngxNR;
+		const bool nrActive = ngx.initialized && ngx.supported && fg.settings.enableDLSSNR && sc.nrOutWrapped;
+		auto HUDLessColor = nrActive ? sc.nrOutWrapped->resource.get() :
+			(sc.colorOutWrapped ? sc.colorOutWrapped->resource.get() : (sc.swapChainBufferWrapped ? sc.swapChainBufferWrapped->resource.get() : nullptr));
 		auto depth = sc.depthWrapped ? sc.depthWrapped->resource.get() : nullptr;
 		auto motionVectors = sc.mvecWrapped ? sc.mvecWrapped->resource.get() : nullptr;
 
