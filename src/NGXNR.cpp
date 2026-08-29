@@ -1017,15 +1017,21 @@ namespace FrameGen
 					SKSE::log::info("[NGXNR] InitDLSSNR(id={} {}x{} mode={} scale={}) -> {} (rc={:#x} fault={:#x})",
 						cfg.id, cfg.width, cfg.height, cfg.mode, cfg.scaling,
 						pdNrInitOk ? "ok" : "FAILED", pdNrInitResult, ic);
-					// Init 成功后读执行器确认（单例[0x78] = 执行器）——VirtualQuery 保护
+					// Init 成功后读执行器确认——v0.8.71 修正：执行器在 [0xC1268] 单例
+					// 的 +0x78（0x32380 里 mov [rbx+0x78], rax；旧诊断读 0x8CDAE 是
+					// .rdata 数据，纯误导）
 					if (pdNrInitOk && pdModule) {
-						uintptr_t s = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pdModule) + 0x8CDAE);
-						uintptr_t ex = 0;
+						uintptr_t single = 0;
 						MEMORY_BASIC_INFORMATION sm = {};
-						if (s && VirtualQuery(reinterpret_cast<LPCVOID>(s + 0x78), &sm, sizeof(sm)) &&
+						if (VirtualQuery(reinterpret_cast<LPCVOID>(reinterpret_cast<uintptr_t>(pdModule) + 0xC1268), &sm, sizeof(sm)) &&
 							sm.State == MEM_COMMIT && (sm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
-							ex = *reinterpret_cast<uintptr_t*>(s + 0x78);
-						SKSE::log::info("[NGXNR]   PD executor@single+0x78 = {}", (void*)ex);
+							single = *reinterpret_cast<uintptr_t*>(reinterpret_cast<uintptr_t>(pdModule) + 0xC1268);
+						uintptr_t ex = 0;
+						if (single && VirtualQuery(reinterpret_cast<LPCVOID>(single + 0x78), &sm, sizeof(sm)) &&
+							sm.State == MEM_COMMIT && (sm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+							ex = *reinterpret_cast<uintptr_t*>(single + 0x78);
+						SKSE::log::info("[NGXNR]   PD executor@[0xC1268]+0x78 = {} ({} 执行器)",
+							(void*)ex, ex ? "READY" : "EMPTY");
 					}
 				} else {
 					SKSE::log::warn("[NGXNR] InitDLSSNR NOT exported - EvaluateDLSSNR will fail 'before Init'");
