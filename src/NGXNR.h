@@ -213,6 +213,9 @@ namespace FrameGen
 		// id=1（SuperSampling）在 core=ok 下仍 0xbad00002 → 遍历 0..10 找成功 id
 		int nrFeatureId = -1;         // 已锁定的 NR feature id（-1=未定）
 		bool nrIdTriedAll = false;    // 遍历过全部仍失败（不再每帧遍历）
+		// v0.8.21：warmup 的 dlss feature 不释放——dlss.dll 的 core 单例随其 feature
+		// 存活；立即 Release 可能连带销毁 core → dlssnr 找不到。保留到 Shutdown。
+		NGXHandle* warmupHandle = nullptr;
 
 	private:
 		ID3D12Device* device = nullptr;

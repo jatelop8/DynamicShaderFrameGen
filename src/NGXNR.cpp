@@ -234,7 +234,6 @@ namespace FrameGen
 			if (!coreInitOk && coreModule && !warmupTried) {
 				warmupTried = true;
 				auto warmupCreate = reinterpret_cast<PFN_NGXCreateFeature>(GetProcAddress(coreModule, "NVSDK_NGX_D3D12_CreateFeature"));
-				auto warmupRelease = reinterpret_cast<PFN_NGXReleaseFeature>(GetProcAddress(coreModule, "NVSDK_NGX_D3D12_ReleaseFeature"));
 				auto scratchSize = reinterpret_cast<unsigned int(__cdecl*)(int, NGXInstanceParameters*, unsigned long long*)>(
 					GetProcAddress(coreModule, "NVSDK_NGX_D3D12_GetScratchBufferSize"));
 				OwnNGXParams wp;
@@ -281,11 +280,10 @@ namespace FrameGen
 					if (wcode == 0 && wr == kNGXSuccess && wh) {
 						coreInitOk = true;
 						coreInitResult = wr;
-						SKSE::log::info("[NGXNR] dlss.dll warmup CreateFeature OK - NGX core established (handle={})", (void*)wh);
-						if (warmupRelease) {
-							DWORD rcode = 0;
-							Guarded([&] { return warmupRelease(wh); }, &rcode);
-						}
+						// v0.8.21：不立即 Release——dlss 的 core 单例随 feature 存活，
+						// Release 可能连带销毁 core（dlssnr 依赖它）。保留到 Shutdown。
+						warmupHandle = wh;
+						SKSE::log::info("[NGXNR] dlss.dll warmup CreateFeature OK - NGX core established (handle={}, kept alive)", (void*)wh);
 
 						// v0.8.19：core 建立后重试 dlssnr 的 Init_Ext——
 						// 之前（core MISSING）返回 0xbad00002；core ok 后可能注册 NR feature
@@ -444,6 +442,14 @@ namespace FrameGen
 
 	void NGXNR::Shutdown()
 	{
+		// v0.8.21：先释放保留的 warmup feature（dlss core 宿主）
+		if (warmupHandle && coreModule) {
+			if (auto release = reinterpret_cast<PFN_NGXReleaseFeature>(GetProcAddress(coreModule, "NVSDK_NGX_D3D12_ReleaseFeature"))) {
+				DWORD code = 0;
+				Guarded([&] { return release(warmupHandle); }, &code);
+			}
+			warmupHandle = nullptr;
+		}
 		if (ngxModule) {
 			if (handle) {
 				if (auto release = reinterpret_cast<PFN_NGXReleaseFeature>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_ReleaseFeature"))) {
