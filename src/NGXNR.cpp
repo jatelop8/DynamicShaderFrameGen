@@ -604,6 +604,13 @@ namespace FrameGen
 
 	void NGXNR::Shutdown()
 	{
+		// v0.8.28：释放驱动 core 分配的真 params
+		if (realParams && paramsDestroy) {
+			DWORD code = 0;
+			Guarded([&] { return paramsDestroy(realParams); }, &code);
+			realParams = nullptr;
+			paramsDestroy = nullptr;
+		}
 		// v0.8.21：先释放保留的 warmup feature（dlss core 宿主）
 		if (warmupHandle && coreModule) {
 			if (auto release = reinterpret_cast<PFN_NGXReleaseFeature>(GetProcAddress(coreModule, "NVSDK_NGX_D3D12_ReleaseFeature"))) {
