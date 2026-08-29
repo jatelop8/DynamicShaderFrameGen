@@ -17,6 +17,12 @@ namespace FrameGen
 	// ------------------------------------------------------------------
 	using PFN_NGXInitExt = unsigned int(__cdecl*)(unsigned long long a_appId,
 		const wchar_t* a_dataPath, ID3D12Device* a_device, int a_version, const void* a_featureInfo);
+	// v0.8.7: plain NVSDK_NGX_D3D12_Init (non-Ex). Disassembly of
+	// nvngx_dlssnr.dll D3D12_Init (rva 0x15cf0) shows arg3 (r8) used as an
+	// OUT handle (mov [r8],0 on success) while arg1/arg2 are not consumed —
+	// signature: (u64 appId, wchar_t* path, void** outHandle, int ver, void* info)
+	using PFN_NGXInit = unsigned int(__cdecl*)(unsigned long long a_appId,
+		const wchar_t* a_dataPath, void** a_outHandle, int a_sdkVersion, const void* a_featureInfo);
 	using PFN_NGXInitProjectID = unsigned int(__cdecl*)(const char* a_project, int a_engineType,
 		const char* a_version, const wchar_t* a_dataPath, ID3D12Device* a_device,
 		int a_sdkVersion, const void* a_featureInfo);
@@ -60,7 +66,7 @@ namespace FrameGen
 	}  // namespace
 
 	// ------------------------------------------------------------------
-	// Init: load nvngx_dlss.dll, negotiate NGX SDK version, query caps
+	// Init: load the DLSS-NR plugin, negotiate NGX SDK version, query caps
 	// ------------------------------------------------------------------
 	void NGXNR::Init(ID3D12Device* a_device, const wchar_t* a_pluginDir)
 	{
@@ -70,27 +76,40 @@ namespace FrameGen
 			return;
 		device = a_device;
 
-		std::wstring ngxDll = std::wstring(a_pluginDir) + L"\\nvngx_dlss.dll";
-		ngxModule = LoadLibraryW(ngxDll.c_str());
+		// v0.8.7: load nvngx_dlssnr.dll first (the DLSS-NR plugin carries the
+		// D3D12 backend; its D3D12_Init is a real implementation while the
+		// *_Init_Ext exports are stubs returning 0xbad00001). Fall back to
+		// nvngx_dlss.dll. Log the resolved path - LoadLibrary may reuse an
+		// already-loaded module (e.g. one loaded by SkyrimUpscaler).
+		std::wstring dllPath = std::wstring(a_pluginDir) + L"\\nvngx_dlssnr.dll";
+		ngxModule = LoadLibraryW(dllPath.c_str());
 		if (!ngxModule) {
-			SKSE::log::warn("[NGXNR] nvngx_dlss.dll not found at {} - DLSS-NR disabled (no crash)", w2a(ngxDll));
+			dllPath = std::wstring(a_pluginDir) + L"\\nvngx_dlss.dll";
+			ngxModule = LoadLibraryW(dllPath.c_str());
+		}
+		if (!ngxModule) {
+			SKSE::log::warn("[NGXNR] no nvngx_dlssnr.dll / nvngx_dlss.dll under {} - DLSS-NR disabled (no crash)", w2a(a_pluginDir));
 			nvngxPresent = false;
 			return;
 		}
 		nvngxPresent = true;
+		wchar_t resolved[MAX_PATH] = {};
+		GetModuleFileNameW(ngxModule, resolved, MAX_PATH);
+		SKSE::log::info("[NGXNR] loaded {} (resolved: {})", w2a(dllPath), w2a(resolved));
 
 		auto initExt = reinterpret_cast<PFN_NGXInitExt>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Init_Ext"));
+		auto init = reinterpret_cast<PFN_NGXInit>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Init"));
 		auto initProject = reinterpret_cast<PFN_NGXInitProjectID>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Init_ProjectID"));
 		auto allocParams = reinterpret_cast<PFN_NGXAllocParams>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_AllocateParameters"));
 		auto getCaps = reinterpret_cast<PFN_NGXGetCaps>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_GetCapabilityParameters"));
-		if (!initExt && !initProject) {
-			SKSE::log::warn("[NGXNR] nvngx_dlss.dll missing Init entry points - DLSS-NR disabled");
+		SKSE::log::info("[NGXNR] entry: Init_Ext={} Init={} Init_ProjectID={} Alloc={} Caps={}",
+			(void*)initExt, (void*)init, (void*)initProject, (void*)allocParams, (void*)getCaps);
+		if (!initExt && !init && !initProject) {
+			SKSE::log::warn("[NGXNR] no NGX D3D12 Init entry points - DLSS-NR disabled");
 			return;
 		}
 
-		// The SDK version constant is undocumented and moved between NGX
-		// releases; negotiate across 0x13..0x16 (verified working range).
-		// A hardcoded value faults the whole D3D12 session on other drivers.
+		// data path = directory of the game exe (NGX writes its logs there)
 		wchar_t dataPath[MAX_PATH] = {};
 		GetModuleFileNameW(nullptr, dataPath, MAX_PATH);
 		if (wchar_t* s = wcsrchr(dataPath, L'\\'))
@@ -98,13 +117,22 @@ namespace FrameGen
 
 		DWORD code = 0;
 		bool inited = false;
-		// 版本协商：范围放宽 0x10..0x20（NGX SDK 版本常量随驱动移动，作者 0x13..0x16
-		// 是在其驱动上验证的；我们的 4080/驱动可能接受不同值）。refused 也打返回码。
-		for (int ver = 0x10; ver <= 0x20 && !inited; ++ver) {
+		// v0.8.7: try ALL THREE init flavours per version. *_Init_Ext are
+		// stubs on the 2.13 plugins (0xbad00001), plain Init is the real
+		// implementation with an out-handle arg, Init_ProjectID sometimes
+		// accepted on drivers that fault on the other two (bridge comment).
+		for (int ver = 0x13; ver <= 0x16 && !inited; ++ver) {
 			if (initExt) {
 				unsigned int r = Guarded([&] { return initExt(kAppId, dataPath, a_device, ver, nullptr); }, &code);
 				SKSE::log::info("[NGXNR] Init_Ext(0x{:02X}) -> {} (rc={:#x})", ver,
 					code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r);
+				if (code == 0 && r == kNGXSuccess) { inited = true; initVersion = ver; break; }
+			}
+			if (init) {
+				void* outHandle = nullptr;
+				unsigned int r = Guarded([&] { return init(kAppId, dataPath, &outHandle, ver, nullptr); }, &code);
+				SKSE::log::info("[NGXNR] Init(0x{:02X}) -> {} (rc={:#x} outHandle={})", ver,
+					code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r, outHandle);
 				if (code == 0 && r == kNGXSuccess) { inited = true; initVersion = ver; break; }
 			}
 			if (initProject) {
@@ -115,7 +143,7 @@ namespace FrameGen
 			}
 		}
 		if (!inited) {
-			SKSE::log::warn("[NGXNR] no NGX D3D12 init entry point accepted by this driver - DLSS-NR disabled");
+			SKSE::log::warn("[NGXNR] no NGX D3D12 init flavour accepted by this driver - DLSS-NR disabled");
 			return;
 		}
 		SKSE::log::info("[NGXNR] NGX D3D12 session initialised (version 0x{:02X})", initVersion);
