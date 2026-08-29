@@ -39,10 +39,16 @@ namespace FrameGen
 	// succeed afterwards on the same nvngx_dlss.dll).
 	using PFN_NGXInit11 = unsigned int(__cdecl*)(unsigned long long a_appId,
 		const wchar_t* a_dataPath, void* a_param);
-	// v0.8.22：标准 NVSDK_NGX_D3D12_Init（3 参：appId, dataPath, FeatureCommonInfo）——
-	// 驱动 nvngx.dll（NGX core）的真实现（SkyrimUpscaler 日志 Init=1 Success 实锤）
+	// v0.8.39 重大修正：驱动 core 的 NVSDK_NGX_D3D12_Init 与 Init_Ext 反汇编
+	// **完全相同**（都是 detour 跳板：mov rax,[0x18006E4B8]; je 等; 跳真实现）——
+	// **标准 Init 和 Init_Ext 同签名（5 参）**！v0.8.22 定义成 3 参
+	// (appId, dataPath, fci) 调用 5 参函数 → 栈错乱 0xc0000005 → 标准 Init
+	// 从未成功 → dlssnr 认的会话（标准 Init 建的）从未存在 → CreateFeature 全 2。
+	// SkyrimUpscaler.log 实锤：NVSDK_NGX_D3D11_Init = Success（标准 Init）→
+	// GetCapabilityParameters = Success → CREATE_DLSS_EXT(id=0) = Success。
 	using PFN_NGXInitStd = unsigned int(__cdecl*)(unsigned long long a_appId,
-		const wchar_t* a_dataPath, const void* a_featureCommonInfo);
+		const wchar_t* a_dataPath, ID3D12Device* a_device, int a_sdkVersion,
+		const void* a_featureCommonInfo);
 	using PFN_NGXInitProjectID = unsigned int(__cdecl*)(const char* a_project, int a_engineType,
 		const char* a_version, const wchar_t* a_dataPath, ID3D12Device* a_device,
 		int a_sdkVersion, const void* a_featureInfo);
@@ -176,12 +182,15 @@ namespace FrameGen
 					auto initProjCore = reinterpret_cast<PFN_NGXInitProjectID>(GetProcAddress(ngxCoreModule, "NVSDK_NGX_D3D12_Init_ProjectID"));
 					NGXFeatureCommonInfo fciCore{};
 					DWORD cc = 0;
-					// 1) 标准 Init（3 参）——SkyrimUpscaler 同款（返回 1 = Success）
+					// 1) 标准 Init（5 参，v0.8.39 修正）——SkyrimUpscaler 同款（返回 1 = Success）
+					// dlssnr 认的就是标准 Init 建的会话！版本协商 0x13..0x16。
 					if (initStd) {
-						unsigned int r = Guarded([&] { return initStd(kAppId, dataPath, &fciCore); }, &cc);
-						SKSE::log::info("[NGXNR] core[ngx] Init(3-arg) -> {} (rc={:#x})",
-							cc ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), cc ? cc : r);
-						if (cc == 0 && r == kNGXSuccess) { coreInitOk = true; initialized = true; coreInitResult = r; }
+						for (int ver = 0x13; ver <= 0x16 && !coreInitOk; ++ver) {
+							unsigned int r = Guarded([&] { return initStd(kAppId, dataPath, a_device, ver, &fciCore); }, &cc);
+							SKSE::log::info("[NGXNR] core[ngx] Init(0x{:02X}) -> {} (rc={:#x})", ver,
+								cc ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), cc ? cc : r);
+							if (cc == 0 && r == kNGXSuccess) { coreInitOk = true; initialized = true; initVersion = ver; coreInitResult = r; }
+						}
 					}
 					// 2) Init_Ext（5 参）版本协商
 					if (!coreInitOk && initExtCore) {
