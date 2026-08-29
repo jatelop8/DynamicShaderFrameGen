@@ -1048,6 +1048,66 @@ namespace FrameGen
 							}
 							SKSE::log::info("[NGXNR]   handler_table[{}]@{} = {} (real eval impl)",
 								hFid, (void*)tableAddr, (void*)tableEntry);
+							// v0.8.55：执行体（dlss.dll @0x2CA20）5 = FNV 哈希表查找失败——
+							// [handle+0] 签名不在表里。读 dlss.dll 的表基址/掩码/哨兵 + 表项签名。
+							// 槽位（capstone 精确）：表基址[+0xBA9088] 掩码[+0xBA90A0] 哨兵[+0xBA9078]
+							{
+								HMODULE dlssMod = GetModuleHandleW(L"nvngx_dlss.dll");
+								if (dlssMod) {
+									uintptr_t db = reinterpret_cast<uintptr_t>(dlssMod);
+									uintptr_t tblBaseSlot = db + 0xBA9088;
+									uintptr_t maskSlot = db + 0xBA90A0;
+									uintptr_t sentinelSlot = db + 0xBA9078;
+									uintptr_t tblBase = 0, mask = 0, sentinel = 0;
+									MEMORY_BASIC_INFORMATION mbi = {};
+									if (VirtualQuery(reinterpret_cast<LPCVOID>(tblBaseSlot), &mbi, sizeof(mbi)) && mbi.State == MEM_COMMIT)
+										tblBase = *reinterpret_cast<uintptr_t*>(tblBaseSlot);
+									if (VirtualQuery(reinterpret_cast<LPCVOID>(maskSlot), &mbi, sizeof(mbi)) && mbi.State == MEM_COMMIT)
+										mask = *reinterpret_cast<uintptr_t*>(maskSlot);
+									if (VirtualQuery(reinterpret_cast<LPCVOID>(sentinelSlot), &mbi, sizeof(mbi)) && mbi.State == MEM_COMMIT)
+										sentinel = *reinterpret_cast<uintptr_t*>(sentinelSlot);
+									unsigned int sig = 0;
+									if (handle)
+										memcpy(&sig, handle, 4);
+									SKSE::log::info("[NGXNR]   dlss_table: base_slot@{}={} mask_slot@{}={} sentinel_slot@{}={} | handle_sig={:#x}",
+										(void*)tblBaseSlot, (void*)tblBase, (void*)maskSlot, mask,
+										(void*)sentinelSlot, (void*)sentinel, sig);
+									// dump 桶数组前 32 桶（每桶 16 字节：[0]=tail [8]=head）
+									if (tblBase && mask && mask < 0x100000) {
+										int nbuckets = (int)(mask + 1) < 32 ? (int)(mask + 1) : 32;
+										for (int b = 0; b < nbuckets; ++b) {
+											uintptr_t bucket = tblBase + (uintptr_t)b * 16;
+											uintptr_t head = 0, tail = 0;
+											if (VirtualQuery(reinterpret_cast<LPCVOID>(bucket + 8), &mbi, sizeof(mbi)) && mbi.State == MEM_COMMIT)
+												head = *reinterpret_cast<uintptr_t*>(bucket + 8);
+											if (VirtualQuery(reinterpret_cast<LPCVOID>(bucket), &mbi, sizeof(mbi)) && mbi.State == MEM_COMMIT)
+												tail = *reinterpret_cast<uintptr_t*>(bucket);
+											if (head || tail) {
+												SKSE::log::info("[NGXNR]     bucket[{}]@{}: head={} tail={}", b, (void*)bucket, (void*)head, (void*)tail);
+												// 沿链走 3 项
+												uintptr_t cur = head;
+												int n = 0;
+												while (cur && cur != sentinel && n < 3) {
+													unsigned int esig = 0;
+													if (VirtualQuery(reinterpret_cast<LPCVOID>(cur + 0x10), &mbi, sizeof(mbi)) && mbi.State == MEM_COMMIT)
+														memcpy(&esig, reinterpret_cast<const void*>(cur + 0x10), 4);
+													SKSE::log::info("[NGXNR]       entry: addr={} sig={:#x} (handle_sig={:#x} match={})",
+														(void*)cur, esig, sig, esig == sig ? "YES" : "no");
+													uintptr_t next = 0;
+													if (VirtualQuery(reinterpret_cast<LPCVOID>(cur + 8), &mbi, sizeof(mbi)) && mbi.State == MEM_COMMIT)
+														next = *reinterpret_cast<uintptr_t*>(cur + 8);
+													cur = next;
+													++n;
+												}
+											}
+										}
+									} else {
+										SKSE::log::warn("[NGXNR]   dlss_table invalid: base={} mask={}", (void*)tblBase, mask);
+									}
+								} else {
+									SKSE::log::warn("[NGXNR]   nvngx_dlss.dll not loaded in process - table query skipped");
+								}
+							}
 							// dump 执行体机器码（前 0x180 字节，3 段）
 							if (tableEntry) {
 								MEMORY_BASIC_INFORMATION embi = {};
