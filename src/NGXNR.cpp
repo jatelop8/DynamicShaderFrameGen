@@ -286,6 +286,27 @@ namespace FrameGen
 							DWORD rcode = 0;
 							Guarded([&] { return warmupRelease(wh); }, &rcode);
 						}
+
+						// v0.8.17：core 就绪后查 dlssnr 的 feature 支持性——
+						// GetFeatureRequirements(featureId, device, &req) 直接回答
+						// "NR 在 4080+此驱动上是否支持"。req 布局（NVSDK_NGX_FeatureRequirement）：
+						//   +0 FeatureSupported +1 DriverSupported +2 FeatureAvailable
+						//   +3 NeedsUpdatedDriver +4 FeatureInvalid +5 NetworkRequired
+						//   +6 RuntimeSupported +7 SDKVersionSupported +8 minDrvMajor(u32) +12 minDrvMinor(u32)
+						auto reqFn = reinterpret_cast<unsigned int(__cdecl*)(int, ID3D12Device*, void*)>(
+							GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_GetFeatureRequirements"));
+						if (reqFn) {
+							unsigned char req[128] = {};
+							DWORD rcode2 = 0;
+							unsigned int rr = Guarded([&] { return reqFn(1, device, req); }, &rcode2);
+							unsigned int minMaj = 0, minMin = 0;
+							memcpy(&minMaj, req + 8, 4);
+							memcpy(&minMin, req + 12, 4);
+							SKSE::log::info("[NGXNR] GetFeatureRequirements(1 SuperSampling) -> rc={:#x} fault={:#x} | supported={} driver={} available={} needsUpdate={} invalid={} runtime={} sdkVer={} minDrv={}.{}",
+								rr, rcode2,
+								req[0] ? 1 : 0, req[1] ? 1 : 0, req[2] ? 1 : 0, req[3] ? 1 : 0,
+								req[4] ? 1 : 0, req[6] ? 1 : 0, req[7] ? 1 : 0, minMaj, minMin);
+						}
 					} else {
 						SKSE::log::warn("[NGXNR] dlss.dll warmup CreateFeature failed {:#x} (fault={:#x}) - core NOT established", wr, wcode);
 					}
