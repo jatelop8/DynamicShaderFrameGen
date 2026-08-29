@@ -661,11 +661,13 @@ namespace FrameGen
 					Guarded([&] { return cr2 = reinterpret_cast<PFN_PdCaps>(pdCapsFn)(&caps); }, &cc2);
 					SKSE::log::info("[NGXNR]   PD Caps -> {} (rc={:#x} caps={})",
 						cc2 ? "faulted" : (cr2 == kNGXSuccess ? "ok" : "failed"), cc2 ? cc2 : cr2, caps);
-					// caps 是真 params 对象（NGXInstanceParameters vtable）——尝试 Get 键
+					// caps 是真 params 对象（标准 NVSDK_NGX_Parameter vtable）——尝试 Get 键
 					if (cc2 == 0 && cr2 == kNGXSuccess && caps) {
-						// 用我们的 OwnNGXParams 接口强转（vtable 槽位一致假设）读键
-						struct CapsGet { virtual unsigned int Get(const char* n, unsigned int* v) = 0; };
-						CapsGet* cg = reinterpret_cast<CapsGet*>(caps);
+						// v0.8.61 修正：旧代码 struct CapsGet{Get} 强转 = vtable 槽 0 =
+						// Set(u64)！调用 Get 会跑到 Set 槽上把 &v 当 u64 写——垃圾值。
+						// 改用完整 NGXInstanceParameters 接口（17 方法，bridge 布局 =
+						// 标准布局），Get(const char*, unsigned int*) 在槽 11。
+						NGXInstanceParameters* cg = reinterpret_cast<NGXInstanceParameters*>(caps);
 						const char* keys[] = { "SuperSampling.Available", "SuperSamplingDenoising.Available",
 							"SuperSampling.MinDriverVersionMajor", "SuperSampling.MinDriverVersionMinor" };
 						for (const char* k : keys) {
@@ -698,7 +700,7 @@ namespace FrameGen
 		// v0.8.59/60：PDPerfPlugin 直调（SkyrimUpscaler 实锤跑通 NR 的完整路径）。
 		// v0.8.60：标准 NGX API（pdCreateFeature/pdEvalFeature）优先（SkyrimUpscaler
 		// 日志实锤走 NVSDK_NGX 标准 API）；EvaluateDLSSNR 通用接口直调只作兜底
-		// （pdCreateFeature 不可用时）。
+		// （pdCreateFeature 缺失时——PD 导出表里它存在，正常不会走这条）。
 		if (pdSetupOk && pdNrAvailable && pdEvaluateDLSSNR && !pdCreateFeature) {
 			using PFN_EvalNR = unsigned int(__cdecl*)(const void*);
 			struct NRParams108 { std::uint64_t q[33]; };  // 0x108 = 33*8
@@ -1302,8 +1304,12 @@ namespace FrameGen
 		}
 		// v0.8.50：evalFeature 优先用槽地址（CreateFeature 后 [0x6E3C0] = 真实现；
 		// GetProcAddress 的跳板 @0xA4F4 也转发同一槽，但直接用槽地址排除跳板层）
+		// v0.8.61 修正：**PD 标准 API 激活时不用驱动 core 槽覆盖**——PD 的 handle
+		// 是 PD 建的，驱动分发器读 handle+4 查 dlss 系 handler 表 → 不匹配（4/5）。
+		// 槽覆盖只用于 dlss 系路径（CreateFeature 非 PD）。
 		PFN_NGXEvaluateFeature fnEval = evalFeature;
-		if (ngxCoreModule) {
+		const bool pdActive = pdSetupOk && pdNrAvailable && pdCreateFeature && pdEvalFeature;
+		if (ngxCoreModule && !pdActive) {
 			uintptr_t modBase = reinterpret_cast<uintptr_t>(ngxCoreModule);
 			uintptr_t slotEval = *reinterpret_cast<uintptr_t*>(modBase + 0x6E3C0);
 			if (slotEval)
@@ -1364,7 +1370,12 @@ namespace FrameGen
 		}
 		if (ngxModule) {
 			if (handle) {
-				if (auto release = reinterpret_cast<PFN_NGXReleaseFeature>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_ReleaseFeature"))) {
+				// v0.8.61：PD 建的 handle 用 PD 的 ReleaseFeature 释放（dlssnr 的
+				// ReleaseFeature 不认 PD 的对象）。PD 未激活才用 dlssnr 的。
+				if (pdReleaseFeature) {
+					DWORD code = 0;
+					Guarded([&] { return reinterpret_cast<PFN_NGXReleaseFeature>(pdReleaseFeature)(handle); }, &code);
+				} else if (auto release = reinterpret_cast<PFN_NGXReleaseFeature>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_ReleaseFeature"))) {
 					DWORD code = 0;
 					Guarded([&] { return release(handle); }, &code);
 				}
