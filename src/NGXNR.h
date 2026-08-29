@@ -196,6 +196,10 @@ namespace FrameGen
 
 		void Init(ID3D12Device* a_device, const wchar_t* a_pluginDir);
 		void Shutdown();
+		// v0.12：在 Streamline 首 slInit 之前准备 dlssnr（LoadLibrary + IAT 修补）——
+		// sl.dlss_nr 插件内部初始化 dlssnr 时路径校验（含 "nvngx.dll"）才能通过，
+		// feature 1004 才会注册。必须在 Streamline::LoadInterposer（slInit）之前调用。
+		void PrepareDlssnrForStreamline(const wchar_t* a_pluginDir);
 		// Per-frame: bind resources + params, run NVSDK_NGX_D3D12_EvaluateFeature.
 		// a_cmdList must be an OPEN direct command list (recorded, executed later).
 		// Returns true when the feature ran successfully.
@@ -318,6 +322,7 @@ namespace FrameGen
 		// ===== v0.10 Streamline 路径（RenoDX 验证，kFeatureDLSS_NR=1004）=====
 		bool slNrTried = false;       // slInit 只试一次
 		bool slNrReady = false;       // slGetFeatureFunction(1004) 成功
+		bool dlssnrPrepared = false;  // v0.12：dlssnr 已加载+IAT 修补（首 slInit 前）
 		void* slNrEvalFn10 = nullptr; // slEvaluateFeature 函数指针（v0.10）
 	};
 }  // namespace FrameGen

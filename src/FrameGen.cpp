@@ -577,6 +577,10 @@ namespace FrameGen
 				// provider=0 时 features=[kFeatureDLSS]，D3D11 渲染 API，模型缓存已就绪
 				// （dlss/versions/0/files/160_E658703.bin = 74MB 超分真模型）。
 				if (fg.settings.provider == 0) {
+					// v0.12：必须先准备 dlssnr（LoadLibrary + IAT 修补）——Streamline 首 slInit
+					// 时 sl.dlss_nr 内部初始化 dlssnr 的路径校验（含 "nvngx.dll"）才通过，
+					// feature 1004 (DLSS-NR) 才会注册（否则 slGetFeatureFunction 恒 31）
+					fg.ngxNR.PrepareDlssnrForStreamline(Streamline::PluginDir);
 					fg.streamline.LoadInterposer(fg.settings);
 					fg.streamline.SetD3DDevice(a_device);
 					fg.streamline.CheckFeatures(adapter);
@@ -684,6 +688,8 @@ namespace FrameGen
 			// 预加载 Streamline（slInit）。v0.5：feature 检测移到设备设置后
 			//（SL 的 slIsFeatureSupported 要求 device 已设，设备前检测可能误判不支持）。
 			// 这里只要求 SL 初始化成功即可建 proxy；具体 feature 不支持时 Present 直通兜底。
+			// v0.12：slInit 前先准备 dlssnr（LoadLibrary+IAT 修补）→ NR 1004 才能注册
+			fg.ngxNR.PrepareDlssnrForStreamline(Streamline::PluginDir);
 			fg.streamline.LoadInterposer(fg.settings);
 			if (!fg.streamline.initialized) {
 				SKSE::log::warn("[FrameGen] Streamline init failed - using standard path");
