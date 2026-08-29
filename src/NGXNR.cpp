@@ -355,6 +355,68 @@ namespace FrameGen
 					SKSE::log::info("[NGXNR] Streamline NR channel armed: Create@{} Eval@{}", (void*)slNrCreateFn, (void*)slNrEvalFn);
 			}
 
+			// v0.8.37：NGX_D3D12_CREATE_DLSSNR_EXT 只出现在 PDPerfPlugin 字符串里
+			// （GetProcAddress 目标名）。dumpbin 看不到 ≠ 不存在——NVIDIA 反逆向
+			// 导出表（nvngx_dlss.dll 的导出表解析全是垃圾就是证据）。最可能：
+			// 驱动 nvngx.dll 隐藏导出（PDPerfPlugin 加载驱动 core 后 GetProcAddress）。
+			// 直接 GetProcAddress 试驱动 core + dlssnr + sl.dlss_nr.dll 的 EXT 名。
+			{
+				const char* extNames[] = {
+					"NGX_D3D12_CREATE_DLSSNR_EXT",
+					"NGX_D3D12_EVALUATE_DLSSNR_EXT",
+					"NGX_DLSSNR_GET_SCALING_RATIO",
+					"NVSDK_NGX_D3D12_CREATE_DLSSNR_EXT",
+					"NVSDK_NGX_D3D12_EVALUATE_DLSSNR_EXT",
+					"NVSDK_NGX_DLSSNR_GET_SCALING_RATIO",
+				};
+				HMODULE mods[] = { ngxCoreModule, ngxModule, coreModule };
+				const char* modNames[] = { "driver-core", "dlssnr", "dlss" };
+				for (int mi = 0; mi < 3; ++mi) {
+					if (!mods[mi]) continue;
+					for (const char* n : extNames) {
+						void* fn = GetProcAddress(mods[mi], n);
+						if (fn)
+							SKSE::log::info("[NGXNR] GetProcAddress({}, {}) -> fn={}  <<< HIT", modNames[mi], n, (void*)fn);
+						else
+							SKSE::log::info("[NGXNR] GetProcAddress({}, {}) -> null", modNames[mi], n);
+						if (fn) {
+							if (strstr(n, "CREATE_DLSSNR"))
+								slNrCreateFn = fn;
+							else if (strstr(n, "EVALUATE_DLSSNR"))
+								slNrEvalFn = fn;
+						}
+					}
+				}
+				// 也试 sl.dlss_nr.dll 的 slGetPluginFunction（Streamline 插件协议：
+				// 每个插件导出它供查询，strcmp 分发表：slOnPluginLoad/slSetData/
+				// slDLSSNRSetOptions 等）。手动 LoadLibrary 它看是否能注册。
+				HMODULE slNr = LoadLibraryW(L"sl.dlss_nr.dll");
+				if (!slNr)
+					slNr = GetModuleHandleW(L"sl.dlss_nr.dll");
+				if (slNr) {
+					SKSE::log::info("[NGXNR] sl.dlss_nr.dll loaded={} (mod={})", (void*)GetProcAddress(slNr, "slGetPluginFunction"), (void*)slNr);
+					using PFN_SLNR_GP = void* (__cdecl*)(const char* name);
+					auto slnrGp = reinterpret_cast<PFN_SLNR_GP>(GetProcAddress(slNr, "slGetPluginFunction"));
+					if (slnrGp) {
+						const char* slNames[] = {
+							"slOnPluginLoad", "slOnPluginStartup", "slOnPluginShutdown",
+							"slAllocateResources", "slFreeResources", "slSetData", "slDLSSNRSetOptions",
+						};
+						for (const char* n : slNames) {
+							DWORD r = 0;
+							void* fn = nullptr;
+							Guarded([&]() -> unsigned int { fn = slnrGp(n); return 0; }, &r);
+							SKSE::log::info("[NGXNR]   sl.dlss_nr slGetPluginFunction({}) -> {} (fault={:#x})", n,
+								fn ? "OK" : "null", r);
+							if (r == 0 && fn && strcmp(n, "slDLSSNRSetOptions") == 0)
+								SKSE::log::info("[NGXNR]     slDLSSNRSetOptions fn={} (SetOptions 入口)", (void*)fn);
+						}
+					}
+				}
+				if (slNrCreateFn && slNrEvalFn)
+					SKSE::log::info("[NGXNR] NR channel armed via GetProcAddress: Create@{} Eval@{}", (void*)slNrCreateFn, (void*)slNrEvalFn);
+			}
+
 			// v0.8.36：slGetFeatureFunction 全 rc=28/31（feature 未注册/函数未找到）。
 			// sl.common.dll 导出的是 slGetPluginFunction（@0x42C00）——另一个分发器，
 			// PDPerfPlugin 可能调它拿 NR 函数。两种签名都试：
