@@ -970,36 +970,67 @@ namespace FrameGen
 
 		DWORD code = 0;
 		unsigned int r = 0;
-		// v0.8.50：三刀定位——
-		// ① evalFeature 直接读槽 [0x6E3C0]（CreateFeature 后槽内容 changed=YES 实锤，
-		//    GetProcAddress 的跳板 @0xA4F4 读同一槽，但 Init 时读到的可能是别的函数）
-		// ② 读 handle+4 = featureId（真实现 movsxd rax,[rsi+4] 用的）
-		// ③ 读真实现 0xB2 处 call [rip+0x40336] 的 handler 指针（handler 返回值 5 会透传）
+		// v0.8.51：运行时 dump 真实现 + handler 机器码（本地文件 ASLR 定位不到，
+		// 直接拿运行时字节反汇编找 5 检查点）+ VirtualQuery 找真实现模块基址
 		{
 			static std::uint32_t evalDiag = 0;
 			if (++evalDiag % 180 == 1) {
 				uintptr_t slotEval = 0;
-				uintptr_t slotCreate = 0;
 				if (ngxCoreModule) {
 					uintptr_t modBase = reinterpret_cast<uintptr_t>(ngxCoreModule);
-					slotCreate = *reinterpret_cast<uintptr_t*>(modBase + 0x6E3B0);
 					slotEval = *reinterpret_cast<uintptr_t*>(modBase + 0x6E3C0);
 				}
 				unsigned int fid = 0;
 				if (handle)
 					memcpy(&fid, reinterpret_cast<const void*>(reinterpret_cast<uintptr_t>(handle) + 4), 4);
-				// 真实现 + 0xB2 处 call [rip+0x40336] → handler 指针（rip 相对：0xB2+7+0x40336）
-				uintptr_t handler = 0;
+				// 真实现模块基址（VirtualQuery）
+				uintptr_t allocBase = 0;
+				SIZE_T regionSize = 0;
 				if (slotEval) {
-					uintptr_t handlerSlotAddr = slotEval + 0xB2 + 7 + 0x40336;
 					MEMORY_BASIC_INFORMATION mbi = {};
-					if (VirtualQuery(reinterpret_cast<LPCVOID>(handlerSlotAddr), &mbi, sizeof(mbi)) &&
-						mbi.State == MEM_COMMIT && (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE)))
-						handler = *reinterpret_cast<uintptr_t*>(handlerSlotAddr);
+					if (VirtualQuery(reinterpret_cast<LPCVOID>(slotEval), &mbi, sizeof(mbi)))
+						{ allocBase = reinterpret_cast<uintptr_t>(mbi.AllocationBase); regionSize = mbi.RegionSize; }
 				}
-				SKSE::log::info("[NGXNR] eval call: fn={} slotEval={} slotCreate={} handle={} featureId={} params={} handler={}",
-					(void*)evalFeature, (void*)slotEval, (void*)slotCreate, (void*)handle, fid,
-					(void*)&params, (void*)handler);
+				SKSE::log::info("[NGXNR] eval diag: handle={} featureId={} slotEval={} allocBase={} region={:#x} rva={:#x}",
+					(void*)handle, fid, (void*)slotEval, (void*)allocBase, regionSize,
+					slotEval >= allocBase ? slotEval - allocBase : 0);
+				// dump 真实现前 0x200 字节（4 段）
+				if (slotEval) {
+					uint8_t* p = reinterpret_cast<uint8_t*>(slotEval);
+					MEMORY_BASIC_INFORMATION mbi = {};
+					if (VirtualQuery(reinterpret_cast<LPCVOID>(slotEval), &mbi, sizeof(mbi)) &&
+						mbi.State == MEM_COMMIT && (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE | PAGE_EXECUTE_READ))) {
+						for (int seg = 0; seg < 4; ++seg) {
+							char hex[300] = {};
+							int c = 0;
+							for (int i = 0; i < 0x80; ++i) {
+								uint8_t b = p[seg * 0x80 + i];
+								c += sprintf(hex + c, "%02X ", b);
+							}
+							SKSE::log::info("[NGXNR]   realEval[+{:04x}]: {}", seg * 0x80, hex);
+						}
+						// handler 槽（0xB2+7+0x40336）+ handler 前 0x40 字节
+						uintptr_t handlerSlot = slotEval + 0xB2 + 7 + 0x40336;
+						uintptr_t handler = 0;
+						MEMORY_BASIC_INFORMATION hmbi = {};
+						if (VirtualQuery(reinterpret_cast<LPCVOID>(handlerSlot), &hmbi, sizeof(hmbi)) &&
+							hmbi.State == MEM_COMMIT && (hmbi.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+							handler = *reinterpret_cast<uintptr_t*>(handlerSlot);
+						SKSE::log::info("[NGXNR]   handler_slot@{} = {}", (void*)handlerSlot, (void*)handler);
+						if (handler) {
+							MEMORY_BASIC_INFORMATION fmbi = {};
+							if (VirtualQuery(reinterpret_cast<LPCVOID>(handler), &fmbi, sizeof(fmbi)) &&
+								fmbi.State == MEM_COMMIT && (fmbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) {
+								char hhex[200] = {};
+								int c = 0;
+								uint8_t* hp = reinterpret_cast<uint8_t*>(handler);
+								for (int i = 0; i < 0x40; ++i)
+									c += sprintf(hhex + c, "%02X ", hp[i]);
+								SKSE::log::info("[NGXNR]   handler code: {}", hhex);
+							}
+						}
+					}
+				}
 			}
 		}
 		// v0.8.50：evalFeature 优先用槽地址（CreateFeature 后 [0x6E3C0] = 真实现；
