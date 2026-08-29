@@ -96,6 +96,30 @@ namespace FrameGen
 		constexpr int kFeatureSuperSampling = 1;  // DLSS-NR is a sub-mode of SuperSampling
 		constexpr unsigned int kNGXExceptionMarker = 0x7FFFFFFF;
 
+		// ===== v0.11 dlssnr IAT 修补桩（RenoDX 核心黑科技）=====
+		// 补丁版 nvngx_dlssnr.dll 的 Init_Ext 校验"调用者必须来自 NGX runtime"：
+		// GetModuleHandleExW(FROM_ADDRESS, 返回地址) → GetModuleFileNameW → 路径必须含
+		// "nvngx.dll"（字符串实锤 0xae280）。sl.dlss_nr 加载 dlssnr 时 GetModuleFileNameW
+		// 返回 sl.dlss_nr 路径（不含）→ Init_Ext 0xbad00002 → NR feature 1004 不注册 →
+		// slGetFeatureFunction 恒 31。桩返回 dlssnr 句柄/真实路径（含 "nvngx.dll"）绕过。
+		HMODULE g_patchedDlssnr = nullptr;
+		wchar_t g_patchedDlssnrPath[MAX_PATH] = {};
+		static BOOL WINAPI NR_FakeGetModuleHandleExW(DWORD, LPCWSTR, HMODULE* a_out)
+		{
+			if (a_out)
+				*a_out = g_patchedDlssnr;
+			return TRUE;
+		}
+		static DWORD WINAPI NR_FakeGetModuleFileNameW(HMODULE, LPWSTR a_buf, DWORD a_n)
+		{
+			if (a_buf && a_n > 0) {
+				const std::size_t len = wcslen(g_patchedDlssnrPath);
+				wcsncpy_s(a_buf, a_n, g_patchedDlssnrPath, _TRUNCATE);
+				return static_cast<DWORD>(std::min<std::size_t>(len, a_n - 1));
+			}
+			return 0;
+		}
+
 		std::string w2a(const std::wstring& a_w)
 		{
 			if (a_w.empty())
@@ -640,54 +664,88 @@ namespace FrameGen
 			HMODULE interposer = GetModuleHandleW(L"sl.interposer.dll");
 			if (!interposer)
 				interposer = LoadLibraryW(L"sl.interposer.dll");
-			SKSE::log::info("[NGXNR] v0.10 sl.interposer = {}",
+			SKSE::log::info("[NGXNR] v0.11 sl.interposer = {}",
 				(void*)interposer);
-			if (interposer) {
+			if (interposer && ngxModule) {
 				using PFN_slInit = long long(__cdecl*)(const void*, unsigned long long);
+				using PFN_slShutdown = long long(__cdecl*)();
 				using PFN_slSetD3DDevice = long long(__cdecl*)(void*);
 				using PFN_slGetFeatureRequirements = long long(__cdecl*)(unsigned long long, void*);
 				using PFN_slGetFeatureFunction = long long(__cdecl*)(unsigned long long, const char*, void*&);
 				auto fnInit = reinterpret_cast<PFN_slInit>(GetProcAddress(interposer, "slInit"));
+				auto fnShutdown = reinterpret_cast<PFN_slShutdown>(GetProcAddress(interposer, "slShutdown"));
 				auto fnSetDev = reinterpret_cast<PFN_slSetD3DDevice>(GetProcAddress(interposer, "slSetD3DDevice"));
 				auto fnGetReq = reinterpret_cast<PFN_slGetFeatureRequirements>(GetProcAddress(interposer, "slGetFeatureRequirements"));
 				auto fnGetFn = reinterpret_cast<PFN_slGetFeatureFunction>(GetProcAddress(interposer, "slGetFeatureFunction"));
-				if (fnInit && fnSetDev && fnGetFn) {
+				if (fnInit && fnShutdown && fnSetDev && fnGetFn) {
+					// ===== 1) dlssnr IAT 修补（GetModuleHandleExW@0xac118 / GetModuleFileNameW@0xac080，
+					//      harness 运行时实测槽位）——必须在重新 slInit 之前，sl.dlss_nr 内部
+					//      初始化 dlssnr 时校验才能过 =====
+					const uintptr_t nrBase = reinterpret_cast<uintptr_t>(ngxModule);
+					g_patchedDlssnr = ngxModule;
+					GetModuleFileNameW(ngxModule, g_patchedDlssnrPath, MAX_PATH);  // 真实路径含 "nvngx.dll"
+					for (auto iatSlot : { 0xac118, 0xac080 }) {
+						uintptr_t slot = nrBase + iatSlot;
+						DWORD oldProt = 0;
+						if (VirtualProtect(reinterpret_cast<LPVOID>(slot), 8, PAGE_READWRITE, &oldProt)) {
+							const uintptr_t stub = (iatSlot == 0xac118)
+								? reinterpret_cast<uintptr_t>(&NR_FakeGetModuleHandleExW)
+								: reinterpret_cast<uintptr_t>(&NR_FakeGetModuleFileNameW);
+							*reinterpret_cast<uintptr_t*>(slot) = stub;
+							VirtualProtect(reinterpret_cast<LPVOID>(slot), 8, oldProt, &oldProt);
+						}
+					}
+					SKSE::log::info("[NGXNR] v0.11 dlssnr IAT patched (GMHEXW+GMFRW stubs) - NGX runtime check bypassed");
+
+					// ===== 2) slShutdown + 重新 slInit =====
+					// 进程启动早期 Streamline.cpp 已 slInit（featuresNR 含 1004，renderAPI=eD3D12）
+					// ——但那时 dlssnr 尚未加载修补，sl.dlss_nr 内 dlssnr Init_Ext 校验失败 → 1004 无函数。
+					// 现在 dlssnr 已加载+修补 → shutdown 后重新 init（harness 实测可重复 init）。
+					const long long sd = fnShutdown();
+					SKSE::log::info("[NGXNR] v0.11 slShutdown -> {}", sd);
+
+					constexpr std::uint64_t kSDKVersion212 = (2ULL << 48) | (12ULL << 32) | (0ULL << 16) | 0xFEDCULL;
 					// Preferences 布局（sl_core_types.h + harness 实测）：
-					// +0x00 bool showConsole; +0x08 u32 logLevel; +0x10 ptr pathsToPlugins
+					// +0x00 showConsole; +0x08 u32 logLevel; +0x10 ptr pathsToPlugins
 					// +0x18 u32 numPathsToPlugins; +0x20 ptr pathToLogsAndData
 					// +0x28/+0x30/+0x38 ptr callbacks; +0x40 u64 flags
 					// +0x48 ptr featuresToLoad; +0x50 u32 numFeaturesToLoad
 					// +0x58 u32 applicationId; +0x60 u32 engine; +0x68 ptr engineVersion
-					// +0x70 ptr projectId; +0x78 u32 renderAPI
-					constexpr std::uint64_t kSDKVersion212 = (2ULL << 48) | (12ULL << 32) | (0ULL << 16) | 0xFEDCULL;
-					std::uint64_t feat1004 = 1004;
+					// +0x70 ptr projectId; +0x78 u32 renderAPI (eD3D12=1)
+					std::uint64_t feat1004 = 1004;   // kFeatureDLSS_NR（slGetFeatureRequirements 实测）
 					std::uint8_t prefs[0x80] = {};
-					std::memcpy(prefs + 0x48, &feat1004, 8);   // featuresToLoad
-					*reinterpret_cast<std::uint32_t*>(prefs + 0x50) = 1;       // numFeaturesToLoad
-					*reinterpret_cast<std::uint32_t*>(prefs + 0x58) = 0x1337;  // applicationId
-					// renderAPI = 0 (eD3D12) 已是 0
-					long long ir = fnInit(prefs, kSDKVersion212);
-					SKSE::log::info("[NGXNR] v0.10 slInit(features=[1004]) -> {}", ir);
+					std::memcpy(prefs + 0x48, &feat1004, 8);
+					*reinterpret_cast<std::uint32_t*>(prefs + 0x50) = 1;          // numFeaturesToLoad
+					*reinterpret_cast<std::uint32_t*>(prefs + 0x58) = 0x1337;     // applicationId
+					*reinterpret_cast<std::uint64_t*>(prefs + 0x40) = 0xA0;       // flags: eUseFrameBasedResourceTagging|eUseDXGIFactoryProxy
+					*reinterpret_cast<std::uint32_t*>(prefs + 0x60) = 0;          // engine: eCustom
+					static const char kEngVer[] = "1.0.0";
+					*reinterpret_cast<const char**>(prefs + 0x68) = kEngVer;      // engineVersion
+					static const char kProjId[] = "f8776929-c969-43bd-ac2b-294b4de58aac";
+					*reinterpret_cast<const char**>(prefs + 0x70) = kProjId;      // projectId（与 CS 相同）
+					*reinterpret_cast<std::uint32_t*>(prefs + 0x78) = 1;          // renderAPI: eD3D12
+					const long long ir = fnInit(prefs, kSDKVersion212);
+					SKSE::log::info("[NGXNR] v0.11 slInit(features=[1004], renderAPI=D3D12) -> {}", ir);
 					if (ir == 0) {
 						long long dr = fnSetDev(a_device);
-						SKSE::log::info("[NGXNR] v0.10 slSetD3DDevice -> {}", dr);
+						SKSE::log::info("[NGXNR] v0.11 slSetD3DDevice -> {}", dr);
 						std::uint8_t reqs[0x400] = {};
 						long long rr = fnGetReq(1004, reqs);
-						SKSE::log::info("[NGXNR] v0.10 slGetFeatureRequirements(1004) -> {}", rr);
+						SKSE::log::info("[NGXNR] v0.11 slGetFeatureRequirements(1004) -> {}", rr);
 						void* evalFn = nullptr;
 						long long gr = fnGetFn(1004, "slEvaluateFeature", evalFn);
-						SKSE::log::info("[NGXNR] v0.10 slGetFeatureFunction(1004, 'slEvaluateFeature') -> {} fn={}",
+						SKSE::log::info("[NGXNR] v0.11 slGetFeatureFunction(1004, 'slEvaluateFeature') -> {} fn={}",
 							gr, evalFn);
 						if (gr == 0 && evalFn) {
 							slNrEvalFn10 = evalFn;
 							slNrReady = true;
-							SKSE::log::info("[NGXNR] v0.10 DLSS-NR feature 1004 READY (slEvaluateFeature={}) - Streamline path armed",
+							SKSE::log::info("[NGXNR] v0.11 DLSS-NR feature 1004 READY (slEvaluateFeature={}) - Streamline path armed",
 								evalFn);
 						}
 					}
 				} else {
-					SKSE::log::warn("[NGXNR] v0.10 sl.interposer exports missing (init={} setdev={} getfn={})",
-						(void*)fnInit, (void*)fnSetDev, (void*)fnGetFn);
+					SKSE::log::warn("[NGXNR] v0.11 sl.interposer exports missing (init={} shutdown={} setdev={} getreq={} getfn={})",
+						(void*)fnInit, (void*)fnShutdown, (void*)fnSetDev, (void*)fnGetReq, (void*)fnGetFn);
 				}
 			}
 		}
