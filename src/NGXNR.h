@@ -156,8 +156,10 @@ namespace FrameGen
 		bool ready = false;           // v0.8.10：DLL 加载成功即 ready——Init 失败也试 CreateFeature
 
 		// v0.8.11：NGX core 会话状态（由 nvngx_dlss.dll 建立——SkyrimUpscaler 实锤链路）
-		bool coreInitOk = false;      // dlss.dll Init 成功 → dlssnr CreateFeature 应能找到 core
+		bool coreInitOk = false;      // dlss.dll 会话建立成功（Init_Ext 或热身 CreateFeature）
 		unsigned int coreInitResult = 0;  // 最近一次 core 初始化返回码
+		// v0.8.12：dlss.dll 热身 CreateFeature 结果（区分"缺 core" vs "其他原因"）
+		unsigned int warmupResult = 0;    // 0=未执行 1=成功 其他=返回码
 
 	private:
 		ID3D12Device* device = nullptr;

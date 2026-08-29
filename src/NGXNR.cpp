@@ -40,6 +40,18 @@ namespace FrameGen
 	using PFN_NGXInit11 = unsigned int(__cdecl*)(unsigned long long a_appId,
 		const wchar_t* a_dataPath, void* a_param);
 
+	// v0.8.12：NVSDK_NGX_FeatureCommonInfo（Init_Ext/CreateFeature 的第 5 参）。
+	// dlss5-dx11-bridge 传 nullptr 在 BG3 成功（BG3 有 SL core）；Skyrim 无 core，
+	// Init_Ext 全部 0xbad00002——试非空 FeatureCommonInfo 排除参数缺失因素。
+	struct NGXFeatureCommonInfo
+	{
+		std::uint32_t instanceId = 0;
+		std::uint32_t creationNodeMask = 1;
+		std::uint32_t visibilityNodeMask = 1;
+		std::uint32_t reserved[1] = {};
+		void* userData = nullptr;
+	};
+
 	namespace
 	{
 		constexpr unsigned long long kAppId = 0x1000000ULL;
@@ -142,10 +154,11 @@ namespace FrameGen
 			*(s + 1) = L'\0';
 
 		DWORD code = 0;
+		NGXFeatureCommonInfo fci{};  // v0.8.12：非空 FeatureCommonInfo（排除参数缺失）
 		// 3a) 首选：dlss.dll 的 D3D12_Init_Ext（真实实现，带 D3D12 device）版本协商
 		if (coreModule && initExt12) {
 			for (int ver = 0x13; ver <= 0x16 && !coreInitOk; ++ver) {
-				unsigned int r = Guarded([&] { return initExt12(kAppId, dataPath, a_device, ver, nullptr); }, &code);
+				unsigned int r = Guarded([&] { return initExt12(kAppId, dataPath, a_device, ver, &fci); }, &code);
 				SKSE::log::info("[NGXNR] core D3D12_Init_Ext(0x{:02X}) -> {} (rc={:#x})", ver,
 					code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r);
 				if (code == 0 && r == kNGXSuccess) {
@@ -156,7 +169,8 @@ namespace FrameGen
 				}
 			}
 		}
-		// 3b) 备选：dlss.dll 的 D3D11_Init（SkyrimUpscaler 同款——建立 core 会话）
+		// 3b) 备选：dlss.dll 的 D3D11_Init（3 参。反汇编 0x2B440 = stub 0xBAD00001——
+		// v0.8.12 修正：先前把 0x2B420（GetScratchBufferSize）误认为 D3D11_Init）
 		if (!coreInitOk && init11) {
 			void* dummy = nullptr;
 			unsigned int r = Guarded([&] { return init11(kAppId, dataPath, &dummy); }, &code);
@@ -167,13 +181,13 @@ namespace FrameGen
 				SKSE::log::info("[NGXNR] NGX core session established via D3D11_Init (SkyrimUpscaler pattern)");
 			}
 		}
-		// 3c) 记录：snippet 侧 Init_Ext（预期 0xbad00002，无 core 时；core 建立后此处仅参考）
+		// 3c) 记录：snippet 侧 Init_Ext（预期 0xbad00002；v0.8.12 传非空 FeatureCommonInfo）
 		if (nrInitExt && !initialized) {
-			unsigned int r = Guarded([&] { return nrInitExt(kAppId, dataPath, a_device, 0x13, nullptr); }, &code);
+			unsigned int r = Guarded([&] { return nrInitExt(kAppId, dataPath, a_device, 0x13, &fci); }, &code);
 			SKSE::log::info("[NGXNR] nr Init_Ext(0x13) -> {} (rc={:#x})", code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r);
 		}
 		if (!coreInitOk)
-			SKSE::log::warn("[NGXNR] no NGX core session (rc={:#x}) - dlssnr CreateFeature will likely fail 0xbad00002", coreInitResult);
+			SKSE::log::warn("[NGXNR] no NGX core session (rc={:#x}) - will try dlss.dll warmup CreateFeature on first evaluate frame", coreInitResult);
 		else
 			SKSE::log::info("[NGXNR] NGX core session ready (rc={:#x})", coreInitResult);
 
@@ -209,6 +223,45 @@ namespace FrameGen
 		// + renodx addon 反编译双源实锤）。v0.8.10：OwnNGXParams 方法名（Set4=uint32、
 		// Set2=float、Set7=ID3D12Resource*——dlssg-to-fsr3 vtable 布局）。
 		if (needCreate || a_width != outWidth || a_height != outHeight) {
+			// --- v0.8.12：core 未建立 → 先用 dlss.dll 的 CreateFeature 热身 ---
+			// Init 全是 stub（D3D11/D3D12_Init @0x2b440 = 0xBAD00001）、Init_Ext 全
+			// 0xbad00002——CreateFeature 才是自举入口（SkyrimUpscaler 同款：Init 占位
+			// + CreateFeature 成功）。dlssnr 的 CreateFeature 需要 dlss.dll 建立的
+			// NGX core 单例；先让 dlss.dll 建一次（随后立即释放），dlssnr 就能找到。
+			if (!coreInitOk && coreModule) {
+				auto warmupCreate = reinterpret_cast<PFN_NGXCreateFeature>(GetProcAddress(coreModule, "NVSDK_NGX_D3D12_CreateFeature"));
+				auto warmupRelease = reinterpret_cast<PFN_NGXReleaseFeature>(GetProcAddress(coreModule, "NVSDK_NGX_D3D12_ReleaseFeature"));
+				if (warmupCreate) {
+					OwnNGXParams wp;
+					wp.Set4("DLSS.Input.Width", a_width);
+					wp.Set4("DLSS.Input.Height", a_height);
+					wp.Set4("DLSS.Output.Width", a_width);
+					wp.Set4("DLSS.Output.Height", a_height);
+					wp.Set4("DLSS.Enable.Output.Subrects", 1);
+					wp.Set4("DLSS.Feature.Create.Flags", 107);
+					wp.Set4("DLSS.PerfQualityValue", 1);
+					wp.Set4("DLSS.DepthInverted", 0);
+					wp.Set4("DLSS.Hint.Render.Preset", 0);
+					wp.Set4("CreationNodeMask", 1u);
+					wp.Set4("VisibilityNodeMask", 1u);
+					NGXHandle* wh = nullptr;
+					DWORD wcode = 0;
+					unsigned int wr = Guarded([&] { return warmupCreate(a_cmdList, 1, &wp, &wh); }, &wcode);
+					warmupResult = wcode ? kNGXExceptionMarker : wr;
+					if (wcode == 0 && wr == kNGXSuccess && wh) {
+						coreInitOk = true;
+						coreInitResult = wr;
+						SKSE::log::info("[NGXNR] dlss.dll warmup CreateFeature OK - NGX core established (handle={})", (void*)wh);
+						if (warmupRelease) {
+							DWORD rcode = 0;
+							Guarded([&] { return warmupRelease(wh); }, &rcode);
+						}
+					} else {
+						SKSE::log::warn("[NGXNR] dlss.dll warmup CreateFeature failed {:#x} (fault={:#x}) - core NOT established", wr, wcode);
+					}
+				}
+			}
+
 			params.Set4("DLSSNR.Width", a_width);
 			params.Set4("DLSSNR.Height", a_height);
 			params.Set4("DLSSNR.InputWidth", a_width);
