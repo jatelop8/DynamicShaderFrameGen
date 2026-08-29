@@ -803,9 +803,34 @@ namespace FrameGen
 			SKSE::log::info("[NGXNR] feature created {}x{} handle={}", a_width, a_height, (void*)h);
 		}
 
-		// --- per-frame resources + params (DLSSNR.* keys) ---
-		// v0.8.26：Evaluate 只留 DLSSNR.* 键——去掉 DLSS.*（bridge 超分格式，NR 可能不认
-		// 且多余键干扰校验）+ 去掉 Backbuffer（我们没有真 backbuffer，传 Output 报错）
+		// --- per-frame resources + params ---
+		// v0.8.41 重大修正：我们建的是 **id=1 SuperSampling（超分）feature**——
+		// Evaluate 必须给 **DLSS.\* 超分键**（bridge 实测），只给 DLSSNR.* 键
+		// → 参数校验失败 0xbad00005（v0.8.30 精简键后恒 5 的原因）！
+		// v0.8.24 加过 DLSS.* 键但当时 CreateFeature 是 snippet（全 2 失败），
+		// "驱动 core + id=1 + DLSS.* Evaluate 键"组合从未被验证。
+		// DLSSNR.* 键保留（NR 若支持会激活；不支持则走纯超分路径）。
+		P->Set7("DLSS.Input.Color", a_color);
+		P->Set7("DLSS.Input.Depth", a_depth);
+		P->Set7("DLSS.Input.MotionVectors", a_mvec);
+		P->Set7("DLSS.Output", a_output);
+		P->Set4("DLSS.Enable.Output.Subrects", 1);
+		P->Set2("DLSS.Pre.Exposure", 1.0f);
+		P->Set2("DLSS.Exposure.Scale", 1.0f);
+		P->Set2("Sharpness", 0.0f);
+		P->Set2("Jitter.Offset.X", 0.0f);
+		P->Set2("Jitter.Offset.Y", 0.0f);
+		P->Set4("DLSS.Render.Subrect.Dimensions.Width", a_width);
+		P->Set4("DLSS.Render.Subrect.Dimensions.Height", a_height);
+		P->Set4("DLSS.Input.Color.Subrect.Base.X", 0u);
+		P->Set4("DLSS.Input.Color.Subrect.Base.Y", 0u);
+		P->Set4("DLSS.Input.Depth.Subrect.Base.X", 0u);
+		P->Set4("DLSS.Input.Depth.Subrect.Base.Y", 0u);
+		P->Set4("DLSS.Input.MV.Subrect.Base.X", 0u);
+		P->Set4("DLSS.Input.MV.Subrect.Base.Y", 0u);
+		P->Set4("DLSS.Output.Subrect.Base.X", 0u);
+		P->Set4("DLSS.Output.Subrect.Base.Y", 0u);
+		// DLSSNR.* 专属键（保留，激活 NR 子模式）
 		P->Set7("DLSSNR.Color", a_color);
 		P->Set7("DLSSNR.Depth", a_depth);
 		P->Set7("DLSSNR.MVec", a_mvec);
