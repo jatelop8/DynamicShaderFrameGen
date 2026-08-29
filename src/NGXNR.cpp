@@ -232,7 +232,23 @@ namespace FrameGen
 				VirtualProtect(reinterpret_cast<LPVOID>(jneSlot), 8, jp, &jp);
 			}
 		}
-		SKSE::log::info("[NGXNR] dlssnr prepared for Streamline (loaded @{} + IAT patched + first-gate bypassed) - NR 1004 will register",
+		// v0.15：绕过 Init_Ext 组件查询失败（0x8810 → mov eax,1; ret）。
+		// 0x19e70（注册函数，唯一调用者 0x19ea8）先 call 0x8810 查 "dlssnr" NGX 组件
+		// （内部 0x84e0 读注册表 __NGX_ENABLE_OVERRIDE_LOG_PATH/__NGX_LOG_PATH_OVERRIDE
+		// 配置）——独立/sl 环境返回 bad → 0x19e70 直接短路返回 0xbad00002（无日志）。
+		// 绕过（返回 1）后流程推进到 Cubin Init（harness 实锤 0x19efc 'DLSSNR: Cubin Init
+		// failed NvAPI_Status=%d'）——游戏 NvAPI 完整应成功。0x8810 仅被 0x19e70 调用，
+		// patch 安全。
+		{
+			uintptr_t compSlot = nrBase + 0x8810;
+			DWORD cp = 0;
+			if (VirtualProtect(reinterpret_cast<LPVOID>(compSlot), 8, PAGE_EXECUTE_READWRITE, &cp)) {
+				const uint8_t kRet1[] = { 0xB8, 0x01, 0x00, 0x00, 0x00, 0xC3 };  // mov eax,1; ret
+				std::memcpy(reinterpret_cast<void*>(compSlot), kRet1, sizeof(kRet1));
+				VirtualProtect(reinterpret_cast<LPVOID>(compSlot), 8, cp, &cp);
+			}
+		}
+		SKSE::log::info("[NGXNR] dlssnr prepared for Streamline (loaded @{} + IAT patched + gates bypassed) - NR 1004 will register",
 			(void*)m);
 	}
 
