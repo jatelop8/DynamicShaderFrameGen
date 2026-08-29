@@ -160,7 +160,7 @@ namespace FrameGen
 		// v0.8：DLSS-NR（神经渲染）——NGX 直调，RTX 50 系专属。
 		// 未初始化/不支持（4080 无 sm_120 cubin、缺 nvngx_dlssnr.dll）→ 灰掉不崩
 		ImGui::Separator();
-		const bool nrAvailable = a_fg.ngxNR.initialized && a_fg.ngxNR.supported;
+		const bool nrAvailable = a_fg.ngxNR.ready && a_fg.ngxNR.supported;
 		if (!nrAvailable) {
 			ImGui::TextColored(ImVec4(0.8f, 0.6f, 0.2f, 1.0f), "DLSS-NR: unavailable");
 			if (ImGui::IsItemHovered())

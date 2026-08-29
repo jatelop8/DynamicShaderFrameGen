@@ -68,21 +68,26 @@ namespace FrameGen
 	}  // namespace
 
 	// ------------------------------------------------------------------
-	// Init: load the DLSS-NR plugin, negotiate NGX SDK version, query caps
+	// Init: load the DLSS-NR snippet, negotiate NGX SDK version (informational)
 	// ------------------------------------------------------------------
+	// v0.8.10 重大修正：
+	//  - 导出表解析 bug 修正后（NameOrdinals 是 0-based index，不需减 base）：
+	//    Init_Ext @ 0x15df0 是**真实实现**（内部检查失败 -> 0xbad00002 =
+	//    "找不到已初始化实例"——snippet 需要 NGX core 会话，Skyrim 无 core），
+	//    Init @ 0x13f50 是 stub（0xbad00001）。
+	//  - nvngx_dlssnr.dll 不导出 AllocateParameters/GetCapabilityParameters
+	//    （snippet 由 NGX core 提供这些）-> 自实现 OwnNGXParams 替代。
+	//  - **Init 失败不阻塞**：SkyrimUpscaler 的 D3D11 也如此（Init stub 返回 1
+	//    占位，CreateFeature 才是真初始化）——D3D12 同理：直接 CreateFeature
+	//    试错，成功 = 支持（4080 + Ada 补丁 cubin sm_89 应成功）。
 	void NGXNR::Init(ID3D12Device* a_device, const wchar_t* a_pluginDir)
 	{
 		SKSE::log::info("[NGXNR] Init called: device={} initialized={} dir={}", (void*)a_device, initialized,
 			a_pluginDir ? w2a(a_pluginDir) : "(null)");
-		if (initialized || !a_device)
+		if (ready || !a_device)
 			return;
 		device = a_device;
 
-		// v0.8.7: load nvngx_dlssnr.dll first (the DLSS-NR plugin carries the
-		// D3D12 backend; its D3D12_Init is a real implementation while the
-		// *_Init_Ext exports are stubs returning 0xbad00001). Fall back to
-		// nvngx_dlss.dll. Log the resolved path - LoadLibrary may reuse an
-		// already-loaded module (e.g. one loaded by SkyrimUpscaler).
 		std::wstring dllPath = std::wstring(a_pluginDir) + L"\\nvngx_dlssnr.dll";
 		ngxModule = LoadLibraryW(dllPath.c_str());
 		if (!ngxModule) {
@@ -102,14 +107,8 @@ namespace FrameGen
 		auto initExt = reinterpret_cast<PFN_NGXInitExt>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Init_Ext"));
 		auto init = reinterpret_cast<PFN_NGXInit>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Init"));
 		auto initProject = reinterpret_cast<PFN_NGXInitProjectID>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_Init_ProjectID"));
-		auto allocParams = reinterpret_cast<PFN_NGXAllocParams>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_AllocateParameters"));
-		auto getCaps = reinterpret_cast<PFN_NGXGetCaps>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_GetCapabilityParameters"));
-		SKSE::log::info("[NGXNR] entry: Init_Ext={} Init={} Init_ProjectID={} Alloc={} Caps={}",
-			(void*)initExt, (void*)init, (void*)initProject, (void*)allocParams, (void*)getCaps);
-		if (!initExt && !init && !initProject) {
-			SKSE::log::warn("[NGXNR] no NGX D3D12 Init entry points - DLSS-NR disabled");
-			return;
-		}
+		SKSE::log::info("[NGXNR] entry: Init_Ext={} Init={} Init_ProjectID={}",
+			(void*)initExt, (void*)init, (void*)initProject);
 
 		// data path = directory of the game exe (NGX writes its logs there)
 		wchar_t dataPath[MAX_PATH] = {};
@@ -118,81 +117,41 @@ namespace FrameGen
 			*(s + 1) = L'\0';
 
 		DWORD code = 0;
-		bool inited = false;
-		// v0.8.7: try ALL THREE init flavours per version. *_Init_Ext are
-		// stubs on the 2.13 plugins (0xbad00001), plain Init is the real
-		// implementation with an out-handle arg, Init_ProjectID sometimes
-		// accepted on drivers that fault on the other two (bridge comment).
-		for (int ver = 0x13; ver <= 0x16 && !inited; ++ver) {
+		for (int ver = 0x13; ver <= 0x16; ++ver) {
 			if (initExt) {
 				unsigned int r = Guarded([&] { return initExt(kAppId, dataPath, a_device, ver, nullptr); }, &code);
 				SKSE::log::info("[NGXNR] Init_Ext(0x{:02X}) -> {} (rc={:#x})", ver,
 					code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r);
-				if (code == 0 && r == kNGXSuccess) { inited = true; initVersion = ver; break; }
+				if (code == 0 && r == kNGXSuccess) { initialized = true; initVersion = ver; break; }
 			}
 			if (init) {
 				void* outHandle = nullptr;
 				unsigned int r = Guarded([&] { return init(kAppId, dataPath, &outHandle, ver, nullptr); }, &code);
 				SKSE::log::info("[NGXNR] Init(0x{:02X}) -> {} (rc={:#x} outHandle={})", ver,
 					code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r, outHandle);
-				if (code == 0 && r == kNGXSuccess) { inited = true; initVersion = ver; break; }
+				if (code == 0 && r == kNGXSuccess) { initialized = true; initVersion = ver; break; }
 			}
 			if (initProject) {
 				unsigned int r = Guarded([&] { return initProject(kProjectId, 0, "1.0", dataPath, a_device, ver, nullptr); }, &code);
 				SKSE::log::info("[NGXNR] Init_ProjectID(0x{:02X}) -> {} (rc={:#x})", ver,
 					code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r);
-				if (code == 0 && r == kNGXSuccess) { inited = true; initVersion = ver; break; }
+				if (code == 0 && r == kNGXSuccess) { initialized = true; initVersion = ver; break; }
 			}
 		}
-		if (!inited) {
-			SKSE::log::warn("[NGXNR] no NGX D3D12 init flavour accepted by this driver - DLSS-NR disabled");
-			return;
-		}
-		SKSE::log::info("[NGXNR] NGX D3D12 session initialised (version 0x{:02X})", initVersion);
-		initialized = true;
+		if (!initialized)
+			SKSE::log::warn("[NGXNR] all NGX D3D12 init flavours refused (expected without NGX core) - trying CreateFeature directly");
 
-		// nvngx_dlssnr.dll presence (informational; without it the feature
-		// will fail at creation and the menu stays greyed out)
+		// nvngx_dlssnr.dll presence (informational)
 		std::wstring nrDll = std::wstring(a_pluginDir) + L"\\nvngx_dlssnr.dll";
 		nvngxNrPresent = GetFileAttributesW(nrDll.c_str()) != INVALID_FILE_ATTRIBUTES;
 		SKSE::log::info("[NGXNR] nvngx_dlssnr.dll {}",
 			nvngxNrPresent ? "present" : "NOT present (expected -> feature unavailable)");
 
-		// GPU capability gate: SuperSamplingDenoising.Available is 0 on
-		// hardware without the FP8 Blackwell kernel (RTX 40) — nothing else
-		// matters then. This is the clean graceful-degradation check.
-		if (getCaps) {
-			NGXInstanceParameters* caps = nullptr;
-			unsigned int r = Guarded([&] { return getCaps(&caps); }, &code);
-			if (code == 0 && r == kNGXSuccess && caps) {
-				int avail = 0;
-				unsigned int rc = caps->Get4("SuperSamplingDenoising.Available", &avail);
-				SKSE::log::info("[NGXNR] SuperSamplingDenoising.Available = {} (query {:#x})",
-					rc == kNGXSuccess ? avail : -1, rc);
-				supported = (rc == kNGXSuccess && avail != 0);
-			} else {
-				SKSE::log::warn("[NGXNR] capability query failed/faulted - DLSS-NR treated as unsupported");
-			}
-		}
-		if (!supported) {
-			SKSE::log::warn("[NGXNR] DLSS-NR not available on this GPU (RTX 40 lacks sm_120 FP8 kernel) - menu greyed, no crash");
-			return;
-		}
-
-		// parameters object for feature creation + per-frame evaluation
-		if (allocParams) {
-			NGXInstanceParameters* p = nullptr;
-			unsigned int r = Guarded([&] { return allocParams(&p); }, &code);
-			if (code == 0 && r == kNGXSuccess && p)
-				params = p;
-		}
-		if (!params) {
-			SKSE::log::warn("[NGXNR] AllocateParameters failed - DLSS-NR disabled");
-			supported = false;
-			return;
-		}
+		// v0.8.10：无 GetCapabilityParameters（snippet 不导出）——supported 由
+		// CreateFeature 试错决定（Evaluate 首帧）。DLL 加载成功即 ready。
+		ready = true;
 		needCreate = true;
-		SKSE::log::info("[NGXNR] DLSS-NR ready (feature created on first evaluate frame)");
+		SKSE::log::info("[NGXNR] DLSS-NR armed (feature created on first evaluate frame)");
 	}
 
 	// ------------------------------------------------------------------
@@ -203,7 +162,7 @@ namespace FrameGen
 		ID3D12GraphicsCommandList* a_cmdList)
 	{
 		lastEvaluateOk = false;
-		if (!initialized || !supported || !params || !a_color || !a_output || !a_cmdList)
+		if (!ready || !a_color || !a_output || !a_cmdList)
 			return false;
 
 		auto createFeature = reinterpret_cast<PFN_NGXCreateFeature>(GetProcAddress(ngxModule, "NVSDK_NGX_D3D12_CreateFeature"));
@@ -213,33 +172,30 @@ namespace FrameGen
 
 		// --- (re)create on first frame / size change ---
 		// v0.8.8：DLSS-NR 参数键全部用 DLSSNR.* 前缀（nvngx_dlssnr.dll 字符串表
-		// 实锤：DLSSNR.Color/Depth/MVec/Output/Width/Height/Enabled/ScalingRatio/
-		// DepthInverted/Reset...）。无前缀通用 DLSS 键（Color/Depth/Output）NR 不认。
+		// + renodx addon 反编译双源实锤）。v0.8.10：OwnNGXParams 方法名（Set4=uint32、
+		// Set2=float、Set7=ID3D12Resource*——dlssg-to-fsr3 vtable 布局）。
 		if (needCreate || a_width != outWidth || a_height != outHeight) {
-			// v0.8.8：DLSS-NR 参数键全部用 DLSSNR.* 前缀（nvngx_dlssnr.dll 字符串表
-			// + renodx-dlss5 addon 反编译双源实锤）。无前缀通用 DLSS 键 NR 不认。
-			// v0.8.9：补 renodx 实锤参数——Input/Output 尺寸、ScalingRatio、Preset。
-			params->Set("DLSSNR.Width", a_width);
-			params->Set("DLSSNR.Height", a_height);
-			params->Set("DLSSNR.InputWidth", a_width);
-			params->Set("DLSSNR.InputHeight", a_height);
-			params->Set("DLSSNR.OutputWidth", a_width);
-			params->Set("DLSSNR.OutputHeight", a_height);
-			params->Set("DLSSNR.ScalingRatio", 1.0f);		  // DLAA 模式（4K→4K 滤镜）
-			params->Set("DLSSNR.Enabled", 1);
-			params->Set("DLSSNR.DepthInverted", 0);			  // Skyrim depth: 近=0 远=1
-			params->Set("DLSSNR.Hint.Render.Preset", 0);	  // 0=Auto (renodx: Preset #1/#2/#3)
-			params->Set("DLSSNR.Reset", 1);					  // 创建时重置内部状态
-			params->Set("PerfQualityValue", 2);				  // balanced-ish; NR uses for ratio
-			params->Set("DLSS.Feature.Create.Flags", 107);
-			params->Set("DLSS.Enable.Output.Subrects", 1);
-			params->Set("CreationNodeMask", 1u);
-			params->Set("VisibilityNodeMask", 1u);
-			params->Set("RTXValue", 0);
+			params.Set4("DLSSNR.Width", a_width);
+			params.Set4("DLSSNR.Height", a_height);
+			params.Set4("DLSSNR.InputWidth", a_width);
+			params.Set4("DLSSNR.InputHeight", a_height);
+			params.Set4("DLSSNR.OutputWidth", a_width);
+			params.Set4("DLSSNR.OutputHeight", a_height);
+			params.Set2("DLSSNR.ScalingRatio", 1.0f);		  // DLAA 模式（4K→4K 滤镜）
+			params.Set4("DLSSNR.Enabled", 1);
+			params.Set4("DLSSNR.DepthInverted", 0);			  // Skyrim depth: 近=0 远=1
+			params.Set4("DLSSNR.Hint.Render.Preset", 0);	  // 0=Auto (renodx: Preset #1/#2/#3)
+			params.Set4("DLSSNR.Reset", 1);					  // 创建时重置内部状态
+			params.Set4("PerfQualityValue", 2);				  // balanced-ish
+			params.Set4("DLSS.Feature.Create.Flags", 107);
+			params.Set4("DLSS.Enable.Output.Subrects", 1);
+			params.Set4("CreationNodeMask", 1u);
+			params.Set4("VisibilityNodeMask", 1u);
+			params.Set4("RTXValue", 0);
 
 			DWORD code = 0;
 			NGXHandle* h = nullptr;
-			unsigned int r = Guarded([&] { return createFeature(a_cmdList, kFeatureSuperSampling, params, &h); }, &code);
+			unsigned int r = Guarded([&] { return createFeature(a_cmdList, kFeatureSuperSampling, &params, &h); }, &code);
 			lastCreateResult = code ? kNGXExceptionMarker : r;
 			if (code != 0) {
 				SKSE::log::warn("[NGXNR] CreateFeature FAULTED (code {:#x}) - DLSS-NR disabled this frame", code);
@@ -253,34 +209,33 @@ namespace FrameGen
 			outWidth = a_width;
 			outHeight = a_height;
 			featureCreated = true;
+			supported = true;   // v0.8.10：CreateFeature 成功 = 硬件/驱动支持（替代 Caps 查询）
 			needCreate = false;
 			SKSE::log::info("[NGXNR] feature created {}x{} handle={}", a_width, a_height, (void*)h);
 		}
 
-		// --- per-frame resources + params (DLSSNR.* keys, v0.8.8) ---
-		params->Set("DLSSNR.Color", a_color);
-		params->Set("DLSSNR.Depth", a_depth);
-		params->Set("DLSSNR.MVec", a_mvec);
-		params->Set("DLSSNR.Output", a_output);
-		params->Set("DLSSNR.Enabled", 1);
-		// v0.8.9：MV 缩放（Skyrim 引擎 mvec 语义 = 我们 DLSS 超分的 mvecScale 1.0；
-		// bridge 对它的游戏用 -1.0，Skyrim 已验证 1.0 超分正确）
-		params->Set("DLSSNR.MVecScaleX", 1.0f);
-		params->Set("DLSSNR.MVecScaleY", 1.0f);
-		// v0.8.7：NR 参数读 settings（GUI 滑块/INI 写入处）——原用本对象成员
-		// (intensity/style/...) 从未被赋值，滑块无效。Get() = FrameGen 命名空间自由函数。
+		// --- per-frame resources + params (DLSSNR.* keys) ---
+		params.Set7("DLSSNR.Color", a_color);
+		params.Set7("DLSSNR.Depth", a_depth);
+		params.Set7("DLSSNR.MVec", a_mvec);
+		params.Set7("DLSSNR.Output", a_output);
+		params.Set4("DLSSNR.Enabled", 1);
+		// v0.8.9：MV 缩放（Skyrim 引擎 mvec 语义 = 我们 DLSS 超分的 mvecScale 1.0）
+		params.Set2("DLSSNR.MVecScaleX", 1.0f);
+		params.Set2("DLSSNR.MVecScaleY", 1.0f);
+		// v0.8.7：NR 参数读 settings（GUI 滑块/INI 写入处）
 		auto& s = Get().settings;
-		params->Set("DLSSNR.Intensity", s.nrIntensity);
-		params->Set("DLSSNR.Style", s.nrStyle);
-		params->Set("DLSSNR.LocalToneStrength", s.nrLocalTone);
-		params->Set("DLSSNR.SkinStructureStrength", s.nrSkinStructure);
-		params->Set("DLSSNR.Reset", 0);
-		params->Set("Sharpness", 0.0f);
-		params->Set("Jitter.Offset.X", 0.0f);
-		params->Set("Jitter.Offset.Y", 0.0f);
+		params.Set2("DLSSNR.Intensity", s.nrIntensity);
+		params.Set2("DLSSNR.Style", s.nrStyle);
+		params.Set2("DLSSNR.LocalToneStrength", s.nrLocalTone);
+		params.Set2("DLSSNR.SkinStructureStrength", s.nrSkinStructure);
+		params.Set4("DLSSNR.Reset", 0);
+		params.Set2("Sharpness", 0.0f);
+		params.Set2("Jitter.Offset.X", 0.0f);
+		params.Set2("Jitter.Offset.Y", 0.0f);
 
 		DWORD code = 0;
-		unsigned int r = Guarded([&] { return evalFeature(a_cmdList, handle, params, nullptr); }, &code);
+		unsigned int r = Guarded([&] { return evalFeature(a_cmdList, handle, &params, nullptr); }, &code);
 		lastEvaluateResult = code ? kNGXExceptionMarker : r;
 		lastEvaluateOk = (code == 0 && r == kNGXSuccess);
 		if (!lastEvaluateOk) {
@@ -315,8 +270,8 @@ namespace FrameGen
 		initialized = false;
 		featureCreated = false;
 		supported = false;
+		ready = false;
 		handle = nullptr;
-		params = nullptr;
 		device = nullptr;
 	}
 }  // namespace FrameGen

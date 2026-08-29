@@ -89,7 +89,7 @@ namespace FrameGen
 		// 读到的正好是上一帧的 NR 结果（= 本帧呈现内容），生成的插帧与呈现帧风格
 		// 一致；否则插帧帧无 NR 风格，与呈现帧交替 → 闪烁。
 		auto& ngx = fg.ngxNR;
-		const bool nrActive = ngx.initialized && ngx.supported && fg.settings.enableDLSSNR && sc.nrOutWrapped;
+		const bool nrActive = ngx.ready && ngx.supported && fg.settings.enableDLSSNR && sc.nrOutWrapped;
 		auto HUDLessColor = nrActive ? sc.nrOutWrapped->resource.get() :
 			(sc.colorOutWrapped ? sc.colorOutWrapped->resource.get() : (sc.swapChainBufferWrapped ? sc.swapChainBufferWrapped->resource.get() : nullptr));
 		auto depth = sc.depthWrapped ? sc.depthWrapped->resource.get() : nullptr;

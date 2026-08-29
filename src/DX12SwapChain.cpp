@@ -751,7 +751,7 @@ namespace FrameGen
 		// Output = UNORDERED_ACCESS；评估后转回 COMMON（拷贝段/D3D11 写需要）。
 		// 4080/缺文件 → Evaluate 返回 false → useNr=false → 拷贝仍用 colorOut（画面不变）。
 		bool useNr = false;
-		if (!dlssgMode && Get().ngxNR.initialized && Get().ngxNR.supported && Get().settings.enableDLSSNR &&
+		if (!dlssgMode && Get().ngxNR.ready && Get().settings.enableDLSSNR &&
 			colorOutWrapped && nrOutWrapped && depthWrapped && mvecWrapped) {
 			auto* cmdList = commandLists[frameIndex].get();
 			{
@@ -780,8 +780,8 @@ namespace FrameGen
 			// 诊断（节流）：NR 运行状态
 			static std::uint32_t nrDiag = 0;
 			if (++nrDiag % 180 == 1) {
-				SKSE::log::info("[FrameGen] NR diag: init={} support={} enable={} ok={} createRc={:#x} evalRc={:#x}",
-					Get().ngxNR.initialized, Get().ngxNR.supported, Get().settings.enableDLSSNR,
+				SKSE::log::info("[FrameGen] NR diag: ready={} support={} enable={} ok={} createRc={:#x} evalRc={:#x}",
+					Get().ngxNR.ready, Get().ngxNR.supported, Get().settings.enableDLSSNR,
 					Get().ngxNR.lastEvaluateOk, Get().ngxNR.lastCreateResult, Get().ngxNR.lastEvaluateResult);
 			}
 		}
