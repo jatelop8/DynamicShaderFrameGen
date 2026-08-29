@@ -619,6 +619,12 @@ namespace FrameGen
 				pdEvaluateDLSSNR = (void*)GetProcAddress(pdModule, "EvaluateDLSSNR");
 				pdSetFrameGenParams = (void*)GetProcAddress(pdModule, "SetFrameGenParams");
 				pdInitDLSSNR = (void*)GetProcAddress(pdModule, "InitDLSSNR");
+				// v0.8.64：照抄 SkyrimUpscaler 初始化序列的其他函数
+				pdSetMotionScaleX = (void*)GetProcAddress(pdModule, "SetMotionScaleX");
+				pdSetMotionScaleY = (void*)GetProcAddress(pdModule, "SetMotionScaleY");
+				pdReleaseNR = (void*)GetProcAddress(pdModule, "ReleaseDLSSNR");
+				pdIsNrAvail = (void*)GetProcAddress(pdModule, "IsDLSSNRAvailable");
+				pdSetFrameGen = (void*)GetProcAddress(pdModule, "SetFrameGeneration");
 				// v0.8.60：PDPerfPlugin 的 NVSDK_NGX_D3D12 标准 API（SkyrimUpscaler 日志
 				// 实锤：NVSDK_NGX_D3D11_Init/GetCapabilityParameters/CREATE_DLSS_EXT 全
 				// Success——它走的是标准 NGX API 而非通用接口！D3D12 同款）
@@ -761,7 +767,12 @@ namespace FrameGen
 		// v0.8.63：InitDLSSNR 移到 Evaluate 首帧——cfg 需要宽高（0xa7f0 实锤
 		// cfg+4=W +8=H +0x10=缩放 1.0）；Init 时无尺寸，cfg 宽高 0 引擎建 0×0 必败。
 		if (pdSetupOk && pdNrAvailable && pdEvaluateDLSSNR) {
-			// --- 首帧 InitDLSSNR（cfg 带宽高）---
+			// --- 首帧 NR 初始化（照抄 SkyrimUpscaler 序列）---
+			// 反汇编 SkyrimUpscaler.dll 调用点实锤（0x1f02c1/0x1f02ce/0x1f037c/
+			// 0x1f0386/0x1f03c3）：SetMotionScaleX/Y(0, float) → ReleaseDLSSNR()
+			// → IsDLSSNRAvailable() → InitDLSSNR(&cfg)。cfg 布局（0x1f0390 段）：
+			//   [0]=id=0(u32) [4]=W [8]=H [0xc]=mode [0x10]=float(0.0f)
+			//   [0x14]=u32 [0x18]=byte(0) [0x1c]=u32
 			if (!pdNrInitTried) {
 				pdNrInitTried = true;
 				struct NRInitCfg {
@@ -770,14 +781,45 @@ namespace FrameGen
 					std::uint32_t height;
 					std::uint32_t mode;
 					float scaling;
-					std::uint8_t rest[0xE8];
+					std::uint32_t u14;
+					std::uint8_t b18;
+					std::uint8_t pad[3];
+					std::uint32_t u1c;
+					std::uint8_t rest[0xE0];
 				};
 				NRInitCfg cfg{};
-				cfg.id = 1;                  // feature id（0x1aff0 注册，0x1c3f0 查找）
-				cfg.width = a_width;         // ★ 0xa7f0: 对象[0x298]=float(W) [0x2b0]=W
-				cfg.height = a_height;       // ★ 0xa7f0: 对象[0x29c]=float(H) [0x2b4]=H
-				cfg.mode = 0;                // 0x1aff0: cmp [cfg+0xc],3 → mode
-				cfg.scaling = 1.0f;          // ★ DLAA 1:1（0xa7f0 也写 [0x2a4]=1.0）
+				cfg.id = 0;                  // ★ SkyrimUpscaler 用 0（v0.8.63 用 1 是错的）
+				cfg.width = a_width;         // 0xa7f0: [0x298]=float(W) [0x2b0]=W
+				cfg.height = a_height;       // 0xa7f0: [0x29c]=float(H) [0x2b4]=H
+				cfg.mode = 0;
+				cfg.scaling = 0.0f;          // ★ SkyrimUpscaler 填 0.0（PD 内部固定 1.0）
+				cfg.u14 = 0;
+				cfg.b18 = 0;
+				cfg.u1c = 0;
+				// 序列：SetMotionScaleX/Y(0, 1.0) → ReleaseDLSSNR() → InitDLSSNR(&cfg)
+				if (pdSetMotionScaleX) {
+					DWORD mc = 0;
+					Guarded([&] { return reinterpret_cast<unsigned int(__cdecl*)(int, float)>(pdSetMotionScaleX)(0, 1.0f); }, &mc);
+					if (mc) SKSE::log::warn("[NGXNR] SetMotionScaleX faulted {:#x}", mc);
+				}
+				if (pdSetMotionScaleY) {
+					DWORD mc = 0;
+					Guarded([&] { return reinterpret_cast<unsigned int(__cdecl*)(int, float)>(pdSetMotionScaleY)(0, 1.0f); }, &mc);
+					if (mc) SKSE::log::warn("[NGXNR] SetMotionScaleY faulted {:#x}", mc);
+				}
+				if (pdReleaseNR) {
+					DWORD mc = 0;
+					Guarded([&] { return reinterpret_cast<unsigned int(__cdecl*)()>(pdReleaseNR)(); }, &mc);
+					if (mc) SKSE::log::warn("[NGXNR] ReleaseDLSSNR faulted {:#x}", mc);
+				}
+				bool nrAvail = false;
+				if (pdIsNrAvail) {
+					DWORD mc = 0;
+					unsigned int av = 0;
+					Guarded([&] { return av = reinterpret_cast<unsigned int(__cdecl*)()>(pdIsNrAvail)(); }, &mc);
+					nrAvail = (mc == 0 && av != 0);
+					SKSE::log::info("[NGXNR] IsDLSSNRAvailable() -> {} (fault={:#x})", nrAvail ? "TRUE" : "false", mc);
+				}
 				if (pdInitDLSSNR) {
 					DWORD ic = 0;
 					unsigned int ir = 0;
@@ -804,15 +846,22 @@ namespace FrameGen
 			if (!pdNrInitOk)
 				return false;
 
+			// --- 每帧 EvaluateDLSSNR（结构体照抄 SkyrimUpscaler 0x1ed730 段）---
+			// 0x108 全零 + 槽位：
+			//   +0x00 = u32 id = 0（★ 与 InitDLSSNR cfg.id 一致）
+			//   +0x08 = Color  +0x10 = Depth  +0x18 = MVec
+			//   +0x20 = Color（SkyrimUpscaler +0x08/+0x20 同指针）
+			//   +0x30 = Output
+			//   （PD 0x1B7E0 绑定序号 1/2/3/0 读 +0x08/+0x10/+0x18/+0x30 附近槽）
 			using PFN_EvalNR = unsigned int(__cdecl*)(const void*);
 			struct NRParams108 { std::uint64_t q[33]; };  // 0x108 = 33*8
 			NRParams108 p{};
-			p.q[0] = 1;                     // +0x00 类型码/feature id（0x1B740 用 [rdx] 查 id）
+			p.q[0] = 0;                     // +0x00 id = 0
 			p.q[1] = reinterpret_cast<std::uint64_t>(a_color);   // +0x08
 			p.q[2] = reinterpret_cast<std::uint64_t>(a_depth);   // +0x10
 			p.q[3] = reinterpret_cast<std::uint64_t>(a_mvec);    // +0x18
-			p.q[5] = reinterpret_cast<std::uint64_t>(a_output);  // +0x28
-			// 其余槽 0（可选参数——本地反汇编显示 0x1B7E0 还读 +0x30/+0x38/+0x40/+0x48 等槽）
+			p.q[4] = reinterpret_cast<std::uint64_t>(a_color);   // +0x20（同 +0x08）
+			p.q[6] = reinterpret_cast<std::uint64_t>(a_output);  // +0x30
 			DWORD code = 0;
 			unsigned int r = 0;
 			Guarded([&] { return r = reinterpret_cast<PFN_EvalNR>(pdEvaluateDLSSNR)(&p); }, &code);

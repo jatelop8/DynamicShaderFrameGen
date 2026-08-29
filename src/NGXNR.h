@@ -249,6 +249,15 @@ namespace FrameGen
 		bool pdNrInitOk = false;      // InitDLSSNR 成功（执行器已分配，[0x8CDAE] 单例非空）
 		unsigned int pdNrInitResult = 0;
 		bool pdNrInitTried = false;   // v0.8.63：InitDLSSNR 移到 Evaluate 首帧（cfg 需要宽高）
+		// v0.8.64：完整照抄 SkyrimUpscaler 的 NR 初始化序列（反汇编调用点实锤）——
+		// SetMotionScaleX/Y(0,float) → ReleaseDLSSNR() → IsDLSSNRAvailable() →
+		// InitDLSSNR(cfg{id=0,W,H,mode,scale=0})。SetFrameGenParams 每帧调用
+		// （参数结构体 [rax+0xac]16字节+[rax+0xbc]u32——先解析诊断，布局不完全）。
+		void* pdSetMotionScaleX = nullptr;
+		void* pdSetMotionScaleY = nullptr;
+		void* pdReleaseNR = nullptr;
+		void* pdIsNrAvail = nullptr;
+		void* pdSetFrameGen = nullptr;
 		bool pdCapsQueried = false;
 		// v0.8.33：dlssnr snippet 在 core 会话上的注册状态——它的 Init_Ext 负责把
 		// NR feature 类型注册进 core；不注册则 dlssnr CreateFeature 恒 0xbad00002。
