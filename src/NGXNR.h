@@ -203,6 +203,9 @@ namespace FrameGen
 			ID3D12Resource* a_output, unsigned int a_width, unsigned int a_height,
 			ID3D12GraphicsCommandList* a_cmdList);
 
+		// v0.8.31：NR 独立 cmdList（调用方在 Present queue 上 Execute，同 queue 串行）
+		ID3D12GraphicsCommandList4* GetNRList() { return nrList; }
+
 		// state for GUI/log
 		bool nvngxPresent = false;
 		bool nvngxNrPresent = false;
@@ -236,6 +239,10 @@ namespace FrameGen
 		unsigned int(__cdecl* paramsDestroy)(NGXInstanceParameters*) = nullptr;
 		// v0.8.29：资源格式诊断只打一次
 		bool resDiagDone = false;
+		// v0.8.31：独立 cmdList 跑 NR（PDPerfPlugin/bridge 模式：BeginCommands/EndCommands
+		// + fence）——插在 Present cmdList 里 Evaluate 0xbad00005，独立 cmdList 可能解决
+		ID3D12CommandAllocator* nrAlloc = nullptr;
+		ID3D12GraphicsCommandList4* nrList = nullptr;
 
 	private:
 		ID3D12Device* device = nullptr;

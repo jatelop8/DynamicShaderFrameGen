@@ -754,14 +754,9 @@ namespace FrameGen
 		if (!dlssgMode && Get().ngxNR.ready && Get().settings.enableDLSSNR &&
 			colorOutWrapped && nrOutWrapped && depthWrapped && mvecWrapped) {
 			auto* cmdList = commandLists[frameIndex].get();
-			{
-				std::vector<D3D12_RESOURCE_BARRIER> barriers;
-				barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(colorOutWrapped->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
-				barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(depthWrapped->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
-				barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(mvecWrapped->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
-				barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(nrOutWrapped->resource.get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
-				cmdList->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
-			}
+			// v0.8.31：barrier 移到 NGXNR 内部（独立 nrList 上）——NGX 的
+			// EvaluateFeature 在 Present cmdList 录制上下文里恒 0xbad00005，
+			// 独立 cmdList + 同 queue 串行（PDPerfPlugin/bridge 模式）。
 			useNr = Get().ngxNR.Evaluate(
 				colorOutWrapped->resource.get(),
 				depthWrapped->resource.get(),
@@ -769,13 +764,12 @@ namespace FrameGen
 				nrOutWrapped->resource.get(),
 				swapChainDesc.Width, swapChainDesc.Height,
 				cmdList);
-			{
-				std::vector<D3D12_RESOURCE_BARRIER> barriers;
-				barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(colorOutWrapped->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON));
-				barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(depthWrapped->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON));
-				barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(mvecWrapped->resource.get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON));
-				barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(nrOutWrapped->resource.get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
-				cmdList->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+			// v0.8.31：Execute NR 独立 cmdList（同 queue，先于 Present cmdList 执行）
+			if (useNr) {
+				if (auto* nrL = Get().ngxNR.GetNRList()) {
+					ID3D12CommandList* lists[] = { nrL };
+					commandQueue->ExecuteCommandLists(1, lists);
+				}
 			}
 			// 诊断（节流）：NR 运行状态
 			static std::uint32_t nrDiag = 0;

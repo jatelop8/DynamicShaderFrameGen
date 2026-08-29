@@ -319,6 +319,24 @@ namespace FrameGen
 		if (!ready || !a_color || !a_output || !a_cmdList)
 			return false;
 
+		// v0.8.31：独立 cmdList（PDPerfPlugin/bridge 模式）——插在 Present cmdList
+		// 里 Evaluate 恒 0xbad00005，独立 cmdList + 同 queue 串行执行可能解决
+		if (!nrAlloc) {
+			DWORD acode = 0;
+			auto a1 = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&nrAlloc));
+			auto a2 = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, nrAlloc, nullptr, IID_PPV_ARGS(&nrList));
+			SKSE::log::info("[NGXNR] NR cmdList created: allocHr={:#x} listHr={:#x}", 
+				static_cast<unsigned int>(a1), static_cast<unsigned int>(a2));
+			if (nrList)
+				nrList->Close();
+		}
+		// 录制目标：优先独立 nrList（每帧 Reset 重录），fallback 调用方 cmdList
+		if (nrList && nrAlloc) {
+			nrAlloc->Reset();
+			nrList->Reset(nrAlloc, nullptr);
+		}
+		ID3D12GraphicsCommandList* L = nrList ? nrList : a_cmdList;
+
 		// v0.8.29：回退 OwnNGXParams——v0.8.28 真 params（AllocateParameters）vtable
 		// 与我们接口不符，CreateFeature 从成功变 0xbad00005（日志实锤）。自实现
 		// params 的 vtable 与驱动 core 的 CreateFeature 预期一致（此前成功）。
@@ -516,12 +534,12 @@ namespace FrameGen
 			int useId = nrFeatureId >= 0 ? nrFeatureId : kFeatureSuperSampling;
 			if (nrFeatureId >= 0) {
 				// 已锁定 id：正常创建
-				r = Guarded([&] { return createFeature(a_cmdList, useId, &params, &h); }, &code);
+				r = Guarded([&] { return createFeature(L, useId, &params, &h); }, &code);
 			} else if (!nrIdTriedAll) {
 				// v0.8.18：首次遍历找 NR feature id；v0.8.23 扩到 0..20 并改用驱动 core
 				for (int id = 0; id <= 20; ++id) {
 					h = nullptr;
-					r = Guarded([&] { return createFeature(a_cmdList, id, &params, &h); }, &code);
+					r = Guarded([&] { return createFeature(L, id, &params, &h); }, &code);
 					SKSE::log::info("[NGXNR] NR CreateFeature id={} -> rc={:#x} fault={:#x} h={}", id,
 						code ? kNGXExceptionMarker : r, code, (void*)h);
 					if (code != 0) break;  // fault：不继续遍历
@@ -531,7 +549,7 @@ namespace FrameGen
 					nrIdTriedAll = true;
 			} else {
 				// 已遍历全失败：用默认 id 继续（保持行为）
-				r = Guarded([&] { return createFeature(a_cmdList, useId, &params, &h); }, &code);
+				r = Guarded([&] { return createFeature(L, useId, &params, &h); }, &code);
 			}
 			lastCreateResult = code ? kNGXExceptionMarker : r;
 			if (code != 0) {
@@ -599,7 +617,27 @@ namespace FrameGen
 		P->Set4("DLSSNR.OutputSubrectHeight", a_height);
 
 		DWORD code = 0;
-		unsigned int r = Guarded([&] { return evalFeature(a_cmdList, handle, &params, nullptr); }, &code);
+		unsigned int r = 0;
+		if (nrList) {
+			// v0.8.31：独立 cmdList——barrier → Evaluate → 回 barrier → Close
+			// （PDPerfPlugin/bridge 模式；调用方不再 barrier）
+			std::vector<D3D12_RESOURCE_BARRIER> b1;
+			b1.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_color, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
+			b1.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_depth, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
+			b1.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_mvec, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
+			b1.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_output, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
+			nrList->ResourceBarrier(static_cast<UINT>(b1.size()), b1.data());
+			r = Guarded([&] { return evalFeature(nrList, handle, &params, nullptr); }, &code);
+			std::vector<D3D12_RESOURCE_BARRIER> b2;
+			b2.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_color, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON));
+			b2.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_depth, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON));
+			b2.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_mvec, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON));
+			b2.push_back(CD3DX12_RESOURCE_BARRIER::Transition(a_output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
+			nrList->ResourceBarrier(static_cast<UINT>(b2.size()), b2.data());
+			nrList->Close();
+		} else {
+			r = Guarded([&] { return evalFeature(L, handle, &params, nullptr); }, &code);
+		}
 		lastEvaluateResult = code ? kNGXExceptionMarker : r;
 		lastEvaluateOk = (code == 0 && r == kNGXSuccess);
 		if (!lastEvaluateOk) {
@@ -615,6 +653,9 @@ namespace FrameGen
 
 	void NGXNR::Shutdown()
 	{
+		// v0.8.31：释放独立 cmdList
+		if (nrList) { nrList->Release(); nrList = nullptr; }
+		if (nrAlloc) { nrAlloc->Release(); nrAlloc = nullptr; }
 		// v0.8.28：释放驱动 core 分配的真 params
 		if (realParams && paramsDestroy) {
 			DWORD code = 0;
