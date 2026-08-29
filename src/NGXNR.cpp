@@ -540,6 +540,20 @@ namespace FrameGen
 		params.Set2("Sharpness", 0.0f);
 		params.Set2("Jitter.Offset.X", 0.0f);
 		params.Set2("Jitter.Offset.Y", 0.0f);
+		// v0.8.24：Evaluate 补 bridge 子矩形/曝光键（dlss5-dx11-bridge 1063-1079 实锤）——
+		// EvaluateFeature 0xbad00005（参数无效）缺这些
+		params.Set4("DLSS.Render.Subrect.Dimensions.Width", a_width);
+		params.Set4("DLSS.Render.Subrect.Dimensions.Height", a_height);
+		params.Set4("DLSS.Input.Color.Subrect.Base.X", 0u);
+		params.Set4("DLSS.Input.Color.Subrect.Base.Y", 0u);
+		params.Set4("DLSS.Input.Depth.Subrect.Base.X", 0u);
+		params.Set4("DLSS.Input.Depth.Subrect.Base.Y", 0u);
+		params.Set4("DLSS.Input.MV.Subrect.Base.X", 0u);
+		params.Set4("DLSS.Input.MV.Subrect.Base.Y", 0u);
+		params.Set4("DLSS.Output.Subrect.Base.X", 0u);
+		params.Set4("DLSS.Output.Subrect.Base.Y", 0u);
+		params.Set2("DLSS.Pre.Exposure", 1.0f);
+		params.Set2("DLSS.Exposure.Scale", 1.0f);
 
 		DWORD code = 0;
 		unsigned int r = Guarded([&] { return evalFeature(a_cmdList, handle, &params, nullptr); }, &code);
