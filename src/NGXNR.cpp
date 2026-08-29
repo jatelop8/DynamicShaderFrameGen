@@ -98,17 +98,19 @@ namespace FrameGen
 
 		DWORD code = 0;
 		bool inited = false;
-		for (int ver = 0x13; ver <= 0x16 && !inited; ++ver) {
+		// 版本协商：范围放宽 0x10..0x20（NGX SDK 版本常量随驱动移动，作者 0x13..0x16
+		// 是在其驱动上验证的；我们的 4080/驱动可能接受不同值）。refused 也打返回码。
+		for (int ver = 0x10; ver <= 0x20 && !inited; ++ver) {
 			if (initExt) {
 				unsigned int r = Guarded([&] { return initExt(kAppId, dataPath, a_device, ver, nullptr); }, &code);
-				SKSE::log::info("[NGXNR] Init_Ext(0x{:02X}) -> {}", ver,
-					code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"));
+				SKSE::log::info("[NGXNR] Init_Ext(0x{:02X}) -> {} (rc={:#x})", ver,
+					code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r);
 				if (code == 0 && r == kNGXSuccess) { inited = true; initVersion = ver; break; }
 			}
 			if (initProject) {
 				unsigned int r = Guarded([&] { return initProject(kProjectId, 0, "1.0", dataPath, a_device, ver, nullptr); }, &code);
-				SKSE::log::info("[NGXNR] Init_ProjectID(0x{:02X}) -> {}", ver,
-					code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"));
+				SKSE::log::info("[NGXNR] Init_ProjectID(0x{:02X}) -> {} (rc={:#x})", ver,
+					code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r);
 				if (code == 0 && r == kNGXSuccess) { inited = true; initVersion = ver; break; }
 			}
 		}
