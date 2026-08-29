@@ -320,6 +320,36 @@ namespace FrameGen
 		device = a_device;
 
 		// ------------------------------------------------------------------
+		// v0.19：自建独立 D3D12 设备（nrDevice）——NGX core 会话 + dlssnr Init_Ext
+		// 全部跑在独立设备上，与 FG 的 D3D12 swapchain 设备隔离。
+		// dlss5-dx11-bridge（社区在 Skyrim 跑通 DLSS5 的参考实现）明确："the bridge
+		// runs a second NGX session on its own D3D12 device"。harness 里 Init_Ext
+		// -> 0x1 成功用的就是独立 D3D12CreateDevice 设备；v0.17 游戏里直测崩溃
+		// （跳 0x7FFC9FABA6CC 无模块）用的是 FG 共享设备——差异即在此。
+		// 用与 FG 设备相同的 adapter（D3D11<->D3D12 共享纹理要求同 adapter）。
+		if (!nrDevice) {
+			IDXGIDevice* dxgiDev = nullptr;
+			if (SUCCEEDED(a_device->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDev))) {
+				IDXGIAdapter* ad = nullptr;
+				dxgiDev->GetAdapter(&ad);
+				if (ad) {
+					for (auto fl : { D3D_FEATURE_LEVEL_12_0, D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 }) {
+						HRESULT hr = D3D12CreateDevice(ad, fl, __uuidof(ID3D12Device), (void**)&nrDevice);
+						if (SUCCEEDED(hr) && nrDevice) {
+							SKSE::log::info("[NGXNR] v0.19 independent D3D12 device created (feature level {:#x}, from FG adapter)", (int)fl);
+							break;
+						}
+					}
+					ad->Release();
+				}
+				dxgiDev->Release();
+			}
+			if (!nrDevice)
+				SKSE::log::warn("[NGXNR] v0.19 failed to create independent D3D12 device - falling back to FG device");
+		}
+		ID3D12Device* ngxDev = nrDevice ? nrDevice : a_device;
+
+		// ------------------------------------------------------------------
 		// v0.8.11 重大修正（v0.8.10 方向反了）：
 		//   v0.8.10 只加载 nvngx_dlssnr.dll（NR snippet）→ CreateFeature 每帧
 		//   0xbad00002 = "找不到已初始化 NGX core 实例"——snippet 需要 core 会话，
@@ -362,9 +392,10 @@ namespace FrameGen
 					DWORD cc = 0;
 					// 1) 标准 Init（5 参，v0.8.39 修正）——SkyrimUpscaler 同款（返回 1 = Success）
 					// dlssnr 认的就是标准 Init 建的会话！版本协商 0x13..0x16。
+					// v0.19：ngxDev = 独立设备（nrDevice），与 FG 设备隔离
 					if (initStd) {
 						for (int ver = 0x13; ver <= 0x16 && !coreInitOk; ++ver) {
-							unsigned int r = Guarded([&] { return initStd(kAppId, dataPath, a_device, ver, &fciCore); }, &cc);
+							unsigned int r = Guarded([&] { return initStd(kAppId, dataPath, ngxDev, ver, &fciCore); }, &cc);
 							SKSE::log::info("[NGXNR] core[ngx] Init(0x{:02X}) -> {} (rc={:#x})", ver,
 								cc ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), cc ? cc : r);
 							if (cc == 0 && r == kNGXSuccess) { coreInitOk = true; initialized = true; initVersion = ver; coreInitResult = r; }
@@ -373,7 +404,7 @@ namespace FrameGen
 					// 2) Init_Ext（5 参）版本协商
 					if (!coreInitOk && initExtCore) {
 						for (int ver = 0x13; ver <= 0x16; ++ver) {
-							unsigned int r = Guarded([&] { return initExtCore(kAppId, dataPath, a_device, ver, &fciCore); }, &cc);
+							unsigned int r = Guarded([&] { return initExtCore(kAppId, dataPath, ngxDev, ver, &fciCore); }, &cc);
 							SKSE::log::info("[NGXNR] core[ngx] Init_Ext(0x{:02X}) -> {} (rc={:#x})", ver,
 								cc ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), cc ? cc : r);
 							if (cc == 0 && r == kNGXSuccess) { coreInitOk = true; initialized = true; initVersion = ver; coreInitResult = r; break; }
@@ -381,7 +412,7 @@ namespace FrameGen
 					}
 					// 3) Init_ProjectID（7 参）
 					if (!coreInitOk && initProjCore) {
-						unsigned int r = Guarded([&] { return initProjCore("a0f57b54-1daf-4934-90ae-c4035c19df04", 0, "1.0", dataPath, a_device, 0x13, &fciCore); }, &cc);
+						unsigned int r = Guarded([&] { return initProjCore("a0f57b54-1daf-4934-90ae-c4035c19df04", 0, "1.0", dataPath, ngxDev, 0x13, &fciCore); }, &cc);
 						SKSE::log::info("[NGXNR] core[ngx] Init_ProjectID -> {} (rc={:#x})",
 							cc ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), cc ? cc : r);
 						if (cc == 0 && r == kNGXSuccess) { coreInitOk = true; initialized = true; coreInitResult = r; }
@@ -490,30 +521,38 @@ namespace FrameGen
 					SKSE::log::info("[NGXNR] NGX core session established via D3D11_Init (SkyrimUpscaler pattern)");
 				}
 			}
-			// 3c) v0.8.33 修正：驱动 core 会话建立后，**无条件**重试 dlssnr 的 Init_Ext——
-			// 它负责把 NR feature 类型注册进 core 会话（v0.8.19 的推理，但旧代码
-			// `!initialized` gate 在驱动 core 成功后是 false，从未执行过！）。
-			// dlssnr 的 CreateFeature 需要它自己的 Init_Ext 先注册。
-			// ★ v0.18：此处是 v0.17 闪退点（见上注释），仅 NRDirectTest=1 时执行。
-			if (nrInitExt) {
-				for (int ver = 0x13; ver <= 0x16 && !snippetInitialized; ++ver) {
-					unsigned int r = Guarded([&] { return nrInitExt(kAppId, dataPath, a_device, ver, &fci); }, &code);
-					SKSE::log::info("[NGXNR] nr Init_Ext(0x{:02X}) after-core -> {} (rc={:#x})", ver,
-						code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r);
-					if (code == 0 && r == kNGXSuccess) {
-						snippetInitialized = true;
-						snippetInitResult = r;
-						initVersion = ver;
-					}
-				}
-				if (snippetInitialized)
-					SKSE::log::info("[NGXNR] dlssnr snippet registered into core session (rc={:#x})", snippetInitResult);
-				else
-					SKSE::log::warn("[NGXNR] dlssnr Init_Ext all refused - NR feature registration failed (rc={:#x})", snippetInitResult);
-			}
 		} else {
-			// v0.18：直测禁用（部署默认）——dlssnr 初始化交给 Streamline 1004 通道
-			SKSE::log::info("[NGXNR] direct Init_Ext tests DISABLED (NRDirectTest=0) - dlssnr init delegated to Streamline channel");
+			// v0.18：直测禁用（部署默认）——dlss 的 Init_Ext 直测只属于 harness 调试
+			SKSE::log::info("[NGXNR] direct dlss Init_Ext tests DISABLED (NRDirectTest=0)");
+		}
+
+		// 3c) v0.19 正规注册：dlssnr Init_Ext 在**独立 D3D12 设备（ngxDev/nrDevice）**上执行。
+		// 它负责把 NR feature 类型注册进 core 会话——dlssnr CreateFeature 的前置。
+		// v0.17 闪退根因：该调用在 FG 共享设备上跑 → Cubin Init 跳驱动 API 空指针崩
+		// （crash-2026-08-29-22-12-32.log：0x7FFC9FABA6CC 无模块 + RAX=0 + 栈深部
+		// nvwgf2umx/nvspcap64/D3D12Core）。独立设备 = dlss5-dx11-bridge 思路
+		// （"second NGX session on its own D3D12 device"），harness 已验证 Init_Ext
+		// -> 0x1 成功用的正是独立 D3D12CreateDevice。不再受 NRDirectTest gate——
+		// 这是正规初始化步骤，不是调试直测。Guard + 日志保护。
+		if (nrInitExt && !snippetInitialized && nrDevice) {
+			for (int ver = 0x13; ver <= 0x16 && !snippetInitialized; ++ver) {
+				unsigned int r = Guarded([&] { return nrInitExt(kAppId, dataPath, ngxDev, ver, &fci); }, &code);
+				SKSE::log::info("[NGXNR] v0.19 nr Init_Ext(0x{:02X}) on independent device -> {} (rc={:#x})", ver,
+					code ? "faulted" : (r == kNGXSuccess ? "ok" : "refused"), code ? code : r);
+				if (code == 0 && r == kNGXSuccess) {
+					snippetInitialized = true;
+					snippetInitResult = r;
+					initVersion = ver;
+					break;  // 成功即停（0x13 是 harness 验证版本）
+				}
+			}
+			if (snippetInitialized)
+				SKSE::log::info("[NGXNR] v0.19 dlssnr registered into independent-device core session (rc={:#x})", snippetInitResult);
+			else
+				SKSE::log::warn("[NGXNR] v0.19 dlssnr Init_Ext all refused - NR feature registration failed (rc={:#x})", snippetInitResult);
+		} else if (nrInitExt && !nrDevice) {
+			// 安全兜底：独立设备创建失败 → 跳过 dlssnr Init_Ext（回退 FG 设备 = v0.17 崩溃路径）
+			SKSE::log::warn("[NGXNR] v0.19 nr Init_Ext SKIPPED - independent device unavailable (NR inactive, no crash)");
 		}
 		if (!coreInitOk)
 			SKSE::log::warn("[NGXNR] no NGX core session (rc={:#x}) - will try dlss.dll warmup CreateFeature on first evaluate frame", coreInitResult);
@@ -2204,6 +2243,11 @@ namespace FrameGen
 		ready = false;
 		coreInitOk = false;
 		handle = nullptr;
+		// v0.19：释放独立 D3D12 设备（NGX 会话所在设备）
+		if (nrDevice) {
+			nrDevice->Release();
+			nrDevice = nullptr;
+		}
 		device = nullptr;
 	}
 }  // namespace FrameGen

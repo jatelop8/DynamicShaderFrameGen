@@ -300,6 +300,12 @@ namespace FrameGen
 
 	private:
 		ID3D12Device* device = nullptr;
+		// v0.19：独立 D3D12 设备——NGX/NR 会话跑在自己设备上（dlss5-dx11-bridge：
+		// "second NGX session running on its own D3D12 device"）。v0.17 游戏闪退根因
+		// 极可能 = dlssnr Cubin Init 在 FG 共享设备（活跃 GPU 工作）上跳驱动 API 崩
+		// （crash-2026-08-29-22-12-32.log：0x7FFC9FABA6CC 无模块 + 栈深部 nvwgf2umx）；
+		// harness 成功用的就是独立 D3D12CreateDevice。与 FG 设备同 adapter（纹理互操作需要）。
+		ID3D12Device* nrDevice = nullptr;
 		HMODULE ngxCoreModule = nullptr; // v0.8.22：驱动 NGX core（nvngx.dll，SkyrimUpscaler 同款）
 		HMODULE coreModule = nullptr; // v0.8.11：nvngx_dlss.dll（NGX core 宿主，自举 core 会话）
 		HMODULE ngxModule = nullptr;  // nvngx_dlssnr.dll（执行 CreateFeature/Evaluate 的 NR snippet）
