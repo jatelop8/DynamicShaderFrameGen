@@ -645,16 +645,19 @@ namespace FrameGen
 			printTex("Output", a_output);
 		}
 
-		// v0.8.40 重大修正：标准 Init（5 参）成功后，**Create/Evaluate 优先用
-		// 驱动 core（nvngx.dll）**——它是会话宿主，dlssnr snippet 的 CreateFeature
-		// 不认标准 Init 会话（v0.8.39 日志实锤：core Init ok 但 dlssnr 仍全 2）。
-		// v0.8.32 改 snippet 优先是错的（当时标准 Init 从未成功，驱动 core 只有
-		// Init_Ext 会话）。SkyrimUpscaler 模式 = 标准 Init + 驱动 core API。
+		// v0.8.56 重大修正：**CreateFeature 必须用 dlss.dll（coreModule）自己的
+		// @0x2C8B0**——v0.8.55 日志实锤：Evaluate 执行体 = dlss.dll @0x2CA20，
+		// 它查 dlss.dll 的 FNV 哈希表（全局槽 0xBA9088 等），但该表**从未被初始化**
+		// （读出的 base/mask/sentinel 全是垃圾）——因为驱动 core（nvngx.dll @0xA466）
+		// 的 CreateFeature 把 handler 表项注册成 dlss.dll 执行体，却**没往 dlss.dll
+		// 的表注册 feature** → 执行体查空表 → 5。
+		// dlss.dll 自己的 CreateFeature（@0x2C8B0，真实实现）会初始化并注册自己的表，
+		// 执行体才能查到。Evaluate 仍走驱动 core 分发（handler 表项 = dlss.dll 执行体）。
 		auto createFeature = reinterpret_cast<PFN_NGXCreateFeature>(slNrCreateFn);
 		auto evalFeature = reinterpret_cast<PFN_NGXEvaluateFeature>(slNrEvalFn);
 		if (!createFeature)
 			createFeature = reinterpret_cast<PFN_NGXCreateFeature>(GetProcAddress(
-				ngxCoreModule ? ngxCoreModule : ngxModule, "NVSDK_NGX_D3D12_CreateFeature"));
+				coreModule ? coreModule : ngxCoreModule, "NVSDK_NGX_D3D12_CreateFeature"));
 		if (!evalFeature)
 			evalFeature = reinterpret_cast<PFN_NGXEvaluateFeature>(GetProcAddress(
 				ngxCoreModule ? ngxCoreModule : ngxModule, "NVSDK_NGX_D3D12_EvaluateFeature"));
