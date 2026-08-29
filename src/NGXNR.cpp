@@ -545,15 +545,16 @@ namespace FrameGen
 			SKSE::log::info("[NGXNR] direct dlss Init_Ext tests DISABLED (NRDirectTest=0)");
 		}
 
-		// 3c) v0.19 正规注册：dlssnr Init_Ext 在**独立 D3D12 设备（ngxDev/nrDevice）**上执行。
-		// 它负责把 NR feature 类型注册进 core 会话——dlssnr CreateFeature 的前置。
-		// v0.17 闪退根因：该调用在 FG 共享设备上跑 → Cubin Init 跳驱动 API 空指针崩
-		// （crash-2026-08-29-22-12-32.log：0x7FFC9FABA6CC 无模块 + RAX=0 + 栈深部
-		// nvwgf2umx/nvspcap64/D3D12Core）。独立设备 = dlss5-dx11-bridge 思路
-		// （"second NGX session on its own D3D12 device"），harness 已验证 Init_Ext
-		// -> 0x1 成功用的正是独立 D3D12CreateDevice。不再受 NRDirectTest gate——
-		// 这是正规初始化步骤，不是调试直测。Guard + 日志保护。
-		if (nrInitExt && !snippetInitialized && nrDevice) {
+		// 3c) v0.23：dlssnr Init_Ext **回归 NRDirectTest 开关（默认关）**——
+		// v0.19-v0.22 三次实锤：游戏环境里（有 sl.interposer 的 NGX 会话 + FG +
+		// ENB + 我们手动建的驱动 core 会话）dlssnr Init_Ext 必崩——栈 [10] dlssnr
+		// +15DF0 → nvngx.dll（驱动 core）→ nvwgf2umx/nvspcap64 → 跳无效地址
+		// （v0.22 crash-2026-08-29-22-40-18.log 无 dlss.dll 帧，崩在驱动路径；
+		// harness_iat 无 core 会话时反而安全 bad00002）。harness 裸环境成功
+		// （0x1）≠ 游戏成功（cubin 静态解析 ≠ 驱动真初始化）。此路在游戏环境
+		// 走不通，先禁用止血；后续本地 harness 研究"有 core 会话 + Init_Ext"
+		// 不崩的条件（参数组合/会话隔离）后再启用。
+		if (Get().settings.nrDirectTest && nrInitExt && !snippetInitialized && nrDevice) {
 			for (int ver = 0x13; ver <= 0x16 && !snippetInitialized; ++ver) {
 				unsigned int r = Guarded([&] { return nrInitExt(kAppId, dataPath, ngxDev, ver, &fci); }, &code);
 				SKSE::log::info("[NGXNR] v0.19 nr Init_Ext(0x{:02X}) on independent device -> {} (rc={:#x})", ver,
@@ -569,9 +570,9 @@ namespace FrameGen
 				SKSE::log::info("[NGXNR] v0.19 dlssnr registered into independent-device core session (rc={:#x})", snippetInitResult);
 			else
 				SKSE::log::warn("[NGXNR] v0.19 dlssnr Init_Ext all refused - NR feature registration failed (rc={:#x})", snippetInitResult);
-		} else if (nrInitExt && !nrDevice) {
-			// 安全兜底：独立设备创建失败 → 跳过 dlssnr Init_Ext（回退 FG 设备 = v0.17 崩溃路径）
-			SKSE::log::warn("[NGXNR] v0.19 nr Init_Ext SKIPPED - independent device unavailable (NR inactive, no crash)");
+		} else if (nrInitExt) {
+			// v0.23 止血：NRDirectTest=0（部署默认）→ 不调 dlssnr Init_Ext（游戏环境必崩）
+			SKSE::log::info("[NGXNR] v0.23 dlssnr Init_Ext DISABLED (NRDirectTest=0) - game-env Init_Ext proven crashing (v0.19-22), local harness research pending");
 		}
 		if (!coreInitOk)
 			SKSE::log::warn("[NGXNR] no NGX core session (rc={:#x}) - will try dlss.dll warmup CreateFeature on first evaluate frame", coreInitResult);

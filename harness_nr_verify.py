@@ -103,6 +103,9 @@ def run(mode):
         print("dlssnr Init_Ext EXCEPTION: %s" % e)
     return r2
 
-run("A")
-run("B")
-print("\nDone.")
+if __name__ == "__main__":
+    # v0.22: Mode B only (Mode A crashes the process - dlss.dll conflict proven)
+    run("B")
+    print("\nMode B completed")
+else:
+    run("B")
