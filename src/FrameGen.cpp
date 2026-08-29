@@ -777,7 +777,9 @@ namespace FrameGen
 		// v0.8：DLSS-NR（NGX 直调）——D3D12 设备上独立初始化，与 SL（D3D11）零冲突。
 		// 需要用户放置 nvngx_dlss.dll + nvngx_dlssnr.dll 到 Streamline 目录；缺文件或
 		// GPU 无 sm_120 cubin（4080）→ 优雅降级（菜单项灰掉），不闪退。
+		SKSE::log::info("[FrameGen] NR init before: device={}", (void*)dx12SwapChain.d3d12Device.get());
 		ngxNR.Init(dx12SwapChain.d3d12Device.get(), Streamline::PluginDir);
+		SKSE::log::info("[FrameGen] NR init after: ok={} sup={} f={}", ngxNR.initialized, ngxNR.supported, ngxNR.featureCreated);
 
 		// v0.6：FSR3 FG（Provider=0）——加载 AMD 模块 + 创建 FG context
 		// （移植自 doodlum/ENBFrameGeneration；dlssgMode=false 时 CreateSwapChain 已建 ffxSwapChainContext）
