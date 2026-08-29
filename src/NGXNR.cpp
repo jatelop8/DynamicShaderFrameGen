@@ -701,12 +701,67 @@ namespace FrameGen
 							(unsigned int)ghr, (void*)gdev);
 						if (gdev) gdev->Release();
 					}
+					// v0.8.67 根因闭环：GetDevice(IID_ID3D12Device) 对标准 D3D12 device
+					// 实测返回 S_FALSE(0x1)+null（D3D12 runtime 行为）→ PD 的 SetDevice
+					// 写不进 obj->0x98 → 0x9DB0 Setup 读 obj->0x98=0 → 0x9E06 崩。
+					// 修复：让 0x31FE0 跳过 SetDevice（[0xC0E20] 指向对象 byte[0]=1，
+					// @0xC0720 是 BSS 可写），SetupDirectX 完成单例创建后手动补
+					// obj->0x98/0xa0 = device（0x88 由构造内 QI 已写），再手动执行
+					// 0x9DB0(obj) 完成 Setup（CheckFeatureSupport+CreateCommandQueue+obj[0]=1）。
+					uintptr_t pdBaseS = reinterpret_cast<uintptr_t>(pdModule);
+					{
+						uintptr_t regVal = 0;
+						MEMORY_BASIC_INFORMATION sm = {};
+						if (VirtualQuery(reinterpret_cast<LPCVOID>(pdBaseS + 0xC0E20), &sm, sizeof(sm)) &&
+							sm.State == MEM_COMMIT && (sm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+							regVal = *reinterpret_cast<uintptr_t*>(pdBaseS + 0xC0E20);
+						if (regVal) {
+							MEMORY_BASIC_INFORMATION sm2 = {};
+							if (VirtualQuery(reinterpret_cast<LPCVOID>(regVal), &sm2, sizeof(sm2)) &&
+								(sm2.Protect & PAGE_READWRITE)) {
+								*reinterpret_cast<uint8_t*>(regVal) = 1;
+								SKSE::log::info("[NGXNR]   PD backend-reg byte[0] -> 1 (skip SetDevice; GetDevice S_FALSE on std D3D12 device)");
+							} else {
+								SKSE::log::warn("[NGXNR]   PD backend-reg byte[0] NOT writable - SetDevice will crash");
+							}
+						}
+					}
 					unsigned int setupRet = 0;
 					DWORD sc = 0;
 					Guarded([&] { return setupRet = reinterpret_cast<PFN_SetupDX>(pdSetupDirectX)(a_device, 1); }, &sc);
 					pdSetupOk = (sc == 0 && setupRet != 0);
 					SKSE::log::info("[NGXNR]   SetupDirectX(device,1) -> {} (rc={:#x} fault={:#x})",
 						pdSetupOk ? "ok" : "FAILED", setupRet, sc);
+					// 手动补 SetDevice 该做的事 + 手动执行 0x9DB0 Setup
+					if (pdSetupOk) {
+						uintptr_t obj = 0;
+						MEMORY_BASIC_INFORMATION sm = {};
+						if (VirtualQuery(reinterpret_cast<LPCVOID>(pdBaseS + 0xC1268), &sm, sizeof(sm)) &&
+							sm.State == MEM_COMMIT && (sm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+							obj = *reinterpret_cast<uintptr_t*>(pdBaseS + 0xC1268);
+						SKSE::log::info("[NGXNR]   PD singleton obj={}", (void*)obj);
+						if (obj) {
+							uintptr_t devAddr = reinterpret_cast<uintptr_t>(a_device);
+							*reinterpret_cast<uintptr_t*>(obj + 0x98) = devAddr;
+							*reinterpret_cast<uintptr_t*>(obj + 0xa0) = devAddr;
+							uintptr_t obj88 = *reinterpret_cast<uintptr_t*>(obj + 0x88);
+							SKSE::log::info("[NGXNR]   PD singleton patched 0x98={} 0xa0={} (0x88={} from ctor QI)",
+								(void*)devAddr, (void*)devAddr, (void*)obj88);
+							// 手动执行 0x9DB0 Setup 方法（rcx=obj）
+							DWORD sc2 = 0;
+							Guarded([&] {
+								reinterpret_cast<void(__cdecl*)(void*)>(pdBaseS + 0x9DB0)((void*)obj);
+								return 0u;
+							}, &sc2);
+							SKSE::log::info("[NGXNR]   PD manual Setup@0x9DB0(obj) -> {} (fault={:#x})",
+								sc2 ? "FAULTED" : "ok", sc2);
+							uint8_t f0 = 0;
+							if (VirtualQuery(reinterpret_cast<LPCVOID>(obj), &sm, sizeof(sm)) &&
+								sm.State == MEM_COMMIT && (sm.Protect & (PAGE_READONLY | PAGE_READWRITE)))
+								f0 = *reinterpret_cast<uint8_t*>(obj);
+							SKSE::log::info("[NGXNR]   PD singleton[0] = {} (1=fully setup)", f0);
+						}
+					}
 					// v0.8.66：SetupDirectX 建的 NR 单例在 [0xC1268]（0x33A30 里
 					// mov [rip+0x8d80b/0x8d7d8], rax；D3D12 后端 id=0x12 分支）。
 					// 单例->0x98 = D3D12 device（0x9D60 SetDevice 写入）。
