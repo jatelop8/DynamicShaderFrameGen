@@ -127,21 +127,10 @@ namespace FrameGen
 				settings.frameGeneration = readBool(line, true);
 			else if (key == "EnableUpscale")
 				settings.enableUpscale = readBool(line, true);   // v0.7.24：DLSS 超分开关
-			else if (key == "EnableDLSSNR")
-				settings.enableDLSSNR = readBool(line, false);   // v0.8：DLSS-NR 神经渲染开关
-			else if (key == "NRDirectTest")
-				settings.nrDirectTest = readBool(line, false);   // v0.18：NR 直测开关（默认关防闪退）
+			// v0.25：EnableDLSSNR/NRDirectTest/NR* 已移除（NR 改走 ReShade 外挂方案）
 			else if (key == "FpsOverlay")
 				settings.fpsOverlay = readBool(line, true);      // v0.24：FPS 显示器（默认开）
-			else if (key == "NRIntensity") {
-				try { settings.nrIntensity = std::clamp(std::stof(line.substr(eq + 1)), 0.0f, 1.0f); } catch (...) {}
-			} else if (key == "NRStyle") {
-				try { settings.nrStyle = std::clamp(std::stof(line.substr(eq + 1)), 0.0f, 1.0f); } catch (...) {}
-			} else if (key == "NRLocalTone") {
-				try { settings.nrLocalTone = std::clamp(std::stof(line.substr(eq + 1)), 0.0f, 1.0f); } catch (...) {}
-			} else if (key == "NRSkinStructure") {
-				try { settings.nrSkinStructure = std::clamp(std::stof(line.substr(eq + 1)), 0.0f, 1.0f); } catch (...) {}
-			} else if (key == "QualityMode")
+ else if (key == "QualityMode")
 				settings.qualityMode = std::clamp(readInt(line, 1), 0, 4);
 			else if (key == "PresetDLSS")
 				settings.presetDLSS = std::clamp(readInt(line, 0), 0, 4);
@@ -166,10 +155,10 @@ namespace FrameGen
 				} catch (...) {}
 			}
 		}
-		SKSE::log::info("[FrameGen] Config loaded: Enable={} ForceEnable={} Provider={} FrameGeneration={} EnableUpscale={} QualityMode={} PresetDLSS={} SL_LogLevel={} ToggleKey={:#x} DLSSNR={} NR_Int={} NR_Style={} NR_LTone={} NR_Skin={}",
+		SKSE::log::info("[FrameGen] Config loaded: Enable={} ForceEnable={} Provider={} FrameGeneration={} EnableUpscale={} QualityMode={} PresetDLSS={} SL_LogLevel={} ToggleKey={:#x} FpsOverlay={}",
 			settings.enableFrameGen, settings.forceEnable, settings.provider, settings.frameGeneration,
 			settings.enableUpscale, settings.qualityMode, settings.presetDLSS, settings.streamlineLogLevel, settings.toggleKey,
-			settings.enableDLSSNR, settings.nrIntensity, settings.nrStyle, settings.nrLocalTone, settings.nrSkinStructure);
+			settings.fpsOverlay);
 	}
 
 	// ---- 输入：Home 键（短按切插帧 / 长按开菜单）----
@@ -581,10 +570,7 @@ namespace FrameGen
 				// provider=0 时 features=[kFeatureDLSS]，D3D11 渲染 API，模型缓存已就绪
 				// （dlss/versions/0/files/160_E658703.bin = 74MB 超分真模型）。
 				if (fg.settings.provider == 0) {
-					// v0.12：必须先准备 dlssnr（LoadLibrary + IAT 修补）——Streamline 首 slInit
-					// 时 sl.dlss_nr 内部初始化 dlssnr 的路径校验（含 "nvngx.dll"）才通过，
-					// feature 1004 (DLSS-NR) 才会注册（否则 slGetFeatureFunction 恒 31）
-					fg.ngxNR.PrepareDlssnrForStreamline(Streamline::PluginDir);
+					// v0.25：dlssnr 准备已移除（NR 走 ReShade 外挂方案）
 					fg.streamline.LoadInterposer(fg.settings);
 					fg.streamline.SetD3DDevice(a_device);
 					fg.streamline.CheckFeatures(adapter);
@@ -592,9 +578,7 @@ namespace FrameGen
 				}
 				fg.dx12SwapChain.CreateSwapChain(adapter, *pDesc, fg.settings.frameGeneration, fg.settings.provider == 1, fg.settings.qualityMode);
 				fg.dx12SwapChain.CreateInterop();
-				// v0.8.5：NGXNR 初始化——游戏实际走的是这条 ENB 共存路径（v0.8 误加到
-				// CreateD3D12Proxy 分支，该分支在有 ENB 时不被执行 → NGXNR 从未初始化）
-				fg.ngxNR.Init(fg.dx12SwapChain.d3d12Device.get(), Streamline::PluginDir);
+				// v0.25：NGXNR 初始化已移除（NR 改由外部 ReShade dlss5 方案提供）
 				adapter->Release();
 			}
 			dxgiDevice->Release();
@@ -692,8 +676,7 @@ namespace FrameGen
 			// 预加载 Streamline（slInit）。v0.5：feature 检测移到设备设置后
 			//（SL 的 slIsFeatureSupported 要求 device 已设，设备前检测可能误判不支持）。
 			// 这里只要求 SL 初始化成功即可建 proxy；具体 feature 不支持时 Present 直通兜底。
-			// v0.12：slInit 前先准备 dlssnr（LoadLibrary+IAT 修补）→ NR 1004 才能注册
-			fg.ngxNR.PrepareDlssnrForStreamline(Streamline::PluginDir);
+			// v0.25：dlssnr 准备已移除（NR 走 ReShade 外挂方案）
 			fg.streamline.LoadInterposer(fg.settings);
 			if (!fg.streamline.initialized) {
 				SKSE::log::warn("[FrameGen] Streamline init failed - using standard path");
@@ -787,12 +770,7 @@ namespace FrameGen
 		streamline.CheckFeatures(a_adapter);
 		streamline.PostDevice();
 
-		// v0.8：DLSS-NR（NGX 直调）——D3D12 设备上独立初始化，与 SL（D3D11）零冲突。
-		// 需要用户放置 nvngx_dlss.dll + nvngx_dlssnr.dll 到 Streamline 目录；缺文件或
-		// GPU 无 sm_120 cubin（4080）→ 优雅降级（菜单项灰掉），不闪退。
-		SKSE::log::info("[FrameGen] NR init before: device={}", (void*)dx12SwapChain.d3d12Device.get());
-		ngxNR.Init(dx12SwapChain.d3d12Device.get(), Streamline::PluginDir);
-		SKSE::log::info("[FrameGen] NR init after: ok={} sup={} f={}", ngxNR.initialized, ngxNR.supported, ngxNR.featureCreated);
+		// v0.25：DLSS-NR（NGX 直调）已移除——NR 改由外部 ReShade 方案提供
 
 		// v0.6：FSR3 FG（Provider=0）——加载 AMD 模块 + 创建 FG context
 		// （移植自 doodlum/ENBFrameGeneration；dlssgMode=false 时 CreateSwapChain 已建 ffxSwapChainContext）

@@ -227,27 +227,7 @@ namespace FrameGen
 		ImGui::Checkbox("Force Enable (<120Hz)", &s.forceEnable);
 		ImGui::Checkbox("FPS Overlay (top-right)", &s.fpsOverlay);
 
-		// v0.8：DLSS-NR（神经渲染）——NGX 直调，RTX 50 系专属。
-		// 未初始化/不支持（4080 无 sm_120 cubin、缺 nvngx_dlssnr.dll）→ 灰掉不崩
-		ImGui::Separator();
-		const bool nrAvailable = a_fg.ngxNR.ready && a_fg.ngxNR.supported;
-		if (!nrAvailable) {
-			ImGui::TextColored(ImVec4(0.8f, 0.6f, 0.2f, 1.0f), "DLSS-NR: unavailable");
-			if (ImGui::IsItemHovered())
-				ImGui::SetTooltip("Requires RTX 50-series (sm_120 kernel) + nvngx_dlss.dll + nvngx_dlssnr.dll\nin Data/Shaders/Upscaling/Streamline/ (not redistributed).");
-			ImGui::BeginDisabled();
-		}
-		ImGui::Checkbox("DLSS-NR (Neural Rendering)", &s.enableDLSSNR);
-		ImGui::SliderFloat("NR Intensity", &s.nrIntensity, 0.0f, 1.0f, "%.2f");
-		ImGui::SliderFloat("NR Style", &s.nrStyle, 0.0f, 1.0f, "%.2f");
-		ImGui::SliderFloat("NR Local Tone", &s.nrLocalTone, 0.0f, 1.0f, "%.2f");
-		ImGui::SliderFloat("NR Skin Structure", &s.nrSkinStructure, 0.0f, 1.0f, "%.2f");
-		if (!nrAvailable)
-			ImGui::EndDisabled();
-		if (a_fg.ngxNR.lastEvaluateOk)
-			ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "NR: running (eval ok)");
-		else if (s.enableDLSSNR)
-			ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "NR: failed (rc=%08x)", a_fg.ngxNR.lastEvaluateResult);
+		// v0.25：DLSS-NR 菜单项已移除（NR 改由外部 ReShade 方案提供）
 
 		ImGui::Separator();
 		ImGui::Text("Provider (change needs restart)");
@@ -280,11 +260,6 @@ namespace FrameGen
 					<< "Provider=" << s.provider << "\n"
 					<< "FrameGeneration=" << (s.frameGeneration ? 1 : 0) << "\n"
 					<< "EnableUpscale=" << (s.enableUpscale ? 1 : 0) << "\n"
-					<< "EnableDLSSNR=" << (s.enableDLSSNR ? 1 : 0) << "\n"
-					<< "NRIntensity=" << s.nrIntensity << "\n"
-					<< "NRStyle=" << s.nrStyle << "\n"
-					<< "NRLocalTone=" << s.nrLocalTone << "\n"
-					<< "NRSkinStructure=" << s.nrSkinStructure << "\n"
 					<< "QualityMode=" << s.qualityMode << "\n"
 					<< "PresetDLSS=" << s.presetDLSS << "\n"
 					<< "Sharpness=" << s.sharpness << "\n"

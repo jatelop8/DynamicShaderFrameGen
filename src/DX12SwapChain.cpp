@@ -746,44 +746,12 @@ namespace FrameGen
 			return S_OK;
 		}
 
-		// v0.8.1：DLSS-NR（FSR3 模式）——fence 已 Signal/Wait（D3D11 完成 colorOut 写入），
-		// 在 D3D12 cmdList 上跑 NGX：colorOut → nrOut。NGX 输入资源状态要求
-		// （dlss5-dx11-bridge 验证）：Color/Depth/MV = NON_PIXEL_SHADER_RESOURCE，
-		// Output = UNORDERED_ACCESS；评估后转回 COMMON（拷贝段/D3D11 写需要）。
-		// 4080/缺文件 → Evaluate 返回 false → useNr=false → 拷贝仍用 colorOut（画面不变）。
-		bool useNr = false;
-		if (!dlssgMode && Get().ngxNR.ready && Get().settings.enableDLSSNR &&
-			colorOutWrapped && nrOutWrapped && depthWrapped && mvecWrapped) {
-			auto* cmdList = commandLists[frameIndex].get();
-			// v0.8.31：barrier 移到 NGXNR 内部（独立 nrList 上）——NGX 的
-			// EvaluateFeature 在 Present cmdList 录制上下文里恒 0xbad00005，
-			// 独立 cmdList + 同 queue 串行（PDPerfPlugin/bridge 模式）。
-			useNr = Get().ngxNR.Evaluate(
-				colorOutWrapped->resource.get(),
-				depthWrapped->resource.get(),
-				mvecWrapped->resource.get(),
-				nrOutWrapped->resource.get(),
-				swapChainDesc.Width, swapChainDesc.Height,
-				cmdList);
-			// v0.8.31：Execute NR 独立 cmdList（同 queue，先于 Present cmdList 执行）
-			if (useNr) {
-				if (auto* nrL = Get().ngxNR.GetNRList()) {
-					ID3D12CommandList* lists[] = { nrL };
-					commandQueue->ExecuteCommandLists(1, lists);
-				}
-			}
-			// 诊断（节流）：NR 运行状态
-			static std::uint32_t nrDiag = 0;
-			if (++nrDiag % 180 == 1) {
-				SKSE::log::info("[FrameGen] NR diag: ready={} support={} enable={} ok={} createRc={:#x} evalRc={:#x}",
-					Get().ngxNR.ready, Get().ngxNR.supported, Get().settings.enableDLSSNR,
-					Get().ngxNR.lastEvaluateOk, Get().ngxNR.lastCreateResult, Get().ngxNR.lastEvaluateResult);
-			}
-		}
+		// v0.25：DLSS-NR Evaluate 段已移除（NR 改由外部 ReShade 方案提供）——
+		// 拷贝源恒为 colorOut（DLSS 超分结果，失败时 = 引擎画面兜底）
+		const bool useNr = false;
 
 		// v0.5：FSR3 超分评估已移到 fence 前（D3D11 队列序正确）
 		// v0.7.17：拷贝源 = colorOut（DLSS 超分结果 4K；失败时 = 引擎画面兜底）
-		// v0.8：NR 开启且成功 → 拷贝源 = nrOut（DLSS-NR 神经渲染结果）
 		// D3D11 共享纹理 → D3D12 真 swapchain buffer
 		{
 			auto fakeSwapChain = (useNr && nrOutWrapped ? nrOutWrapped :
