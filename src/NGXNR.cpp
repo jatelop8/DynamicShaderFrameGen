@@ -977,16 +977,16 @@ namespace FrameGen
 					SKSE::log::info("[NGXNR] IsDLSSNRAvailable() -> {} (fault={:#x})", nrAvail ? "TRUE" : "false", mc);
 				}
 				if (pdInitDLSSNR) {
-					// v0.8.69：InitDLSSNR 崩溃 @0x7ffbac65bf2e（PD 模块外，疑 nvngx_dlssnr/
-					// nvngx_dlss）——打各模块基址，下轮定位崩溃 RVA
+					// v0.8.70：InitDLSSNR 崩溃 @0x7ffafbabbf2e（不在 PD/nvngx_dlss/dlssnr
+					// 的已知基址）——打我们自己的 core/ngx 句柄 + 系统 D3D 模块，精确定位
 					{
 						auto modBase = [](const wchar_t* name) -> void* {
 							HMODULE h = GetModuleHandleW(name);
 							return (void*)h;
 						};
-						SKSE::log::info("[NGXNR]   mod nvngx_dlssnr.dll={} nvngx_dlss.dll={} sl.dlss_nr.dll={} nvngx.dll={}",
-							modBase(L"nvngx_dlssnr.dll"), modBase(L"nvngx_dlss.dll"),
-							modBase(L"sl.dlss_nr.dll"), modBase(L"nvngx.dll"));
+						SKSE::log::info("[NGXNR]   coreModule(nvngx_dlss)={} ngxModule(nvngx_dlssnr)={} d3d12.dll={} dxgi.dll={} d3d11.dll={}",
+							(void*)coreModule, (void*)ngxModule,
+							modBase(L"d3d12.dll"), modBase(L"dxgi.dll"), modBase(L"d3d11.dll"));
 					}
 					DWORD ic = 0;
 					unsigned int ir = 0;
