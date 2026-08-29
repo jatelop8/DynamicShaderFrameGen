@@ -230,6 +230,15 @@ namespace FrameGen
 		void* pdIsNrAvailable = nullptr;
 		void* pdEvaluateDLSSNR = nullptr;
 		void* pdSetFrameGenParams = nullptr;
+		// v0.8.60：PDPerfPlugin 的 NVSDK_NGX_D3D12 标准 API（SkyrimUpscaler 实锤路径）——
+		// SetupDirectX(device,1) 建 D3D12 单例后，这些标准签名 API 即可用
+		// （CreateFeature 单例空返回 7，非 2——与 dlss 系不同！）
+		void* pdCreateFeature = nullptr;
+		void* pdEvalFeature = nullptr;
+		void* pdCapsFn = nullptr;
+		void* pdAllocParams = nullptr;
+		void* pdReleaseFeature = nullptr;
+		bool pdCapsQueried = false;
 		// v0.8.33：dlssnr snippet 在 core 会话上的注册状态——它的 Init_Ext 负责把
 		// NR feature 类型注册进 core；不注册则 dlssnr CreateFeature 恒 0xbad00002。
 		bool snippetInitialized = false;

@@ -618,8 +618,18 @@ namespace FrameGen
 				pdIsNrAvailable = (void*)GetProcAddress(pdModule, "IsDLSSNRAvailable");
 				pdEvaluateDLSSNR = (void*)GetProcAddress(pdModule, "EvaluateDLSSNR");
 				pdSetFrameGenParams = (void*)GetProcAddress(pdModule, "SetFrameGenParams");
+				// v0.8.60：PDPerfPlugin 的 NVSDK_NGX_D3D12 标准 API（SkyrimUpscaler 日志
+				// 实锤：NVSDK_NGX_D3D11_Init/GetCapabilityParameters/CREATE_DLSS_EXT 全
+				// Success——它走的是标准 NGX API 而非通用接口！D3D12 同款）
+				pdCreateFeature = (void*)GetProcAddress(pdModule, "NVSDK_NGX_D3D12_CreateFeature");
+				pdEvalFeature = (void*)GetProcAddress(pdModule, "NVSDK_NGX_D3D12_EvaluateFeature");
+				pdCapsFn = (void*)GetProcAddress(pdModule, "NVSDK_NGX_D3D12_GetCapabilityParameters");
+				pdAllocParams = (void*)GetProcAddress(pdModule, "NVSDK_NGX_D3D12_AllocateParameters");
+				pdReleaseFeature = (void*)GetProcAddress(pdModule, "NVSDK_NGX_D3D12_ReleaseFeature");
 				SKSE::log::info("[NGXNR]   SetupDirectX={} IsDLSSNRAvailable={} EvaluateDLSSNR={} SetFrameGenParams={}",
 					pdSetupDirectX, pdIsNrAvailable, pdEvaluateDLSSNR, pdSetFrameGenParams);
+				SKSE::log::info("[NGXNR]   NGX std: CreateFeature={} EvaluateFeature={} Caps={} Alloc={} Release={}",
+					pdCreateFeature, pdEvalFeature, pdCapsFn, pdAllocParams, pdReleaseFeature);
 				// SetupDirectX(device, 1) → D3D12 单例
 				using PFN_SetupDX = unsigned int(__cdecl*)(void*, int);
 				if (pdSetupDirectX) {
@@ -641,6 +651,32 @@ namespace FrameGen
 				}
 				if (pdSetupOk && pdNrAvailable)
 					SKSE::log::info("[NGXNR]   PDPerfPlugin NR channel READY (D3D12 singleton + NR available)");
+				// v0.8.60：SetupDirectX 成功后查 PDPerfPlugin 的 Caps（标准 API）——
+				// SuperSamplingDenoising.Available = NR 支持（SkyrimUpscaler 日志同款）
+				if (pdSetupOk && pdCapsFn) {
+					using PFN_PdCaps = unsigned int(__cdecl*)(void**);
+					void* caps = nullptr;
+					DWORD cc2 = 0;
+					unsigned int cr2 = 0;
+					Guarded([&] { return cr2 = reinterpret_cast<PFN_PdCaps>(pdCapsFn)(&caps); }, &cc2);
+					SKSE::log::info("[NGXNR]   PD Caps -> {} (rc={:#x} caps={})",
+						cc2 ? "faulted" : (cr2 == kNGXSuccess ? "ok" : "failed"), cc2 ? cc2 : cr2, caps);
+					// caps 是真 params 对象（NGXInstanceParameters vtable）——尝试 Get 键
+					if (cc2 == 0 && cr2 == kNGXSuccess && caps) {
+						// 用我们的 OwnNGXParams 接口强转（vtable 槽位一致假设）读键
+						struct CapsGet { virtual unsigned int Get(const char* n, unsigned int* v) = 0; };
+						CapsGet* cg = reinterpret_cast<CapsGet*>(caps);
+						const char* keys[] = { "SuperSampling.Available", "SuperSamplingDenoising.Available",
+							"SuperSampling.MinDriverVersionMajor", "SuperSampling.MinDriverVersionMinor" };
+						for (const char* k : keys) {
+							unsigned int v = 0;
+							DWORD kc = 0;
+							unsigned int kr = 0;
+							Guarded([&] { return kr = cg->Get(k, &v); }, &kc);
+							SKSE::log::info("[NGXNR]     PD caps[{}] = {} (rc={:#x})", k, kr == kNGXSuccess ? v : 0xFFFFFFFF, kr);
+						}
+					}
+				}
 			}
 			SetDllDirectoryW(nullptr);
 		}
@@ -659,14 +695,11 @@ namespace FrameGen
 		if (!ready || !a_color || !a_output || !a_cmdList)
 			return false;
 
-		// v0.8.59：PDPerfPlugin 直调优先（SkyrimUpscaler 实锤跑通 NR 的完整路径）——
-		// 完整调用链（本机反汇编）：SetupDirectX(device,1) → D3D12 单例 →
-		// EvaluateDLSSNR(0x108 字节结构体) → vtable[30] → 0x1B740（检查+存储）→
-		// 0x1B7E0（资源绑定 + NR cubin 执行）。
-		// 结构体布局（0x1B7E0 反汇编）：+0x00=u32 类型码、+0x08=资源(绑定1)、
-		// +0x10=资源(绑定2)、+0x18=资源(绑定3)、+0x28=资源(绑定0)、
-		// +0x30..+0x48=更多资源槽（0=Color 1=Depth 2=MVec 3=Output 试探）。
-		if (pdSetupOk && pdNrAvailable && pdEvaluateDLSSNR) {
+		// v0.8.59/60：PDPerfPlugin 直调（SkyrimUpscaler 实锤跑通 NR 的完整路径）。
+		// v0.8.60：标准 NGX API（pdCreateFeature/pdEvalFeature）优先（SkyrimUpscaler
+		// 日志实锤走 NVSDK_NGX 标准 API）；EvaluateDLSSNR 通用接口直调只作兜底
+		// （pdCreateFeature 不可用时）。
+		if (pdSetupOk && pdNrAvailable && pdEvaluateDLSSNR && !pdCreateFeature) {
 			using PFN_EvalNR = unsigned int(__cdecl*)(const void*);
 			struct NRParams108 { std::uint64_t q[33]; };  // 0x108 = 33*8
 			NRParams108 p{};
@@ -731,19 +764,20 @@ namespace FrameGen
 			printTex("Output", a_output);
 		}
 
-		// v0.8.56 重大修正：**CreateFeature 必须用 dlss.dll（coreModule）自己的
-		// @0x2C8B0**——v0.8.55 日志实锤：Evaluate 执行体 = dlss.dll @0x2CA20，
-		// 它查 dlss.dll 的 FNV 哈希表（全局槽 0xBA9088 等），但该表**从未被初始化**
-		// （读出的 base/mask/sentinel 全是垃圾）——因为驱动 core（nvngx.dll @0xA466）
-		// 的 CreateFeature 把 handler 表项注册成 dlss.dll 执行体，却**没往 dlss.dll
-		// 的表注册 feature** → 执行体查空表 → 5。
-		// dlss.dll 自己的 CreateFeature（@0x2C8B0，真实实现）会初始化并注册自己的表，
-		// 执行体才能查到。Evaluate 仍走驱动 core 分发（handler 表项 = dlss.dll 执行体）。
-		auto createFeature = reinterpret_cast<PFN_NGXCreateFeature>(slNrCreateFn);
-		auto evalFeature = reinterpret_cast<PFN_NGXEvaluateFeature>(slNrEvalFn);
+		// v0.8.60 修正：**PDPerfPlugin 的 NVSDK_NGX_D3D12 标准 API 优先**——
+		// SkyrimUpscaler 日志实锤它走标准 NGX API（D3D11_Init/Caps/CREATE_DLSS_EXT
+		// 全 Success），D3D12 同款（SetupDirectX(device,1) 建单例后 CreateFeature
+		// 单例空返回 7，非 dlss 系的 2）。PDPerfPlugin 是完整独立实现（自带
+		// DLSSNRBackendNGX），CreateFeature/EvaluateFeature 内部直接处理 NR。
+		auto createFeature = reinterpret_cast<PFN_NGXCreateFeature>(pdCreateFeature);
+		auto evalFeature = reinterpret_cast<PFN_NGXEvaluateFeature>(pdEvalFeature);
+		if (!createFeature)
+			createFeature = reinterpret_cast<PFN_NGXCreateFeature>(slNrCreateFn);
 		if (!createFeature)
 			createFeature = reinterpret_cast<PFN_NGXCreateFeature>(GetProcAddress(
 				coreModule ? coreModule : ngxCoreModule, "NVSDK_NGX_D3D12_CreateFeature"));
+		if (!evalFeature)
+			evalFeature = reinterpret_cast<PFN_NGXEvaluateFeature>(slNrEvalFn);
 		if (!evalFeature)
 			evalFeature = reinterpret_cast<PFN_NGXEvaluateFeature>(GetProcAddress(
 				ngxCoreModule ? ngxCoreModule : ngxModule, "NVSDK_NGX_D3D12_EvaluateFeature"));
