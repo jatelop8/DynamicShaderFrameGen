@@ -225,6 +225,20 @@ namespace FrameGen
 		// 接口——SL 由此进入呈现路径（每帧调 common 插件 presentCommon），DLSSG 插件才会
 		// 注册 evaluateFeature 回调（否则恒 0x0 → slEvaluateFeature 28）。必须在
 		// swapChainProxy 创建之前（proxy 包升级后的链，Present 才走 SL 路径）。
+		// v0.25.1（用户 2026-08-30"勾选 DLSSG 没生效"实锤修复）：**device 也必须升级**——
+		// CS（Upscaling.cpp:131-132）同时 upgrade device + swapchain；我们此前只升级
+		// swapchain → presentCommon 链缺 device 环节 → DLSSG evaluateFeature 回调不注册
+		// → slEvaluateFeature 28（日志 "Could not find 'evaluateFeature' callbacks for
+		// feature 1000"）+ slAllocateResources 714156900。swapchain 手动升级在
+		// eUseDXGIFactoryProxy 下 SL 已自动处理（日志 "Upgraded IDXGISwapChain v0 to v4"），
+		// 重复手动升级失败 1051361018（无害，已升级）；device 由 D3D12CreateDevice 创建
+		// 不走 factory → 必须手动升级（CS 同款）。
+		{
+			ID3D12Device* devIf = d3d12Device.get();
+			Get().streamline.UpgradeInterface(reinterpret_cast<void**>(&devIf));
+			if (devIf && devIf != d3d12Device.get())
+				d3d12Device.attach(devIf);  // SL 返回新代理接口 → 接管（旧引用 SL proxy 持有）
+		}
 		Get().streamline.UpgradeInterface(reinterpret_cast<void**>(&swapChain));
 
 		swapChainProxy = new DXGISwapChainProxy(swapChain);
