@@ -429,17 +429,18 @@ namespace FrameGen
 		// 之前顺序 SetOptions→allocate→SetConstants 导致 allocate 时 pacer 未建 → null → 崩
 		CheckFrameConstants(a_fb, aspect, nearZ, farZ);
 
-		// v0.5.19：显式 slAllocateResources（传 cmdList）——DLSSG（feature 1000）不走惰性初始化
-		static bool dlssgAllocTried = false;
-		if (!dlssgAllocTried && slAllocateResources) {
-			dlssgAllocTried = true;
-			sl::ViewportHandle vp(viewport);
-			sl::Result ar = slAllocateResources(reinterpret_cast<sl::CommandBuffer*>(a_cmdList), sl::kFeatureDLSS_G, vp);
-			if (SL_FAILED(ar, ar))
-				SKSE::log::error("[Streamline] slAllocateResources(DLSS_G) failed: {} - DLSSG disabled (check NGX model cache), passthrough", (int)ar);
-			else
-				SKSE::log::info("[Streamline] DLSSG resources allocated (feature context created)");
-		}
+		// v0.25.3（用户 2026-08-30"勾选 DLSSG 没生效"——16:35 日志实锤）：**DLSS-G
+		// 不做显式 slAllocateResources / slEvaluateFeature**——与 CS 完全一致（CS 只对
+		// kFeatureDLSS 超分调 slEvaluateFeature，对 DLSS_G 从不调）：
+		//   1. sl.dlss_g 插件的 evaluateFeature 回调恒 0x0（正常）——DLSSG 通过
+		//      Present 钩子（slHookPresent/slHookPresent1，已注册 OK）在 presentCommon
+		//      时自动插帧（16:35 presentCommon 每帧在跑 = 链已通）
+		//   2. 显式 slEvaluateFeature(DLSS_G) 恒 28（eErrorMissingOrInvalidAPI）→
+		//      触发上方 auto-disable（>120 次）→ 帧生成被自己禁用 → "没效果"
+		//   3. 显式 slAllocateResources 失败 -572052636——DLSSG 的资源由 Present
+		//      钩子路径自动分配（sl.dlss_g 有 slAllocateResources 回调 0x7ffd...）
+		//   我们只负责：setConstants + slSetTagForFrame 标记资源（Present 钩子消费）。
+		//   若 tag 失败（frameToken null）→ 返回 false 走 passthrough 兜底。
 
 		sl::Resource colorInRes = { sl::ResourceType::eTex2d, a_colorIn, 0 };
 		sl::Resource colorOutRes = { sl::ResourceType::eTex2d, a_colorOut, 0 };
@@ -462,13 +463,8 @@ namespace FrameGen
 			return false;
 		}
 		slSetTagForFrame(*frameToken, viewport, tags, _countof(tags), a_cmdList);
-
-		sl::ViewportHandle view(viewport);
-		const sl::BaseStructure* inputs[] = { &view };
-		if (SL_FAILED(r, slEvaluateFeature(sl::kFeatureDLSS_G, *frameToken, inputs, _countof(inputs), a_cmdList))) {
-			SKSE::log::error("[Streamline] slEvaluateFeature(DLSSG) failed: {}", (int)r);
-			return false;
-		}
+		// v0.25.3：DLSSG 评估交给 SL Present 钩子（presentCommon 自动），不再显式
+		// slEvaluateFeature——此处仅返回 true 表示"已标记资源"。
 		return true;
 	}
 
