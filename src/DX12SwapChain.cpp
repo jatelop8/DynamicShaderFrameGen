@@ -231,13 +231,18 @@ namespace FrameGen
 		// → slEvaluateFeature 28（日志 "Could not find 'evaluateFeature' callbacks for
 		// feature 1000"）+ slAllocateResources 714156900。swapchain 手动升级在
 		// eUseDXGIFactoryProxy 下 SL 已自动处理（日志 "Upgraded IDXGISwapChain v0 to v4"），
-		// 重复手动升级失败 1051361018（无害，已升级）；device 由 D3D12CreateDevice 创建
-		// 不走 factory → 必须手动升级（CS 同款）。
+		// 重复手动升级失败（无害，已升级）。
+		// v0.25.2（16:27 日志实锤）：**upgrade 必须传 D3D11 device（CS 同款）**——
+		// v0.25.1 传 D3D12 device 失败 602942144 + SL 警告 "Plugins already initialized
+		// but could be using the wrong device, please call slSetD3DDevice immediately
+		// after creating desired device"——slUpgradeInterface 只认 DXGI/D3D11 接口，
+		// 不认 D3D12 device。SL 的 presentCommon 链挂 D3D11 device → evaluateFeature
+		// 回调注册需要它。D3D12 会话（Provider=1 DLSSG）由后面的 SetD3D12Device 提供。
 		{
-			ID3D12Device* devIf = d3d12Device.get();
+			ID3D11Device5* devIf = d3d11Device.get();
 			Get().streamline.UpgradeInterface(reinterpret_cast<void**>(&devIf));
-			if (devIf && devIf != d3d12Device.get())
-				d3d12Device.attach(devIf);  // SL 返回新代理接口 → 接管（旧引用 SL proxy 持有）
+			if (devIf && devIf != d3d11Device.get())
+				d3d11Device.attach(devIf);  // SL 返回新代理接口 → 接管（旧引用 SL proxy 持有）
 		}
 		Get().streamline.UpgradeInterface(reinterpret_cast<void**>(&swapChain));
 
