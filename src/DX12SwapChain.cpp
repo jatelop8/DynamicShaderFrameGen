@@ -178,7 +178,13 @@ namespace FrameGen
 			// DX12 只支持 FLIP 模型（CreateSwapChainForHwnd 拒绝 DISCARD）——游戏若传
 			// DISCARD 会导致创建失败 → 强制 FLIP_DISCARD（DX12 标准，DLSSG 也要求）
 			desc1.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-			desc1.Flags = swapChainDesc.Flags & ~DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;  // v0.33
+			// v0.33：去 FRAME_LATENCY_WAITABLE_OBJECT（等待会串行化 Present → pacer 丢帧）
+			// v0.36：**同时去 ALLOW_TEARING**——hk factory hook 无条件加了它（FrameGen.cpp:548），
+			// 但 DLSSG 用 Present(0)（无 VSync，SL pacer 全权）+ ALLOW_TEARING = 允许撕裂
+			// → 若 RSYNC 未完全接管则画面撕裂闪。SL pacer 管 VSync，不需要 DXGI tearing。
+			desc1.Flags = swapChainDesc.Flags &
+				~DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT &
+				~DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
 			IDXGISwapChain1* sc1 = nullptr;
 			HRESULT hr = dxgiFactory->CreateSwapChainForHwnd(commandQueue.get(),
 				a_swapChainDesc.OutputWindow, &desc1, nullptr, nullptr, &sc1);
