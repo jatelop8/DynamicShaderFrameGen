@@ -569,13 +569,38 @@ namespace FrameGen
 	// 节奏（vblank 同步的帧 pacing）；缺失 → sl.reflex 不注册 hooks → RSYNC 无同步
 	// → 插帧 pacing 乱 → 频闪（SL 日志 "Plugin 'sl.reflex' has no registered hooks"
 	// + dlss_g 每帧 "frame 1" 警告实锤）。返回后发 eSimulationStart（模拟开始）。
+	// v0.35（对齐 CS applyReflexOptionsIfChanged:850-900）：**每帧先设置完整
+	// ReflexOptions 再 sleep**——useMarkersToOptimize（PCL marker 优化）+ frameLimitUs
+	// 是 Reflex 运行时激活的必需；之前只设 mode → DLSSG 运行时检测不到 Reflex →
+	// eDLSSGStatusFailReflexNotDetectedAtRuntime（status=2，20:51 日志实锤）→ 插帧
+	// 被拒 → 频闪。选项变化才 slReflexSetOptions（缓存比较，CS 同款）。
 	void Streamline::ReflexSleep()
 	{
 		if (!initialized || !slReflexSleep || !featureReflex)
 			return;
 		if (!frameToken)
 			return;
-		slReflexSleep(*frameToken);
+
+		sl::ReflexOptions opts{};
+		opts.mode = sl::ReflexMode::eLowLatency;  // DLSSG 要求至少 eLowLatency
+		opts.frameLimitUs = 1000000 / 60;         // CS 默认 reflexFPSLimit=60 限帧
+		opts.useMarkersToOptimize = featurePCL;   // PCL marker 优化（Reflex 激活必需）
+
+		// 缓存比较：选项变化才下发（CS applyReflexOptionsIfChanged 同款）
+		static sl::ReflexOptions lastOpts{};
+		static bool lastValid = false;
+		if (!lastValid || std::memcmp(&lastOpts, &opts, sizeof(opts)) != 0) {
+			if (SL_FAILED(r, slReflexSetOptions(opts)))
+				SKSE::log::warn("[Streamline] slReflexSetOptions failed: {}", (int)r);
+			else
+				SKSE::log::info("[Streamline] Reflex options applied (mode={} frameLimitUs={} markers={})",
+					static_cast<int>(opts.mode), opts.frameLimitUs, opts.useMarkersToOptimize);
+			lastOpts = opts;
+			lastValid = true;
+		}
+
+		if (SL_FAILED(r, slReflexSleep(*frameToken)))
+			SKSE::log::warn("[Streamline] slReflexSleep failed: {}", (int)r);
 		if (slPCLSetMarker)
 			slPCLSetMarker(sl::PCLMarker::eSimulationStart, *frameToken);
 	}
