@@ -60,21 +60,20 @@ namespace FrameGen
 		// evaluateFeature 回调 → slEvaluateFeature failed 28。实测：features 只有
 		// [DLSS_G, Reflex] 时日志 "kFeatureDLSS' context is missing" + Callback 0x0）
 		sl::Feature featuresDLSSG[] = { sl::kFeatureDLSS, sl::kFeatureDLSS_G, sl::kFeatureReflex };
-		// v0.8.35：DLSS-NR feature id = 1004（sl.dlss_nr.dll 代码区 7 处引用 1004 实锤；
-		// SL SDK 头文件无此枚举，运行时插件注册）。必须加进 featuresToLoad，
-		// sl.interposer 才会加载 sl.dlss_nr.dll 插件并注册 NR 函数
-		// （NGX_D3D12_CREATE_DLSSNR_EXT 等，经 slGetFeatureFunction 查询）。
+		// v0.25.4（Bug2 修复）：v0.25 已移除 DLSS-NR（NGXNR）并删除 sl.dlss_nr.dll，
+		// 但这里还残留 featuresNR（含 1004 NR feature）——provider=1（DLSSG）用它 →
+		// slInit 尝试加载 NR 插件（DLL 不存在）→ slInit 失败 → Streamline 未初始化 →
+		// DLSSG 打不开（"FSR 切 DLSS 后打不开"实锤）。DLSSG 统一用 featuresDLSSG。
 		// 注：kFeatureDirectSR=1003、NvPerf=1002、DLSS_RR=1001、DLSS_G=1000——
-		// 1004 是 NR 的相邻新枚举（dlss5-dx11-bridge 同源 SDK 版本验证）。
-		sl::Feature featuresNR[] = { sl::kFeatureDLSS, sl::kFeatureDLSS_G, sl::kFeatureReflex, 1004 };
+		// 1004 是 NR 的相邻新枚举（dlss5-dx11-bridge 同源 SDK 版本验证），已随 NR 移除。
 		// v0.24.2：恢复 D3D11 DLSS 超分——v0.8.20 为 NR 验证强制 D3D12，导致
 		// EvaluateDLSS 跳过、DLSS feature 永不创建 → bridge（DLSS5 外挂 ReShade）
 		// 拦不到 CreateFeature → NR 无输入失效（用户实测 00:52）。
 		// provider=0（FSR3）→ D3D11 会话（DLSS 超分可用，bridge 可拦）；
-		// provider=1（DLSSG）→ D3D12（保留 NR 1004 注册，DLSSG 需要 D3D12）。
+		// provider=1（DLSSG）→ D3D12（DLSSG 需要 D3D12）。
 		useD3D12 = a_settings.provider == 1;
-		pref.featuresToLoad = useD3D12 ? featuresNR : featuresDLSS;
-		pref.numFeaturesToLoad = useD3D12 ? _countof(featuresNR) : _countof(featuresDLSS);
+		pref.featuresToLoad = useD3D12 ? featuresDLSSG : featuresDLSS;
+		pref.numFeaturesToLoad = useD3D12 ? _countof(featuresDLSSG) : _countof(featuresDLSS);
 
 		switch (a_settings.streamlineLogLevel) {
 		case 2:
@@ -197,7 +196,9 @@ namespace FrameGen
 		if (!initialized || !slUpgradeInterface || !a_ppInterface || !*a_ppInterface)
 			return;
 		sl::Result r = slUpgradeInterface(a_ppInterface);
-		if (SL_FAILED(r, r))
+		// v0.25.4：SL_FAILED(r, r) 的第二个 r 遮蔽局部变量（C4456）——宏第一个参数
+		// 是输出、第二个是调用；这里直接判断返回值
+		if (r != sl::Result::eOk)
 			SKSE::log::error("[Streamline] slUpgradeInterface failed: {}", (int)r);
 		else
 			SKSE::log::info("[Streamline] Interface upgraded (presentCommon path active)");

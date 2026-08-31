@@ -137,11 +137,14 @@ namespace FrameGen
 		ImGui_ImplWin32_NewFrame();
 		auto& io = ImGui::GetIO();
 
+		// v0.25.4（Bug3 修复）：菜单关闭时必须复位 ImGui 光标开关——旧代码只在
+		// wantMenu 分支里设 MouseDrawCursor=true，关闭菜单后 io 状态保持 true →
+		// FPS overlay 每帧绘制时 ImGui 小光标一直残留（"打开菜单后小鼠标不消失"）。
+		io.MouseDrawCursor = wantMenu;
+
 		if (wantMenu) {
 			// v0.7.5: menu visible -> ImGui draws its own cursor (game hides the
 			// system cursor in first-person; ImGui cursor follows manual MousePos)
-			io.MouseDrawCursor = true;
-
 			// Manual mouse input (no WndProc hook needed)
 			POINT pt{};
 			GetCursorPos(&pt);
@@ -232,7 +235,17 @@ namespace FrameGen
 		ImGui::Separator();
 		ImGui::Text("Provider (change needs restart)");
 		const char* providers[] = { "FSR3 (AMD FG)", "DLSSG (NVIDIA FG)" };
+		// v0.25.4（Bug2 辅助）：Provider 是启动时加载的（Streamline 初始化/D3D12 代理
+		// 按它建立），运行时切换不会重建 → 立即标红提示重启，避免用户以为生效后
+		// 发现 FG 没反应（"FSR 切 DLSS 打不开"的一部分原因）
+		static int s_lastProvider = -1;
+		if (s_lastProvider == -1)
+			s_lastProvider = s.provider;
 		ImGui::Combo("Provider", &s.provider, providers, 2);
+		if (s.provider != s_lastProvider) {
+			ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.2f, 1.0f),
+				"! Provider change takes effect after game restart");
+		}
 
 		ImGui::Separator();
 		const char* qualityModes[] = { "DLAA", "Quality", "Balanced", "Performance", "Ultra Performance" };

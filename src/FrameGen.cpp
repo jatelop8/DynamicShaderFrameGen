@@ -779,11 +779,17 @@ namespace FrameGen
 			FidelityFX::GetSingleton()->SetupFrameGeneration();
 		}
 
-		// 两模式按各自 feature 支持情况决定插帧是否可用（不可用 → 直通，fgActive=false）
-		const bool featureOk = settings.provider == 1 ? streamline.featureDLSSG : streamline.featureDLSS;
+		// v0.25.4（Bug1 修复）：两模式按各自插帧引擎的可用性判断——
+		// provider=0（FSR3）用 **AMD FSR3 模块**（module 加载成功 = FG 可用），
+		// **不再用 featureDLSS（DLSS 超分）判断**——AMD 显卡没有 DLSS → 旧逻辑
+		// featureDLSS=false → FSR3 插帧被误关 → "很多电脑装后打不开"。
+		// provider=1（DLSSG）用 featureDLSSG。
+		const bool featureOk = settings.provider == 1 ?
+			streamline.featureDLSSG :
+			(FidelityFX::GetSingleton()->module != nullptr);
 		if (!featureOk) {
-			SKSE::log::warn("[FrameGen] {} not supported on this GPU - passthrough mode (no interpolation)",
-				settings.provider == 1 ? "DLSS-G" : "DLSS");
+			SKSE::log::warn("[FrameGen] {} not available - passthrough mode (no interpolation)",
+				settings.provider == 1 ? "DLSS-G" : "FSR3 FG");
 			fgActive.store(false);
 			return;
 		}
