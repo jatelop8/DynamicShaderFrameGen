@@ -743,7 +743,12 @@ namespace FrameGen
 			// provider=0（FSR3）保持原状（只 DLSS 超分，D3D11 会话初始化不受影响）。
 			if (fg.settings.provider != 1)
 				fg.streamline.LoadInterposer(fg.settings);
-			if (!fg.streamline.initialized) {
+			// v0.27（DLSSG 延迟 slInit）：provider=1 时这里的 initialized 恒 false 是
+			// **正常状态**（slInit 在 CreateD3D12Device 内、D3D12 设备就绪后才执行）——
+			// 不能当失败走标准路径（否则 DLSSG 永不启动。19:54 实锤："Streamline init
+			// failed - using standard path" + proxy 未激活 + DRS 1.0 无插帧）。
+			// provider=0（FSR3）保持原逻辑：SL 超分初始化失败才走标准路径。
+			if (fg.settings.provider != 1 && !fg.streamline.initialized) {
 				SKSE::log::warn("[FrameGen] Streamline init failed - using standard path");
 			} else {
 				SKSE::log::info("[FrameGen] Streamline initialized - creating D3D12 proxy (feature check after device setup)");
