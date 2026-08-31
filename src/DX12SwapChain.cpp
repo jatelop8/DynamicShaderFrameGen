@@ -90,6 +90,15 @@ namespace FrameGen
 		if (dlssgMode && !Get().streamline.initialized)
 			Get().streamline.LoadInterposer(Get().settings);
 
+		// v0.28（DLSSG 频闪修复 2）：D3D11 device 也必须注册给 SL——presentCommon
+		// 链挂 D3D11 device（v0.25.2 注释：evaluateFeature 回调注册需要它）。DLSSG
+		// 路径此前只 SetD3D12Device、漏了 D3D11 → SL 日志 "ID3D11Device does NOT have
+		// SL proxy - using base interface" → 插帧链不完整 → 频闪 + 主菜单 UI 丢失
+		// （20:01 日志实锤）。FSR3 模式在 ENB 路径（hk_IDXGIFactory_CreateSwapChain）
+		// 已注册 D3D11 device，所以正常——DLSSG 补上即可。
+		if (dlssgMode && Get().streamline.initialized && Get().d3d11Device)
+			Get().streamline.SetD3DDevice(Get().d3d11Device);
+
 		// v0.5.17：在创建 queue 之前告知 SL 设备——d3d12 已恢复静态导入，SL interposer
 		// 的 IAT hook 能拦到后续 D3D12CreateCommandQueue 调用并记录 queue（dlss_g 插件
 		// 靠它填充内部 queue 槽；之前 delayload d3d12 时 hook 拦不到 → queue null →
