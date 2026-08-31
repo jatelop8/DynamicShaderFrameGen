@@ -157,6 +157,12 @@ namespace FrameGen
 		// v0.3：DLSSG 运行时要求 Reflex 激活（FrameGen.cpp 调用）
 		void ActivateReflex();
 
+		// v0.37（对齐 open-shaders EnsureFrameToken:411-426）：每帧统一 frame token——
+		// 本帧第一次调用取新 token（帧号推进），同帧后续调用复用（IsNewFrame 判断）。
+		// 之前 ReflexSleep/marker 用旧 token、EvaluateDLSSG 才取新 token → 同一帧的
+		// PCL marker 跨两个 token → RSYNC 帧节奏标记错位 → pacing 乱 → 频闪。
+		bool EnsureFrameToken();
+
 		// v0.32（对齐 open-shaders Streamline.cpp:890-924）：每帧 Reflex sleep——
 		// 模拟开始前调用（Present 开头），slReflexSleep 建立 RSYNC 节奏，返回后
 		// 发 eSimulationStart marker。DLSSG 插帧 pacing 的必需输入。

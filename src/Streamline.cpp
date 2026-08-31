@@ -234,24 +234,38 @@ namespace FrameGen
 			SKSE::log::info("[Streamline] Interface upgraded (presentCommon path active)");
 	}
 
+	// v0.37（对齐 open-shaders EnsureFrameToken:411-426）：每帧统一 frame token。
+	// 本帧第一次调用 → slGetNewFrameToken（帧号推进）；同帧后续调用 → 复用已有
+	// token（IsNewFrame 判断）。所有 PCL marker/ReflexSleep/SetTag 必须用同一帧
+	// token——之前 ReflexSleep/marker 用旧 token（上一帧）、EvaluateDLSSG 才取新
+	// token → 同一帧 marker 跨两个 token → RSYNC 帧节奏标记错位 → pacing 乱 → 频闪。
+	bool Streamline::EnsureFrameToken()
+	{
+		if (!initialized || !slGetNewFrameToken)
+			return false;
+		static std::uint32_t s_lastFrame = UINT32_MAX;
+		static std::uint32_t s_frameIndex = 0;
+		if (s_frameIndex == s_lastFrame)  // 同帧重复调用 → 复用已有 token
+			return frameToken != nullptr;
+		s_lastFrame = s_frameIndex;
+		frameToken = nullptr;
+		if (SL_FAILED(r, slGetNewFrameToken(frameToken, &s_frameIndex))) {
+			SKSE::log::error("[Streamline] slGetNewFrameToken failed: {}", (int)r);
+			return false;
+		}
+		s_frameIndex++;
+		return frameToken != nullptr;
+	}
+
 	void Streamline::CheckFrameConstants(const FrameBuffer& a_fb, float a_aspect, float a_near, float a_far)
 	{
 		if (!initialized)
 			return;
 
 		// v0.5：frameToken 失败保护（失败 → 置空 → 调用方跳过本帧 SL 调用，防空指针解引用）
-		// v0.31（对齐 open-shaders EnsureFrameToken）：slGetNewFrameToken 必须传帧计数——
-		// 传 nullptr → SL 帧号不推进（"Repeated slDLSSGSetOptions() call for the frame 1"
-		// 警告实锤）→ DLSSG 认为每帧都是同一帧 → 插帧 pacing 错乱 → 频闪。
-		// CS 传 &state->frameCount（引擎帧计数）；我们维护本地递增计数器（等价）。
-		frameToken = nullptr;
-		static std::uint32_t s_frameIndex = 0;
-		if (SL_FAILED(r, slGetNewFrameToken(frameToken, &s_frameIndex))) {
-			SKSE::log::error("[Streamline] slGetNewFrameToken failed: {}", (int)r);
-			return;
-		}
-		s_frameIndex++;
-		if (!frameToken)
+		// v0.31：slGetNewFrameToken 必须传帧计数（nullptr → 帧号停滞 "frame 1"）。
+		// v0.37：统一走 EnsureFrameToken（每帧一次，同帧复用）。
+		if (!EnsureFrameToken())
 			return;
 
 		sl::Constants c{};

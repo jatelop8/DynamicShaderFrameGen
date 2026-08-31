@@ -744,6 +744,10 @@ namespace FrameGen
 
 		// v0.3：DLSSG 模式——NVIDIA 插帧（输入=游戏画面共享纹理，输出=D3D12 backbuffer）
 		if (dlssgMode) {
+			// v0.37（对齐 open-shaders EnsureFrameToken）：帧开头统一获取本帧 token——
+			// ReflexSleep/PCL marker/EvaluateDLSSG 全部用同一 token（之前 ReflexSleep
+			// 用旧 token、EvaluateDLSSG 才取新 → 同帧 marker 跨 token → RSYNC 错位）。
+			fg.streamline.EnsureFrameToken();
 			// v0.32（对齐 open-shaders Streamline.cpp:890-924）：Reflex sleep 先于
 			// PCL marker——RSYNC（vblank 同步 pacing）建立的必需输入。slReflexSleep
 			// 内部会休眠到 Reflex 指定的时刻（低延迟），返回后发 eSimulationStart。
