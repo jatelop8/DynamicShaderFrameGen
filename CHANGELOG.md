@@ -1,60 +1,60 @@
-# DynamicShaderFrameGen 更新日志
+# DynamicShaderFrameGen Changelog
 
-帧生成插件（FrameGen）：FSR3 帧生成 + DLSS 超分，ENB 完全兼容，A/N 显卡通用。
+Frame generation plugin (FrameGen): FSR3 frame interpolation + DLSS upscaling, fully ENB-compatible, works on all GPUs (NVIDIA & AMD).
 
 ---
 
 ## v0.40 — 2026-08-31
 
-**命名统一（玩家友好）**
-- 面向玩家的叫法统一为 **FrameGen（帧生成）**，菜单/INI 不再使用容易误解的 FSR/DLSS 标签
-- 明确标注"通用帧插值，NVIDIA 与 AMD 显卡均可使用"
-- DLL 版本号规范为 0.40.0.0
+**Player-friendly naming**
+- Player-facing label unified to **FrameGen** (frame interpolation) — menu/INI no longer use confusing FSR/DLSS tags
+- Explicitly marked "universal frame interpolation, works on NVIDIA & AMD"
+- DLL version bumped to 0.40.0.0
 
 ## v0.39 — 2026-08-31
 
-**移除 DLSSG 模式，专注稳定**
-- 移除 DLSSG（DLSS 帧生成）模式——在复杂整合环境下（高刷窗口化 + 多插件）实测不稳定（频闪/黑屏/进不去游戏），十二轮调试后决定移除
-- 帧生成统一使用 **FSR3 技术**（AMD FidelityFX SDK，A/N 卡全支持），稳定可靠
-- 游戏内菜单移除 Provider 切换选项，杜绝误开
-- **N 卡用户**：FSR3 帧生成 + DLSS 超分组合效果与 DLSSG 相当，且稳定
+**DLSSG removed, stability first**
+- DLSSG (DLSS frame generation) mode removed — proven unstable in complex mod environments (high-refresh windowed + multiple plugins: flicker/black screen/fail to enter game) after 12 iterations of debugging
+- Frame generation now uses **FSR3** (AMD FidelityFX SDK runtime) exclusively — works on ALL GPUs (NVIDIA & AMD), rock solid
+- In-game menu no longer offers a Provider switch (no accidental enable)
+- **NVIDIA users**: FSR3 frame gen + DLSS upscaling gives DLSSG-comparable quality, with stability
 
 ## v0.26 — 2026-08-31
 
-**ForceBorderless 强制无边框窗口化（新功能）**
-- 新增 `ForceBorderless=1`（默认开启）：强制游戏以无边框窗口化运行
-- 解决"帧生成不生效"的经典问题——无论玩家在游戏里设置全屏还是窗口化，帧生成一定激活，视觉等同全屏
-- 每帧开销 <1μs，无性能影响
+**ForceBorderless (new feature)**
+- New `ForceBorderless=1` (default ON): forces the game to run borderless windowed
+- Fixes the classic "frame generation won't enable" problem — regardless of in-game display mode (fullscreen or windowed), FG always activates; looks identical to fullscreen
+- Per-frame overhead <1μs when already satisfied
 
 ## v0.25.4 — 2026-08-31
 
-**修复三个关键 Bug**
-- 修复 **AMD 显卡打不开帧生成**的问题（误用 DLSS 可用性判断 FSR3）
-- 修复 **FSR 切换到 DLSS 后打不开**的问题（加载已删除的组件）
-- 修复 **游戏菜单关闭后小鼠标光标残留**的问题
+**Three critical bug fixes**
+- Fixed **frame generation not enabling on AMD GPUs** (was gating FSR3 on DLSS availability)
+- Fixed **FSR → DLSS switch breaking FG** (was loading a removed component)
+- Fixed **stuck ImGui cursor after closing the in-game menu**
 
 ## v0.25 — 2026-08-30
 
-**架构重构（首个正式版基础）**
-- DLSS-NR（神经渲染）移出插件，改由外部 ReShade 方案提供，插件保持纯净
-- 帧生成：FSR3（默认）+ DLSSG（实验性）
-- DLSS 超分：DLAA / Quality / Balanced / Performance / Ultra Performance
-- 游戏内菜单（长按 Home）：开关帧生成、超分档位、锐度
-- ENB 兼容（swapchain 代理）
+**Architecture rework (first stable base)**
+- DLSS-NR (Neural Rendering) moved out of the plugin — now provided by the external ReShade route; plugin stays clean of NVIDIA-binary patching
+- Frame generation: FSR3 (default) + DLSSG (experimental)
+- DLSS upscaling: DLAA / Quality / Balanced / Performance / Ultra Performance
+- In-game menu (hold `Home`): toggle FG, upscale mode, sharpness
+- ENB compatibility (swapchain proxy)
 
 ---
 
-## 使用要求
+## Requirements
 
-| 项 | 要求 |
+| Item | Requirement |
 |---|---|
-| 游戏 | Skyrim SE（AE 1.6.1170） |
-| 前置 | SKSE64 |
-| 显卡 | 任意 DX12 显卡（FSR3 帧生成 A/N 通用；DLSS 超分仅 N 卡） |
-| 显示模式 | 无要求（ForceBorderless 自动处理） |
+| Game | Skyrim SE (AE 1.6.1170) |
+| Prereq | SKSE64 |
+| GPU | Any DX12-capable GPU (FSR3 FG: all GPUs; DLSS upscaling: NVIDIA only) |
+| Display mode | None (ForceBorderless handles it) |
 
-## 说明
+## Notes
 
-- 帧生成后 FPS 翻倍（60 → 120）
-- 与 ENB 完全共存
-- 与 DynamicWetness / Community Shaders 等 swapchain 插件兼容
+- Frame generation doubles effective FPS (e.g. 60 → 120)
+- Fully coexists with ENB
+- Compatible with swapchain-intercepting plugins (DynamicWetness, Community Shaders, etc.)
