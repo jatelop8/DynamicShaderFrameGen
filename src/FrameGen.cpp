@@ -734,7 +734,15 @@ namespace FrameGen
 			//（SL 的 slIsFeatureSupported 要求 device 已设，设备前检测可能误判不支持）。
 			// 这里只要求 SL 初始化成功即可建 proxy；具体 feature 不支持时 Present 直通兜底。
 			// v0.25：dlssnr 准备已移除（NR 走 ReShade 外挂方案）
-			fg.streamline.LoadInterposer(fg.settings);
+			// v0.27（DLSSG 频闪修复）：provider=1（DLSSG）**不在此提前 slInit**——
+			// SL 错误 "Plugins already initialized but could be using the wrong device,
+			// please call slSetD3DDevice immediately after creating desired device"
+			// （dlss_g 插件 slInit 时 D3D12 设备还不存在 → 用错误上下文初始化 → 插帧
+			// 异常 → 频闪进不去游戏，19:47 SL 日志实锤）。DLSSG 的 slInit 挪到
+			// CreateD3D12Device 内（D3D12 设备创建后、SetD3D12Device 前）。
+			// provider=0（FSR3）保持原状（只 DLSS 超分，D3D11 会话初始化不受影响）。
+			if (fg.settings.provider != 1)
+				fg.streamline.LoadInterposer(fg.settings);
 			if (!fg.streamline.initialized) {
 				SKSE::log::warn("[FrameGen] Streamline init failed - using standard path");
 			} else {
@@ -822,8 +830,9 @@ namespace FrameGen
 		dx12SwapChain.CreateInterop();
 
 		// v0.5：feature 检测移到设备设置后（SL 要求 device 已设——设备前检测会误判不支持）
-		if (settings.provider == 1)
-			streamline.SetD3D12Device(dx12SwapChain.d3d12Device.get());
+		// v0.27：SetD3D12Device 已在 CreateD3D12Device 内（设备创建后立即）调用——
+		// 此处重复调用会触发 SL "Plugins already initialized but could be using the
+		// wrong device"（19:47 日志 "D3D12 device set" ×2 实锤），已删除。
 		streamline.CheckFeatures(a_adapter);
 		streamline.PostDevice();
 

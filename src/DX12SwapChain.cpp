@@ -81,6 +81,15 @@ namespace FrameGen
 	{
 		DX::ThrowIfFailed(D3D12CreateDevice(a_adapter, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&d3d12Device)));
 
+		// v0.27（DLSSG 频闪修复）：D3D12 设备就绪后立即 slInit（仅 DLSSG 模式）——
+		// SL 要求 slSetD3DDevice 紧随设备创建（错误信息原文 "please call slSetD3DDevice
+		// immediately after creating desired device"）。slInit 此时拿到正确的 D3D12
+		// 设备上下文 → dlss_g 插件正常初始化（消除 "Plugins already initialized but
+		// could be using the wrong device" → 插帧正常 → 频闪消除）。
+		// FSR3 模式已在 CreateDevice hook 里 slInit（triedInitialization 防重）→ 跳过。
+		if (dlssgMode && !Get().streamline.initialized)
+			Get().streamline.LoadInterposer(Get().settings);
+
 		// v0.5.17：在创建 queue 之前告知 SL 设备——d3d12 已恢复静态导入，SL interposer
 		// 的 IAT hook 能拦到后续 D3D12CreateCommandQueue 调用并记录 queue（dlss_g 插件
 		// 靠它填充内部 queue 槽；之前 delayload d3d12 时 hook 拦不到 → queue null →
@@ -104,9 +113,10 @@ namespace FrameGen
 
 	void DX12SwapChain::CreateSwapChain(IDXGIAdapter* adapter, DXGI_SWAP_CHAIN_DESC a_swapChainDesc, bool a_enableFrameGeneration, bool a_dlssgMode, std::uint32_t a_qualityMode)
 	{
-		CreateD3D12Device(adapter);
-
+		// v0.27：dlssgMode 必须先赋值（CreateD3D12Device 内据此决定是否延迟 slInit）
 		dlssgMode = a_dlssgMode;
+
+		CreateD3D12Device(adapter);
 
 		IDXGIFactory4* dxgiFactory;
 		DX::ThrowIfFailed(adapter->GetParent(IID_PPV_ARGS(&dxgiFactory)));
