@@ -817,9 +817,13 @@ namespace FrameGen
 			// 同样要求 EnableVsync=true）
 			// v0.5.23：Present 前后 PCL marker（RSYNC 节奏建立的必需输入）
 			// v0.31：eRenderSubmitEnd 补在 ePresentStart 前（对齐 CS 完整序列）
+			// v0.34（对齐 CS DX12SwapChain.cpp:400）：Present 透传引擎 SyncInterval
+			//（之前硬编码 1 与游戏 VSync 设置冲突 → 帧节奏乱）。DLSSG 的 pacing 由
+			// SL pacer 自管（CS FrameLimiter 明确：DLSSG 时宿主不得限帧，会饿死 flip
+			// 队列丢插帧帧）；游戏 VSync=0 时 SL 用内部 pacing。
 			fg.streamline.PresentMarkerRenderEnd();
 			Get().streamline.PresentMarkerStart();
-			DX::ThrowIfFailed(swapChain->Present(1, Flags));
+			DX::ThrowIfFailed(swapChain->Present(SyncInterval, Flags));
 			Get().streamline.PresentMarkerEnd();
 			m_stage = "d3d12 queue Signal";
 			DX::ThrowIfFailed(commandQueue->Signal(d3d12Fence.get(), fenceValue));

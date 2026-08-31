@@ -141,6 +141,11 @@ namespace FrameGen
 		float* cameraNear = nullptr;
 		float* cameraFar = nullptr;
 
+		// v0.34（对齐 open-shaders）：DLSS Halton jitter（OnMainUpdateJitter 计算，
+		// CheckFrameConstants 喂给 SL——DLSSG 运动估计需要精确 jitter，之前恒 0）
+		float jitterX = 0.0f;
+		float jitterY = 0.0f;
+
 		// D3D11 创建完成（PatchIAT 钩子内调用）
 		void OnD3D11Created(ID3D11Device* a_device, ID3D11DeviceContext* a_context);
 		// v0.7.2：每帧轮询 Home 键（GetAsyncKeyState）——短按切插帧，长按开菜单

@@ -309,8 +309,17 @@ namespace FrameGen
 		sl::matrixMul(c.clipToPrevClip, invCurrViewProj, prevViewProjSL);
 		sl::matrixFullInvert(c.prevClipToClip, c.clipToPrevClip);
 
-		c.jitterOffset = { 0.f, 0.f };  // v1：不接入 TAA 抖动
+		c.jitterOffset = { -Get().jitterX, -Get().jitterY };  // v0.34：DLSS Halton jitter（对齐 CS，之前恒 0）
+		// v0.34（对齐 CS Streamline.cpp:484-488）：菜单打开时运动矢量无效 → reset 让
+		// DLSSG 不用旧数据插帧（用户"停在菜单背景"——菜单帧插错 = 视觉错乱）。
+		// 菜单检测：主菜单/加载菜单/暂停菜单（BGSM 菜单 UI 绘制时无运动矢量）。
 		c.reset = sl::Boolean::eFalse;
+		if (auto* ui = RE::UI::GetSingleton()) {
+			const auto* istrings = RE::InterfaceStrings::GetSingleton();
+			if (ui->IsMenuOpen(istrings->mainMenu) || ui->IsMenuOpen(istrings->loadingMenu) ||
+				ui->IsMenuOpen(istrings->journalMenu) || ui->IsMenuOpen("PauseMenu"))
+				c.reset = sl::Boolean::eTrue;
+		}
 		c.mvecScale = { 1.0f, 1.0f };
 		c.motionVectors3D = sl::Boolean::eFalse;
 		c.motionVectorsInvalidValue = FLT_MIN;
@@ -445,6 +454,32 @@ namespace FrameGen
 		opts.enableUserInterfaceRecomposition = sl::Boolean::eFalse;
 		if (SL_FAILED(r, slDLSSGSetOptions(viewport, opts)))
 			SKSE::log::error("[Streamline] slDLSSGSetOptions failed: {}", (int)r);
+
+		// v0.34（对齐 CS ConfigureDLSSG:961-975）：每次 SetOptions 后查询 DLSSG 状态——
+		// status 非 eOk = 本会话不生成帧（诊断关键），numFramesActuallyPresented 变化
+		// = 插帧真的在 Present
+		if (slDLSSGGetState) {
+			sl::DLSSGState state{};
+			if (SL_FAILED(r, slDLSSGGetState(viewport, state, &opts))) {
+				static int stateFail = 0;
+				if (++stateFail % 60 == 1)
+					SKSE::log::warn("[Streamline] slDLSSGGetState failed {} times: {}", stateFail, (int)r);
+			} else {
+				// 仅在状态变化时打（防刷屏）：非 eOk 或帧数停滞
+				static sl::DLSSGStatus lastStatus = sl::DLSSGStatus::eOk;
+				static std::uint32_t lastFrames = 0;
+				if (state.status != lastStatus || (state.status != sl::DLSSGStatus::eOk && state.numFramesActuallyPresented == lastFrames)) {
+					lastStatus = state.status;
+					lastFrames = state.numFramesActuallyPresented;
+					SKSE::log::info("[Streamline] DLSSG state: status={} framesPresented={}",
+						static_cast<int>(state.status), state.numFramesActuallyPresented);
+				}
+				if (state.status != sl::DLSSGStatus::eOk && state.status != lastStatus) {
+					lastStatus = state.status;
+					SKSE::log::warn("[Streamline] DLSS-G not generating frames this session: status={}", static_cast<int>(state.status));
+				}
+			}
+		}
 	}
 
 	// v0.3：DLSSG 每帧评估（D3D12 路径）——游戏画面在共享纹理，插帧输出到 D3D12 backbuffer
@@ -490,12 +525,18 @@ namespace FrameGen
 
 		const std::uint32_t w = fg.dx12SwapChain.swapChainDesc.Width;
 		const std::uint32_t h = fg.dx12SwapChain.swapChainDesc.Height;
+		// v0.34（对齐 CS TagDX12Resources:1005-1021）：depth/mvec 只在渲染分辨率
+		// 子矩形有有效数据（DRS 0.667 时全屏 extent 会让 DLSSG 读错运动矢量）——
+		// depth/mvec 用 renderExtent，color 用全屏 extent
+		const std::uint32_t rw = std::max(1u, fg.dx12SwapChain.renderWidth);
+		const std::uint32_t rh = std::max(1u, fg.dx12SwapChain.renderHeight);
 		sl::Extent extent{ 0, 0, w, h };
+		sl::Extent renderExtent{ 0, 0, rw, rh };
 		sl::ResourceTag tags[] = {
 			{ &colorInRes, sl::kBufferTypeHUDLessColor, sl::ResourceLifecycle::eOnlyValidNow, &extent },
 			{ &colorOutRes, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eOnlyValidNow, &extent },
-			{ &depthRes, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent, &extent },
-			{ &mvecRes, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent, &extent },
+			{ &depthRes, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent, &renderExtent },
+			{ &mvecRes, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent, &renderExtent },
 		};
 		// v0.5.11：slSetTagForFrame（frame-based tagging）替代弃用的 slSetTag——
 		// 需 eUseFrameBasedResourceTagging flag + frameToken（DLSS-G 指南 306-339 全用此 API）

@@ -349,6 +349,9 @@ namespace FrameGen
 		const float jy = hy - 0.5f;
 		a_state->projectionPosScaleX = -2.0f * jx / float(dx12SwapChain.renderWidth);
 		a_state->projectionPosScaleY = 2.0f * jy / float(dx12SwapChain.renderHeight);
+		// v0.34：存 jitter 供 CheckFrameConstants 喂 SL（DLSSG 运动估计必需）
+		jitterX = jx;
+		jitterY = jy;
 	}
 
 	// v0.7.13：MenuManagerDrawInterfaceStart hook（CS 同款 detour）——引擎 UI 绘制
