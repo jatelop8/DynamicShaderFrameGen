@@ -48,6 +48,9 @@ namespace FrameGen
 		bool triedInitialization = false;
 		bool featureDLSS = false;
 		bool featureDLSSG = false;   // v0.3：NVIDIA DLSSG 插帧（D3D12 路径）
+		// v0.32（对齐 open-shaders）：Reflex/PCL 运行时可用标志（RSYNC pacing 必需）
+		bool featureReflex = false;
+		bool featurePCL = false;
 		bool isRTXBelow40series = false;
 
 		// v0.3：SL 渲染 API（DLSSG 需 D3D12；FSR3 模式用 D3D11）
@@ -75,6 +78,9 @@ namespace FrameGen
 		PFun_slGetFeatureFunction* slGetFeatureFunction{};
 		PFun_slGetNewFrameToken* slGetNewFrameToken{};
 		PFun_slSetD3DDevice* slSetD3DDevice{};
+		// v0.32（对齐 open-shaders）：slSetFeatureLoaded——设备绑定后显式请求
+		// 加载 Reflex/PCL（SL 日志 "sl.reflex has no registered hooks" = 未激活）
+		PFun_slSetFeatureLoaded* slSetFeatureLoaded{};
 		// v0.5.10：manual hooking 必需——upgrade swapchain/device 为 SL 代理接口，
 		// 否则 common 插件 presentCommon() 永不被调 → dlss_g evaluateFeature 回调 0x0
 		PFun_slUpgradeInterface* slUpgradeInterface{};
@@ -86,6 +92,11 @@ namespace FrameGen
 		PFun_slDLSSGSetOptions* slDLSSGSetOptions{};
 		// v0.31（对齐 open-shaders）：DLSSG 状态查询（多倍帧生成上限）
 		PFun_slDLSSGGetState* slDLSSGGetState{};
+		// v0.32（对齐 open-shaders）：Reflex sleep——**RSYNC pacing 建立的必需输入**。
+		// 每帧 slReflexSleep 在模拟开始前调用（Reflex 延迟标记），返回后发
+		// eSimulationStart。缺失 → sl.reflex 不注册 hooks → RSYNC 无同步 → 插帧
+		// pacing 乱 → 频闪（SL 日志 "Plugin 'sl.reflex' has no registered hooks" 实锤）。
+		PFun_slReflexSleep* slReflexSleep{};
 		PFun_slReflexSetOptions* slReflexSetOptions{};
 		// v0.5.23：PCL marker（ePresentStart/ePresentEnd）——RSYNC（Reflex Sync pacer）
 		// 靠它建立帧节奏；缺失 → RSYNC 实例 null → slAllocateResources 0xC0000005
@@ -145,6 +156,11 @@ namespace FrameGen
 
 		// v0.3：DLSSG 运行时要求 Reflex 激活（FrameGen.cpp 调用）
 		void ActivateReflex();
+
+		// v0.32（对齐 open-shaders Streamline.cpp:890-924）：每帧 Reflex sleep——
+		// 模拟开始前调用（Present 开头），slReflexSleep 建立 RSYNC 节奏，返回后
+		// 发 eSimulationStart marker。DLSSG 插帧 pacing 的必需输入。
+		void ReflexSleep();
 
 		// 释放
 		void DestroyResources();

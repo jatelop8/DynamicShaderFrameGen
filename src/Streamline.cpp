@@ -113,6 +113,7 @@ namespace FrameGen
 		slGetFeatureFunction = reinterpret_cast<PFun_slGetFeatureFunction*>(GetProcAddress(interposer, "slGetFeatureFunction"));
 		slGetNewFrameToken = reinterpret_cast<PFun_slGetNewFrameToken*>(GetProcAddress(interposer, "slGetNewFrameToken"));
 		slSetD3DDevice = reinterpret_cast<PFun_slSetD3DDevice*>(GetProcAddress(interposer, "slSetD3DDevice"));
+		slSetFeatureLoaded = reinterpret_cast<PFun_slSetFeatureLoaded*>(GetProcAddress(interposer, "slSetFeatureLoaded"));  // v0.32
 		slUpgradeInterface = reinterpret_cast<PFun_slUpgradeInterface*>(GetProcAddress(interposer, "slUpgradeInterface"));
 
 		if (SL_FAILED(result, slInit(pref, sl::kSDKVersion))) {
@@ -168,10 +169,23 @@ namespace FrameGen
 			// v0.31（对齐 open-shaders Streamline.cpp:300-320）：slDLSSGGetState 查询
 			// 硬件多倍帧生成上限（numFramesToGenerateMax）——RTX 50 系支持 2-3 倍
 			slGetFeatureFunction(sl::kFeatureDLSS_G, "slDLSSGGetState", reinterpret_cast<void*&>(slDLSSGGetState));
+			// v0.32（对齐 open-shaders BindReflexAndPCL）：Reflex/PCL 可用性在设备
+			// 绑定后可能变化 → 显式请求加载 + 绑定 slReflexSleep（RSYNC 必需）。
+			// SL 日志 "Plugin 'sl.reflex' has no registered hooks" = Reflex 未激活
+			// → RSYNC pacing 无同步 → 插帧频闪。此前只绑 slReflexSetOptions，漏 sleep。
+			if (slSetFeatureLoaded) {
+				slSetFeatureLoaded(sl::kFeatureReflex, true);
+				slSetFeatureLoaded(sl::kFeaturePCL, true);
+			}
 			slGetFeatureFunction(sl::kFeatureReflex, "slReflexSetOptions", reinterpret_cast<void*&>(slReflexSetOptions));
+			slGetFeatureFunction(sl::kFeatureReflex, "slReflexSleep", reinterpret_cast<void*&>(slReflexSleep));
+			featureReflex = slReflexSetOptions && slReflexSleep;
+			slGetFeatureFunction(sl::kFeaturePCL, "slPCLSetMarker", reinterpret_cast<void*&>(slPCLSetMarker));
+			featurePCL = slPCLSetMarker != nullptr;
 			// v0.5.23：PCL marker 从 interposer 导出加载（RSYNC 依赖）
-			slPCLSetMarker = reinterpret_cast<PFun_slPCLSetMarker*>(GetProcAddress(interposer, "slPCLSetMarker"));
-			SKSE::log::info("[Streamline] DLSSG/Reflex functions bound");
+			if (!slPCLSetMarker)
+				slPCLSetMarker = reinterpret_cast<PFun_slPCLSetMarker*>(GetProcAddress(interposer, "slPCLSetMarker"));
+			SKSE::log::info("[Streamline] DLSSG/Reflex functions bound (reflex={} pcl={})", featureReflex, featurePCL);
 
 			// 查询多倍帧生成上限（CS 同款）
 			if (slDLSSGGetState) {
@@ -509,10 +523,22 @@ namespace FrameGen
 	}
 
 	// v0.5.23：PCL marker（RSYNC 建立节奏的必需输入，DLSS-G 指南 8.0）
-	// v0.31（对齐 open-shaders DX12SwapChain.cpp:365-403）：补全 PCL 序列——
-	// eSimulationEnd → eRenderSubmitStart →（资源标记）→ eRenderSubmitEnd →
-	// ePresentStart → Present → ePresentEnd。DLSSG 的 RSYNC 帧节奏依赖完整
-	// 序列（缺失 simulation/render 段 → pacing 乱 → 频闪）。
+	// v0.32（对齐 open-shaders Streamline.cpp:890-924）：Reflex sleep + eSimulationStart——
+	// 每帧在模拟开始前调用（Present 开头）。slReflexSleep 让 Reflex 引擎建立 RSYNC
+	// 节奏（vblank 同步的帧 pacing）；缺失 → sl.reflex 不注册 hooks → RSYNC 无同步
+	// → 插帧 pacing 乱 → 频闪（SL 日志 "Plugin 'sl.reflex' has no registered hooks"
+	// + dlss_g 每帧 "frame 1" 警告实锤）。返回后发 eSimulationStart（模拟开始）。
+	void Streamline::ReflexSleep()
+	{
+		if (!initialized || !slReflexSleep || !featureReflex)
+			return;
+		if (!frameToken)
+			return;
+		slReflexSleep(*frameToken);
+		if (slPCLSetMarker)
+			slPCLSetMarker(sl::PCLMarker::eSimulationStart, *frameToken);
+	}
+
 	void Streamline::PresentMarkerSimulationEnd()
 	{
 		if (!initialized || !slPCLSetMarker || !frameToken)
