@@ -235,8 +235,9 @@ namespace FrameGen
 		ImGui::Separator();
 		// v0.39（用户决定）：DLSSG 已移除——仅 FSR3 帧生成（N 卡也完美，+DLSS 超分）。
 		// Provider 选项移除，避免用户误开 DLSSG（复杂环境频闪/黑屏不稳定）。
-		ImGui::Text("Frame generation: FSR3 (AMD FG, all GPUs)");
-		ImGui::TextDisabled("DLSSG removed - FSR3 is stable & universal");
+		// v0.40（用户要求）：面向玩家命名中性化——不叫"FSR"，避免误以为 AMD 专用。
+		ImGui::Text("FrameGen: FSR3 tech (all GPUs)");
+		ImGui::TextDisabled("Universal frame interpolation - works on NVIDIA & AMD");
 
 		ImGui::Separator();
 		const char* qualityModes[] = { "DLAA", "Quality", "Balanced", "Performance", "Ultra Performance" };

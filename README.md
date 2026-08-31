@@ -1,7 +1,8 @@
 # DynamicShaderFrameGen
 
-SKSE plugin for The Elder Scrolls V: Skyrim Special Edition — **AMD FSR 3.1 Frame
-Generation + NVIDIA DLSS Upscaling**, fully compatible with ENB. Fully open-source:
+SKSE plugin for The Elder Scrolls V: Skyrim Special Edition — **FrameGen (frame
+interpolation, FSR3 tech, works on ALL GPUs including NVIDIA) + DLSS Upscaling**,
+fully compatible with ENB. Fully open-source:
 no paid or closed-source runtime is bundled; the Streamline and FidelityFX runtimes
 are loaded at runtime from the official NVIDIA / AMD SDKs.
 
