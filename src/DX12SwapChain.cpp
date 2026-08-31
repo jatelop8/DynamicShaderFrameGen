@@ -776,6 +776,16 @@ namespace FrameGen
 					commandLists[frameIndex]->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
 				}
 			}
+			// v0.31b（频闪诊断）：节流打印 DLSSG 运行状态——帧号推进（token 变化）、
+			// dlssgOk 是否稳定、失败计数。不依赖 SL_LogLevel（SL SDK 日志常被关闭）。
+			// 帧号停滞 → token 不变/每 120 帧相同；插帧交替 → dlssgOk 振荡。
+			{
+				static int dlssgDiag = 0;
+				if (++dlssgDiag % 120 == 0) {
+					SKSE::log::info("[FrameGen] DLSSG diag: fgOn={} dlssgOk={} token={:p} fail={}",
+						fgOn, dlssgOk, static_cast<const void*>(fg.streamline.frameToken), dlssgFailCount);
+				}
+			}
 			DX::ThrowIfFailed(commandLists[frameIndex]->Close());
 			ID3D12CommandList* dlssgLists[] = { commandLists[frameIndex].get() };
 			commandQueue->ExecuteCommandLists(1, dlssgLists);
