@@ -84,13 +84,26 @@ namespace FrameGen
 
 		// v0.3：DLSSG / Reflex 函数
 		PFun_slDLSSGSetOptions* slDLSSGSetOptions{};
+		// v0.31（对齐 open-shaders）：DLSSG 状态查询（多倍帧生成上限）
+		PFun_slDLSSGGetState* slDLSSGGetState{};
 		PFun_slReflexSetOptions* slReflexSetOptions{};
 		// v0.5.23：PCL marker（ePresentStart/ePresentEnd）——RSYNC（Reflex Sync pacer）
 		// 靠它建立帧节奏；缺失 → RSYNC 实例 null → slAllocateResources 0xC0000005
 		// （DLSS-G 指南 8.0：sl.reflex 集成必须标记 PresentStart/PresentEnd）
 		PFun_slPCLSetMarker* slPCLSetMarker{};
 
+		// v0.31（对齐 open-shaders Streamline.cpp:300-320）：多倍帧生成
+		std::uint32_t dlssgMaxFramesToGenerate = 1;   // 硬件支持上限（slDLSSGGetState 查询）
+		std::uint32_t dlssgFramesToGenerate = 1;      // 用户配置（INI DLSSGFramesToGenerate）
+
 		// v0.5.23：Present 前后 PCL 标记（RSYNC 建立）
+		// v0.31（对齐 open-shaders DX12SwapChain.cpp:365-403）：补全 PCL 序列——
+		// eSimulationEnd → eRenderSubmitStart →（资源标记）→ eRenderSubmitEnd →
+		// ePresentStart → Present → ePresentEnd。DLSSG 的 RSYNC 帧节奏依赖完整
+		// 序列，只发 present 部分 → pacing 乱 → 频闪（20:17 用户实锤）。
+		void PresentMarkerSimulationEnd();
+		void PresentMarkerRenderStart();
+		void PresentMarkerRenderEnd();
 		void PresentMarkerStart();
 		void PresentMarkerEnd();
 

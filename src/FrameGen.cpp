@@ -136,6 +136,8 @@ namespace FrameGen
 				settings.qualityMode = std::clamp(readInt(line, 1), 0, 4);
 			else if (key == "PresetDLSS")
 				settings.presetDLSS = std::clamp(readInt(line, 0), 0, 4);
+			else if (key == "DLSSGFramesToGenerate")
+				settings.dlssgFramesToGenerate = std::clamp(readInt(line, 1), 1, 4);   // v0.31：多倍帧生成
 			else if (key == "Sharpness") {
 				// v0.6.3：DLSS 超分锐化（0-1，0=关闭）
 				try {

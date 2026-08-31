@@ -165,10 +165,26 @@ namespace FrameGen
 		// v0.3：DLSSG + Reflex 函数绑定（provider=1）
 		if (useD3D12 && featureDLSSG) {
 			slGetFeatureFunction(sl::kFeatureDLSS_G, "slDLSSGSetOptions", reinterpret_cast<void*&>(slDLSSGSetOptions));
+			// v0.31（对齐 open-shaders Streamline.cpp:300-320）：slDLSSGGetState 查询
+			// 硬件多倍帧生成上限（numFramesToGenerateMax）——RTX 50 系支持 2-3 倍
+			slGetFeatureFunction(sl::kFeatureDLSS_G, "slDLSSGGetState", reinterpret_cast<void*&>(slDLSSGGetState));
 			slGetFeatureFunction(sl::kFeatureReflex, "slReflexSetOptions", reinterpret_cast<void*&>(slReflexSetOptions));
 			// v0.5.23：PCL marker 从 interposer 导出加载（RSYNC 依赖）
 			slPCLSetMarker = reinterpret_cast<PFun_slPCLSetMarker*>(GetProcAddress(interposer, "slPCLSetMarker"));
 			SKSE::log::info("[Streamline] DLSSG/Reflex functions bound");
+
+			// 查询多倍帧生成上限（CS 同款）
+			if (slDLSSGGetState) {
+				sl::DLSSGState state{};
+				if (SL_FAILED(r, slDLSSGGetState(viewport, state, nullptr))) {
+					SKSE::log::warn("[Streamline] slDLSSGGetState failed querying numFramesToGenerateMax: {}", (int)r);
+					dlssgMaxFramesToGenerate = 1;
+				} else {
+					dlssgMaxFramesToGenerate = std::max<std::uint32_t>(1, state.numFramesToGenerateMax);
+					SKSE::log::info("[Streamline] DLSS-G supports up to {}x frame generation ({} interpolated frames per real frame)",
+						dlssgMaxFramesToGenerate + 1, dlssgMaxFramesToGenerate);
+				}
+			}
 		}
 	}
 
@@ -210,11 +226,17 @@ namespace FrameGen
 			return;
 
 		// v0.5：frameToken 失败保护（失败 → 置空 → 调用方跳过本帧 SL 调用，防空指针解引用）
+		// v0.31（对齐 open-shaders EnsureFrameToken）：slGetNewFrameToken 必须传帧计数——
+		// 传 nullptr → SL 帧号不推进（"Repeated slDLSSGSetOptions() call for the frame 1"
+		// 警告实锤）→ DLSSG 认为每帧都是同一帧 → 插帧 pacing 错乱 → 频闪。
+		// CS 传 &state->frameCount（引擎帧计数）；我们维护本地递增计数器（等价）。
 		frameToken = nullptr;
-		if (SL_FAILED(r, slGetNewFrameToken(frameToken, nullptr))) {
+		static std::uint32_t s_frameIndex = 0;
+		if (SL_FAILED(r, slGetNewFrameToken(frameToken, &s_frameIndex))) {
 			SKSE::log::error("[Streamline] slGetNewFrameToken failed: {}", (int)r);
 			return;
 		}
+		s_frameIndex++;
 		if (!frameToken)
 			return;
 
@@ -380,7 +402,11 @@ namespace FrameGen
 			return;
 		sl::DLSSGOptions opts{};
 		opts.mode = sl::DLSSGMode::eOn;
-		opts.numFramesToGenerate = 1;  // 2x 插帧（每 1 个真实帧生成 1 个插帧）
+		// v0.31（对齐 open-shaders ConfigureDLSSG）：多倍帧生成——
+		// numFramesToGenerate = clamp(INI DLSSGFramesToGenerate, 1, 硬件上限)。
+		// 之前硬编码 1（恒 2x 插帧）；RTX 50 系 + 新驱动可 2/3（3x/4x 插帧）。
+		dlssgFramesToGenerate = std::clamp<std::uint32_t>(Get().settings.dlssgFramesToGenerate, 1, std::max<std::uint32_t>(1, dlssgMaxFramesToGenerate));
+		opts.numFramesToGenerate = dlssgFramesToGenerate;  // 1=2x 2=3x 3=4x 插帧
 		opts.numBackBuffers = 3;  // v0.5.25：对齐 SkyrimUpscaler（proxy BufferCount=3，8-13 日志实锤）
 		opts.colorWidth = a_width;
 		opts.colorHeight = a_height;
@@ -483,6 +509,31 @@ namespace FrameGen
 	}
 
 	// v0.5.23：PCL marker（RSYNC 建立节奏的必需输入，DLSS-G 指南 8.0）
+	// v0.31（对齐 open-shaders DX12SwapChain.cpp:365-403）：补全 PCL 序列——
+	// eSimulationEnd → eRenderSubmitStart →（资源标记）→ eRenderSubmitEnd →
+	// ePresentStart → Present → ePresentEnd。DLSSG 的 RSYNC 帧节奏依赖完整
+	// 序列（缺失 simulation/render 段 → pacing 乱 → 频闪）。
+	void Streamline::PresentMarkerSimulationEnd()
+	{
+		if (!initialized || !slPCLSetMarker || !frameToken)
+			return;
+		slPCLSetMarker(sl::PCLMarker::eSimulationEnd, *frameToken);
+	}
+
+	void Streamline::PresentMarkerRenderStart()
+	{
+		if (!initialized || !slPCLSetMarker || !frameToken)
+			return;
+		slPCLSetMarker(sl::PCLMarker::eRenderSubmitStart, *frameToken);
+	}
+
+	void Streamline::PresentMarkerRenderEnd()
+	{
+		if (!initialized || !slPCLSetMarker || !frameToken)
+			return;
+		slPCLSetMarker(sl::PCLMarker::eRenderSubmitEnd, *frameToken);
+	}
+
 	void Streamline::PresentMarkerStart()
 	{
 		if (!initialized || !slPCLSetMarker || !frameToken)

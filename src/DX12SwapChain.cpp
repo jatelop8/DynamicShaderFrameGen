@@ -722,6 +722,13 @@ namespace FrameGen
 
 		// v0.3：DLSSG 模式——NVIDIA 插帧（输入=游戏画面共享纹理，输出=D3D12 backbuffer）
 		if (dlssgMode) {
+			// v0.31（对齐 open-shaders DX12SwapChain.cpp:365-403）：PCL 完整序列——
+			// eSimulationEnd → eRenderSubmitStart 在帧开始发（RSYNC 节奏建立，
+			// 缺失 → pacing 乱 → 频闪）。eRenderSubmitEnd 在 ExecuteCommandLists
+			// 后、ePresentStart 前（774 行后）。
+			fg.streamline.PresentMarkerSimulationEnd();
+			fg.streamline.PresentMarkerRenderStart();
+
 			const bool fgOn = fg.fgActive.load();  // Home 键开关
 			bool dlssgOk = false;
 			// 防刷屏：连续失败计数（static，Present 渲染线程单线程）
@@ -778,6 +785,8 @@ namespace FrameGen
 			// → Allocate 时 RSYNC 实例 null → 0xC0000005（SkyrimUpscaler 教程早期版本
 			// 同样要求 EnableVsync=true）
 			// v0.5.23：Present 前后 PCL marker（RSYNC 节奏建立的必需输入）
+			// v0.31：eRenderSubmitEnd 补在 ePresentStart 前（对齐 CS 完整序列）
+			fg.streamline.PresentMarkerRenderEnd();
 			Get().streamline.PresentMarkerStart();
 			DX::ThrowIfFailed(swapChain->Present(1, Flags));
 			Get().streamline.PresentMarkerEnd();
