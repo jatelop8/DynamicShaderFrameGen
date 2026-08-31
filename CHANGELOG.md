@@ -1,25 +1,35 @@
-# DynamicShaderFrameGen — 更新说明
+# DynamicShaderFrameGen — What's New
 
-## 这次更新了什么？
+## Frame generation now uses FSR3 — works on ALL GPUs (NVIDIA & AMD)
 
-**帧生成统一用 FSR3 技术，A 卡 N 卡都能用。**
-之前实验性的 DLSS 帧生成（DLSSG）模式因为不稳定（在复杂整合环境下会频闪、黑屏、进不去游戏），已移除。现在帧生成走 AMD FSR3 技术，无论什么显卡都稳定可用，效果不打折。
+The experimental DLSS frame generation (DLSSG) mode has been removed — it proved
+unstable in complex mod environments (flickering, black screens, failing to reach
+the main menu). Frame generation now runs on AMD FSR3 technology, which is rock
+solid on every GPU with no quality loss.
 
-**强制无边框窗口化（新功能，默认开启）。**
-以前帧生成要求游戏必须是窗口化才生效——很多玩家在"全屏"下打开游戏发现帧生成没反应。现在插件会自动把游戏窗口变成无边框全屏，**不管你怎么设置显示模式，帧生成都一定生效**，画面看起来和全屏一模一样。
+## Force borderless windowed (new, enabled by default)
 
-**修复了三个问题：**
-- AMD 显卡打不开帧生成的问题
-- FSR 切到 DLSS 后打不开的问题
-- 游戏菜单关闭后鼠标光标残留的问题
+Frame generation used to require a windowed swapchain — many players launched the
+game in "fullscreen" and found frame generation doing nothing. The plugin now
+automatically switches the game window to borderless fullscreen, so **frame
+generation always activates no matter what display mode you set**, while looking
+identical to fullscreen.
 
-**界面改名。**
-游戏内菜单里的叫法统一为 FrameGen（帧生成），不再出现容易让人困惑的 FSR/DLSS 标签——通用帧生成，NVIDIA 和 AMD 显卡都能用。
+## Three fixes
 
-## 使用说明
+- Frame generation not enabling on **AMD GPUs**
+- Frame generation breaking after switching **FSR → DLSS**
+- Stuck **mouse cursor** after closing the in-game menu
 
-- 前置：SKSE64
-- 任意 DX12 显卡都能用（FSR3 帧生成全卡支持；DLSS 超分仅 N 卡）
-- 帧生成后帧数翻倍（如 60 → 120）
-- 与 ENB 完全共存，与雪地湿润等插件兼容
-- 游戏内长按 Home 打开菜单：开关帧生成、超分档位、锐度
+## Cleaner naming
+
+The in-game menu now simply says **FrameGen** — no more confusing FSR/DLSS tags.
+Universal frame interpolation, works on NVIDIA & AMD.
+
+## How to use
+
+- Prerequisite: SKSE64
+- Any DX12-capable GPU (FSR3 frame gen: all GPUs; DLSS upscaling: NVIDIA only)
+- Frame generation doubles your FPS (e.g. 60 → 120)
+- Fully coexists with ENB; compatible with snow-wetness and other swapchain plugins
+- Hold `Home` in-game for the menu: toggle frame gen, upscale mode, sharpness
