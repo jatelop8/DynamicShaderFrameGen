@@ -580,6 +580,14 @@ namespace FrameGen
 				}
 				fg.dx12SwapChain.CreateSwapChain(adapter, *pDesc, fg.settings.frameGeneration, fg.settings.provider == 1, fg.settings.qualityMode);
 				fg.dx12SwapChain.CreateInterop();
+				// v0.29（DLSSG ENB 兼容）：provider=1 的 SL 初始化已在 CreateSwapChain →
+				// CreateD3D12Device 内延迟完成（v0.27 slInit + v0.28 SetD3DDevice(D3D11) +
+				// SetD3D12Device）——此处补 feature 检测 + 函数绑定（漏则 featureDLSSG
+				// 恒 false → 插帧不工作；PostDevice 不调 → slDLSSGSetOptions 空指针）。
+				if (fg.settings.provider == 1) {
+					fg.streamline.CheckFeatures(adapter);
+					fg.streamline.PostDevice();
+				}
 				// v0.25：NGXNR 初始化已移除（NR 改由外部 ReShade dlss5 方案提供）
 				adapter->Release();
 			}
@@ -705,28 +713,29 @@ namespace FrameGen
 				fg.refreshRate, fg.lowRefreshRate, fg.settings.forceEnable);
 		}
 
-		// v0.6.2（ENB 共存，FSR3 模式）：调原始函数（= ENB 代理入口，ENB 链正常创建）。
-		// ENB 内部创建 swapchain 时被 factory vtable hook 拦截 → 建 FFX D3D12 链 + proxy；
+		// v0.6.2（ENB 共存）：调原始函数（= ENB 代理入口，ENB 链正常创建）。
+		// ENB 内部创建 swapchain 时被 factory vtable hook 拦截 → 建 D3D12 链 + proxy；
 		// 游戏/ENB 拿到的链是 ENB 包装的 proxy → ENB 渲染注入与 Present 照常 → ENB 效果保留。
-		if (shouldProxy && fg.settings.provider == 0) {
-			if (!pAdapter) {
-				SKSE::log::warn("[FrameGen] ENB-compat: pAdapter null - falling back to standard path");
-			} else {
-				IDXGIFactory4* dxgiFactory = nullptr;
-				pAdapter->GetParent(IID_PPV_ARGS(&dxgiFactory));
-				if (dxgiFactory) {
-					InstallFactoryHook(dxgiFactory);
-					dxgiFactory->Release();
-				}
-				HRESULT hr = g_originalCreateDevice(pAdapter, DriverType, Software, Flags, pFeatureLevels,
-					FeatureLevels, SDKVersion, pSwapChainDesc, ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
-				if (SUCCEEDED(hr) && fg.dx12SwapChain.GetSwapChainProxy()) {
-					fg.d3d12SwapChainActive = true;
-					fg.fgActive.store(true);
-					SKSE::log::info("[FrameGen] D3D12 proxy active (ENB compatible) - frame generation ENABLED");
-				}
-				return hr;
+		// v0.29（DLSSG ENB 兼容修复）：**两模式统一走此路径**——DLSSG 原来直接
+		// D3D11CreateDevice + 自建 D3D12 链，完全绕过 ENB → ENB 不加载 + 画面异常
+		// （用户 20:07 实锤 "改成 DLSS 后 ENB 也不加载了，菜单按不出来，只有 FSR 有用"）。
+		// hk_IDXGIFactory_CreateSwapChain 已按 provider 传 dlssgMode（581 行），
+		// 拦截 ENB 的 CreateSwapChain → 建 DLSSG/FSR3 D3D12 链 + proxy。
+		if (shouldProxy && pAdapter) {
+			IDXGIFactory4* dxgiFactory = nullptr;
+			pAdapter->GetParent(IID_PPV_ARGS(&dxgiFactory));
+			if (dxgiFactory) {
+				InstallFactoryHook(dxgiFactory);
+				dxgiFactory->Release();
 			}
+			HRESULT hr = g_originalCreateDevice(pAdapter, DriverType, Software, Flags, pFeatureLevels,
+				FeatureLevels, SDKVersion, pSwapChainDesc, ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
+			if (SUCCEEDED(hr) && fg.dx12SwapChain.GetSwapChainProxy()) {
+				fg.d3d12SwapChainActive = true;
+				fg.fgActive.store(true);
+				SKSE::log::info("[FrameGen] D3D12 proxy active (ENB compatible) - frame generation ENABLED");
+			}
+			return hr;
 		}
 
 		if (shouldProxy) {
