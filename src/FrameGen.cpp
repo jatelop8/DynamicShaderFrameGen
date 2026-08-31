@@ -352,6 +352,8 @@ namespace FrameGen
 		// v0.34：存 jitter 供 CheckFrameConstants 喂 SL（DLSSG 运动估计必需）
 		jitterX = jx;
 		jitterY = jy;
+		// v0.37b：存引擎帧号（EnsureFrameToken IsNewFrame 判断基准）
+		engineFrameCount = a_state->frameCount;
 	}
 
 	// v0.7.13：MenuManagerDrawInterfaceStart hook（CS 同款 detour）——引擎 UI 绘制

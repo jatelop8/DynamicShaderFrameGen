@@ -146,6 +146,10 @@ namespace FrameGen
 		float jitterX = 0.0f;
 		float jitterY = 0.0f;
 
+		// v0.37b：引擎帧号（OnMainUpdateJitter 更新）——EnsureFrameToken 的
+		// IsNewFrame 判断基准（同帧复用 token，防每帧取两次）
+		std::uint32_t engineFrameCount = 0;
+
 		// D3D11 创建完成（PatchIAT 钩子内调用）
 		void OnD3D11Created(ID3D11Device* a_device, ID3D11DeviceContext* a_context);
 		// v0.7.2：每帧轮询 Home 键（GetAsyncKeyState）——短按切插帧，长按开菜单

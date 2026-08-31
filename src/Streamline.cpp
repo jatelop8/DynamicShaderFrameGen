@@ -239,21 +239,23 @@ namespace FrameGen
 	// token（IsNewFrame 判断）。所有 PCL marker/ReflexSleep/SetTag 必须用同一帧
 	// token——之前 ReflexSleep/marker 用旧 token（上一帧）、EvaluateDLSSG 才取新
 	// token → 同一帧 marker 跨两个 token → RSYNC 帧节奏标记错位 → pacing 乱 → 频闪。
+	// v0.37b（审查修正）：IsNewFrame 必须用**引擎帧号**判断（每帧不变）——之前用
+	// 内部递增计数器，第二次调用时已 +1 → 误判"新帧" → 每帧取两次 token（SL
+	// "Repeated" 警告回归）。引擎帧号由 OnMainUpdateJitter 更新到 engineFrameCount。
 	bool Streamline::EnsureFrameToken()
 	{
 		if (!initialized || !slGetNewFrameToken)
 			return false;
 		static std::uint32_t s_lastFrame = UINT32_MAX;
-		static std::uint32_t s_frameIndex = 0;
-		if (s_frameIndex == s_lastFrame)  // 同帧重复调用 → 复用已有 token
+		const std::uint32_t frame = Get().engineFrameCount;
+		if (frame == s_lastFrame)  // 同帧 → 复用已有 token
 			return frameToken != nullptr;
-		s_lastFrame = s_frameIndex;
+		s_lastFrame = frame;
 		frameToken = nullptr;
-		if (SL_FAILED(r, slGetNewFrameToken(frameToken, &s_frameIndex))) {
+		if (SL_FAILED(r, slGetNewFrameToken(frameToken, &frame))) {
 			SKSE::log::error("[Streamline] slGetNewFrameToken failed: {}", (int)r);
 			return false;
 		}
-		s_frameIndex++;
 		return frameToken != nullptr;
 	}
 
