@@ -90,14 +90,12 @@ namespace FrameGen
 		if (dlssgMode && !Get().streamline.initialized)
 			Get().streamline.LoadInterposer(Get().settings);
 
-		// v0.28（DLSSG 频闪修复 2）：D3D11 device 也必须注册给 SL——presentCommon
-		// 链挂 D3D11 device（v0.25.2 注释：evaluateFeature 回调注册需要它）。DLSSG
-		// 路径此前只 SetD3D12Device、漏了 D3D11 → SL 日志 "ID3D11Device does NOT have
-		// SL proxy - using base interface" → 插帧链不完整 → 频闪 + 主菜单 UI 丢失
-		// （20:01 日志实锤）。FSR3 模式在 ENB 路径（hk_IDXGIFactory_CreateSwapChain）
-		// 已注册 D3D11 device，所以正常——DLSSG 补上即可。
-		if (dlssgMode && Get().streamline.initialized && Get().d3d11Device)
-			Get().streamline.SetD3DDevice(Get().d3d11Device);
+		// v0.30（DLSS-G NOT available 修复）：**不要 SetD3DDevice(D3D11)**——
+		// v0.28 曾加它修 "ID3D11Device does NOT have SL proxy" 日志，但实测（20:12
+		// 日志）导致 **DLSS-G is NOT available**（slInit 后先设 D3D11 再设 D3D12 →
+		// dlss_g 插件绑定错乱 → feature 检测失败 → 插帧禁用）。该日志在 D3D12
+		// 会话下无害（v0.27b 无此注册时 DLSS-G IS available 实锤）。频闪真根因是
+		// ENB 绕过（v0.29 已修），与此无关。
 
 		// v0.5.17：在创建 queue 之前告知 SL 设备——d3d12 已恢复静态导入，SL interposer
 		// 的 IAT hook 能拦到后续 D3D12CreateCommandQueue 调用并记录 queue（dlss_g 插件
@@ -695,7 +693,11 @@ namespace FrameGen
 		// v0.24.1：游戏内菜单/FPS overlay 绘制——必须在 fence 之前（D3D11 写 colorOut 完成
 		// 后随 Signal/Wait 同步，D3D12 拷贝才能稳定读到）。v0.24 把 Draw 放在 fence 之后
 		// （原菜单位置）导致 D3D11 写与 D3D12 CopyResource 跨 API 竞争 → FPS/UI 闪烁。
-		if (!dlssgMode && (ImguiMenu::GetSingleton()->visible || Get().settings.fpsOverlay))
+		// v0.30（菜单打不开修复）：去掉 !dlssgMode——DLSSG 模式此前不绘制 ImGui 菜单
+		// （Toggle 生效但 Draw 被跳过 → "菜单按不出来"，用户 20:12 实锤）。菜单画在
+		// swapChainBufferWrapped（dlssgMode 时 colorOut 为 null 自动回退），随后直通拷贝
+		// 上屏。插帧启用时菜单会进 DLSSG 输入（UI 分离未接线，可能轻微模糊——后续优化）。
+		if ((ImguiMenu::GetSingleton()->visible || Get().settings.fpsOverlay))
 			ImguiMenu::GetSingleton()->Draw(Get());
 
 		// v0.6：FSR3 FG（Provider=0，dlssgMode=false）——每帧 Configure + Dispatch
