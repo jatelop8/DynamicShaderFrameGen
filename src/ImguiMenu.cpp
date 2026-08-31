@@ -233,19 +233,10 @@ namespace FrameGen
 		// v0.25：DLSS-NR 菜单项已移除（NR 改由外部 ReShade 方案提供）
 
 		ImGui::Separator();
-		ImGui::Text("Provider (change needs restart)");
-		const char* providers[] = { "FSR3 (AMD FG)", "DLSSG (NVIDIA FG)" };
-		// v0.25.4（Bug2 辅助）：Provider 是启动时加载的（Streamline 初始化/D3D12 代理
-		// 按它建立），运行时切换不会重建 → 立即标红提示重启，避免用户以为生效后
-		// 发现 FG 没反应（"FSR 切 DLSS 打不开"的一部分原因）
-		static int s_lastProvider = -1;
-		if (s_lastProvider == -1)
-			s_lastProvider = s.provider;
-		ImGui::Combo("Provider", &s.provider, providers, 2);
-		if (s.provider != s_lastProvider) {
-			ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.2f, 1.0f),
-				"! Provider change takes effect after game restart");
-		}
+		// v0.39（用户决定）：DLSSG 已移除——仅 FSR3 帧生成（N 卡也完美，+DLSS 超分）。
+		// Provider 选项移除，避免用户误开 DLSSG（复杂环境频闪/黑屏不稳定）。
+		ImGui::Text("Frame generation: FSR3 (AMD FG, all GPUs)");
+		ImGui::TextDisabled("DLSSG removed - FSR3 is stable & universal");
 
 		ImGui::Separator();
 		const char* qualityModes[] = { "DLAA", "Quality", "Balanced", "Performance", "Ultra Performance" };

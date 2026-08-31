@@ -159,6 +159,11 @@ namespace FrameGen
 				} catch (...) {}
 			}
 		}
+		// v0.39（用户决定）：**DLSSG（provider=1）已移除**——用户实测 N 卡
+		// FSR3 帧生成 + DLSS 超分（provider=0）一切正常，DLSSG 在复杂整合环境
+		// 频闪/黑屏不稳定（v0.27-v0.38 十二轮未收敛）。强制 provider=0（FSR3），
+		// 忽略 INI 里的 Provider 值，DLSSG 代码保留但不可达。
+		settings.provider = 0;
 		SKSE::log::info("[FrameGen] Config loaded: Enable={} ForceEnable={} ForceBorderless={} Provider={} FrameGeneration={} EnableUpscale={} QualityMode={} PresetDLSS={} SL_LogLevel={} ToggleKey={:#x} FpsOverlay={}",
 			settings.enableFrameGen, settings.forceEnable, settings.forceBorderless, settings.provider, settings.frameGeneration,
 			settings.enableUpscale, settings.qualityMode, settings.presetDLSS, settings.streamlineLogLevel, settings.toggleKey,
