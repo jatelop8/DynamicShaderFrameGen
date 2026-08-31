@@ -111,7 +111,7 @@ namespace FrameGen
 
 		DX::ThrowIfFailed(d3d12Device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&commandQueue)));
 
-		for (int i = 0; i < 2; i++) {
+		for (int i = 0; i < 3; i++) {  // v0.33：三缓冲（DLSSG frameIndex 0-2）
 			DX::ThrowIfFailed(d3d12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&commandAllocators[i])));
 			DX::ThrowIfFailed(d3d12Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, commandAllocators[i].get(), nullptr, IID_PPV_ARGS(&commandLists[i])));
 			commandLists[i]->Close();
@@ -127,6 +127,15 @@ namespace FrameGen
 
 		IDXGIFactory4* dxgiFactory;
 		DX::ThrowIfFailed(adapter->GetParent(IID_PPV_ARGS(&dxgiFactory)));
+
+		// v0.33（对齐 open-shaders CreateSwapChainDirect:117-121，**DLSSG 频闪最终根因**）：
+		// CreateSwapChainForHwnd 必须走 **SL 升级后的 factory**——否则 Streamline
+		// 不识别这个 swapchain（"never recognizes the swap chain as its own"）→
+		// slHookPresent 不拦截 → presentCommon 不跑 → 帧号不推进（"frame 1" 警告）
+		// + RSYNC pacing 不建立（"sl.reflex has no registered hooks"）→ 频闪。
+		// FSR3 链（FFX）不依赖 SL 识别所以一直正常——这就是 FSR3 稳 DLSSG 闪的根因。
+		if (dlssgMode && Get().streamline.slUpgradeInterface)
+			Get().streamline.slUpgradeInterface(reinterpret_cast<void**>(&dxgiFactory));
 
 		swapChainDesc = {};
 		swapChainDesc.Width = a_swapChainDesc.BufferDesc.Width;
@@ -154,17 +163,22 @@ namespace FrameGen
 
 		if (dlssgMode) {
 			// v0.3：DLSSG 模式 → 普通 D3D12 swapchain（NVIDIA SL 负责插帧/pacing，不用 FFX）
+			// v0.33（对齐 open-shaders CreateSwapChainDirect:160-171）：
+			// - BufferCount=3：SL pacer 持有一个 buffer 做合成时还有余量翻转插帧帧；
+			//   双 buffer 无余量 → 插帧帧被丢 → 闪/卡
+			// - 去掉 FRAME_LATENCY_WAITABLE_OBJECT：等待它会把 Present 串行化为
+			//   单帧在飞 → SL pacer 丢弃每个插帧帧
 			DXGI_SWAP_CHAIN_DESC1 desc1{};
 			desc1.Width = swapChainDesc.Width;
 			desc1.Height = swapChainDesc.Height;
 			desc1.Format = swapChainDesc.Format;
 			desc1.SampleDesc.Count = 1;
 			desc1.BufferUsage = swapChainDesc.BufferUsage;
-			desc1.BufferCount = 2;
+			desc1.BufferCount = 3;  // v0.33：SL pacer 余量（原 2）
 			// DX12 只支持 FLIP 模型（CreateSwapChainForHwnd 拒绝 DISCARD）——游戏若传
 			// DISCARD 会导致创建失败 → 强制 FLIP_DISCARD（DX12 标准，DLSSG 也要求）
 			desc1.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-			desc1.Flags = swapChainDesc.Flags;
+			desc1.Flags = swapChainDesc.Flags & ~DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;  // v0.33
 			IDXGISwapChain1* sc1 = nullptr;
 			HRESULT hr = dxgiFactory->CreateSwapChainForHwnd(commandQueue.get(),
 				a_swapChainDesc.OutputWindow, &desc1, nullptr, nullptr, &sc1);
@@ -220,8 +234,10 @@ namespace FrameGen
 			return;
 		}
 
-		DX::ThrowIfFailed(swapChain->GetBuffer(0, IID_PPV_ARGS(&swapChainBuffers[0])));
-		DX::ThrowIfFailed(swapChain->GetBuffer(1, IID_PPV_ARGS(&swapChainBuffers[1])));
+		// v0.33：GetBuffer 按实际 BufferCount（dlssgMode=3 对齐 CS pacer 余量；FSR3=2）
+		const UINT bufferCount = dlssgMode ? 3 : 2;
+		for (UINT i = 0; i < bufferCount; i++)
+			DX::ThrowIfFailed(swapChain->GetBuffer(i, IID_PPV_ARGS(&swapChainBuffers[i])));
 
 		frameIndex = swapChain->GetCurrentBackBufferIndex();
 		SKSE::log::info("[FrameGen] D3D12 FG swapchain created ({}x{}, format {})",
