@@ -91,6 +91,11 @@ namespace FrameGen
 	{
 		bool enableFrameGen = false;   // 总开关（D3D12 proxy）
 		bool forceEnable = false;      // 强制启用（<120Hz 也开）
+		// v0.26：强制无边框窗口化（borderless fullscreen）——帧生成硬性要求
+		// Windowed swapchain（全屏独占 → 插件不代理 → 插帧不生效）。开时把
+		// 游戏窗口强制成无边框铺满屏幕（视觉等同全屏）+ swapchain 强制窗口化，
+		// 让帧生成在任何玩家显示设置下都能激活。
+		bool forceBorderless = true;   // 强制无边框窗口化（默认开）
 		bool frameGeneration = true;   // 帧生成（false = 仅 DLSS 超分/DLAA 无插帧）
 		// v0.7.24：DLSS 超分独立开关——4K 下 DLAA 重建每帧 ~3-5ms（原生 50→37→FG 100+→75）；
 		// 关掉回到 v0.6.2.2 纯插帧状态（100+ 帧，画面 = 引擎原生 4K）
@@ -150,6 +155,11 @@ namespace FrameGen
 
 		// 安装输入开关键（Home）——DataLoaded 后注册
 		void InstallInputHook();
+
+		// v0.26：强制无边框窗口化（幂等，每帧可调）——游戏窗口改无边框 +
+		// 铺满所在显示器。CreateDevice hook 首次应用，Present 每帧防重置。
+		void EnsureBorderless();
+		HWND hwnd = nullptr;  // 游戏主窗口（CreateDevice hook 时记录）
 
 		// v0.7.11：安装 Main_UpdateJitter hook（CS 同款）——引擎每帧渲染前回调，
 		// 用其 State* 参数设置引擎 DRS（dynamicResolution）渲染分辨率 + DLSS jitter。

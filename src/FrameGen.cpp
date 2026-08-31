@@ -121,6 +121,8 @@ namespace FrameGen
 				settings.enableFrameGen = readBool(line, false);
 			else if (key == "ForceEnable")
 				settings.forceEnable = readBool(line, false);
+			else if (key == "ForceBorderless")
+				settings.forceBorderless = readBool(line, true);   // v0.26：强制无边框窗口化
 			else if (key == "Provider")
 				settings.provider = std::clamp(readInt(line, 0), 0, 1);
 			else if (key == "FrameGeneration")
@@ -155,8 +157,8 @@ namespace FrameGen
 				} catch (...) {}
 			}
 		}
-		SKSE::log::info("[FrameGen] Config loaded: Enable={} ForceEnable={} Provider={} FrameGeneration={} EnableUpscale={} QualityMode={} PresetDLSS={} SL_LogLevel={} ToggleKey={:#x} FpsOverlay={}",
-			settings.enableFrameGen, settings.forceEnable, settings.provider, settings.frameGeneration,
+		SKSE::log::info("[FrameGen] Config loaded: Enable={} ForceEnable={} ForceBorderless={} Provider={} FrameGeneration={} EnableUpscale={} QualityMode={} PresetDLSS={} SL_LogLevel={} ToggleKey={:#x} FpsOverlay={}",
+			settings.enableFrameGen, settings.forceEnable, settings.forceBorderless, settings.provider, settings.frameGeneration,
 			settings.enableUpscale, settings.qualityMode, settings.presetDLSS, settings.streamlineLogLevel, settings.toggleKey,
 			settings.fpsOverlay);
 	}
@@ -616,6 +618,49 @@ namespace FrameGen
 		SKSE::log::info("[FrameGen] IDXGIFactory::CreateSwapChain vtable hook installed (ENB compatible)");
 	}
 
+	// ---- v0.26：强制无边框窗口化（borderless fullscreen）----
+	// 帧生成硬性要求 Windowed swapchain（全屏独占 → 不代理 → 插帧不生效）。
+	// ForceBorderless=1 时把游戏窗口强制成无边框铺满所在显示器（视觉等同全屏），
+	// 并在 CreateDevice hook 里把 swapchain desc 强制 Windowed=TRUE → 激活判定
+	// 一定通过。幂等：已满足则直接返回（每帧调用开销 <1μs）。
+	void FrameGen::EnsureBorderless()
+	{
+		if (!settings.forceBorderless)
+			return;
+		const HWND h = hwnd;
+		if (!h || !IsWindow(h))
+			return;
+
+		// 1) 样式检测：无边框（无 WS_CAPTION/WS_THICKFRAME）→ 尺寸也全屏则跳过
+		const auto style = GetWindowLongPtrA(h, GWL_STYLE);
+		if (style == 0)
+			return;
+		const bool hasFrame = (style & (WS_CAPTION | WS_THICKFRAME)) != 0;
+
+		RECT rc{};
+		if (!GetWindowRect(h, &rc))
+			return;
+
+		// 目标：窗口所在显示器全屏区域（多显示器正确）
+		const HMONITOR mon = MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST);
+		MONITORINFO mi{ sizeof(mi) };
+		if (!GetMonitorInfoA(mon, &mi))
+			return;
+		const int tw = mi.rcMonitor.right - mi.rcMonitor.left;
+		const int th = mi.rcMonitor.bottom - mi.rcMonitor.top;
+		const bool notFull = (rc.right - rc.left) != tw || (rc.bottom - rc.top) != th;
+
+		if (!hasFrame && !notFull)
+			return;  // 已是无边框全屏
+
+		// 2) 应用：去边框（WS_POPUP）+ 铺满屏幕 + 还原边框重算客户区
+		SetWindowLongPtrA(h, GWL_STYLE, WS_POPUP | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN);
+		SetWindowPos(h, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, tw, th,
+			SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+		SKSE::log::info("[FrameGen] ForceBorderless: window {}x{} @ ({},{}) - borderless fullscreen applied",
+			tw, th, mi.rcMonitor.left, mi.rcMonitor.top);
+	}
+
 	HRESULT WINAPI hk_D3D11CreateDeviceAndSwapChain(
 		IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE DriverType, HMODULE Software, UINT Flags,
 		const D3D_FEATURE_LEVEL* pFeatureLevels, UINT FeatureLevels, UINT SDKVersion,
@@ -629,6 +674,18 @@ namespace FrameGen
 		if (fg.d3d12SwapChainActive)
 			return g_originalCreateDevice(pAdapter, DriverType, Software, Flags, pFeatureLevels,
 				FeatureLevels, SDKVersion, pSwapChainDesc, ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
+
+		// v0.26：ForceBorderless——在激活判定之前强制窗口化 + 无边框铺满屏幕。
+		// 帧生成硬性要求 Windowed swapchain；玩家若设了全屏独占（Windowed=false）
+		// 则 shouldProxy=false → 插帧不生效（用户/发布反馈的常见"打不开"原因）。
+		// 强制后：swapchain 为 windowed → 激活判定通过；窗口无边框铺满 → 视觉
+		// 等同全屏。Present 每帧 EnsureBorderless 防游戏/INI 改回。
+		if (fg.settings.forceBorderless && pSwapChainDesc && pSwapChainDesc->OutputWindow) {
+			fg.hwnd = pSwapChainDesc->OutputWindow;
+			pSwapChainDesc->Windowed = TRUE;
+			SKSE::log::info("[FrameGen] ForceBorderless: swapchain desc forced Windowed=TRUE");
+			fg.EnsureBorderless();
+		}
 
 		// 激活判定（与 CS 一致）：非 VR + 窗口化 + (≥120Hz 或强制) + 总开关
 		// v0.5：pSwapChainDesc 判空（API 允许 null = 只创建设备）

@@ -538,6 +538,10 @@ namespace FrameGen
 		// 不支持长按检测，这里直接读硬件状态
 		fg.PollHomeKey();
 
+		// v0.26：ForceBorderless 防重置——游戏/INI 若把窗口改回带边框或非全屏
+		// （玩家在游戏设置里切窗口模式等），每帧强制恢复无边框铺满（幂等，<1μs）
+		fg.EnsureBorderless();
+
 		// v0.7.13：DRS（dynamicResolution）与 DLSS jitter 由 Main_UpdateJitter hook
 		// 在渲染前设置（v0.7.11 已验证 kMAIN 2560x1440）；DLSS 超分由
 		// MenuManagerDrawInterfaceStart hook 在 UI 绘制前执行（写 kFRAMEBUFFER）。
