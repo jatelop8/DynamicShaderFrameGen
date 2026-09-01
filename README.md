@@ -31,7 +31,9 @@ SDKs.
   menu or INI); it doubles automatically while frame generation is active.
 - **Render scale via engine dynamic resolution** — the engine render target is
   scaled through the dynamic-resolution hooks (perf gain; the backbuffer stays
-  at output resolution).
+  at output resolution). Since **v0.41** the ratio is configurable:
+  `RenderResolutionScale=0.70` in the INI (default) or the in-game menu slider
+  (30%–100%, live). `0` = Auto (follows the DLSS Quality Mode table).
 
 ---
 
@@ -69,11 +71,20 @@ Hold `Home` to open the in-game menu.
 | Frame Generation | Toggle FSR 3.1 frame generation (all GPUs) |
 | DLSS Upscale | Toggle DLSS upscaling / DLAA rebuild |
 | Quality Mode / Sharpness | Adjust DLSS settings (live) |
+| Render Resolution Scale | Engine render = output × scale (30–100%, live; Auto = Quality Mode table) |
 | FPS Overlay | Toggle the top-right frame counter |
 | Save to INI | Persist all settings |
 
 `EnableUpscale=0` in the INI disables DLSS and returns to pure frame generation
 (highest frame rate at native resolution).
+
+`RenderResolutionScale` — Skyrim's engine always renders at 100% resolution, so
+DLSS has nothing to upscale and the full-res render cost is paid anyway. Setting
+`RenderResolutionScale=0.70` renders at 70% (e.g. 1792×1008 at 1440p output) and
+DLSS upscales back to output resolution — real upscaling, a large FPS gain, and
+a proper low-res input for DLSS5 / neural rendering. `0` = Auto (follows the
+Quality Mode table: DLAA 100% / Quality 66.7% / Balanced 58.5% / Performance
+50% / Ultra Performance 33.3%).
 
 ---
 
