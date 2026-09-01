@@ -19,6 +19,7 @@
 
 #include <cstdio>
 #include <fstream>
+#include <iomanip>
 
 namespace FrameGen
 {
@@ -207,6 +208,7 @@ namespace FrameGen
 	void ImguiMenu::DrawMenu(FrameGen& a_fg)
 	{
 		auto& s = a_fg.settings;
+		auto& sc = a_fg.dx12SwapChain;
 
 		ImGui::SetNextWindowSize(ImVec2(400, 0), ImGuiCond_FirstUseEver);
 		if (!ImGui::Begin("DynamicShaderFrameGen", nullptr,
@@ -246,6 +248,28 @@ namespace FrameGen
 		ImGui::Combo("DLSS Preset", &s.presetDLSS, presets, 5);
 		ImGui::SliderFloat("Sharpness", &s.sharpness, 0.0f, 1.0f, "%.2f");
 
+		// v0.41：自定义渲染分辨率缩放——引擎渲染分辨率 = 输出 × 比例，DLSS 放大回输出。
+		// Auto=跟随 QualityMode 档位表（旧行为）；自定义 0.30-1.00 实时生效（下帧 kMAIN 重建）。
+		// 默认 0.70（70% 渲染）：DLSS5/NR 场景下真超分空间 + 帧数大幅提升。
+		ImGui::Separator();
+		bool autoScale = s.renderResolutionScale <= 0.0f;
+		if (ImGui::Checkbox("Auto Render Scale (follow Quality Mode)", &autoScale)) {
+			s.renderResolutionScale = autoScale ? 0.0f : 0.70f;  // 切自定义默认 70%
+			SKSE::log::info("[FrameGen] Render scale mode: {}", autoScale ? "Auto (Quality Mode)" : "Custom 0.70");
+		}
+		if (!autoScale) {
+			if (ImGui::SliderFloat("Render Resolution Scale", &s.renderResolutionScale, 0.30f, 1.00f, "%.2f")) {
+				const float ratio = std::clamp(s.renderResolutionScale, 0.30f, 1.00f);
+				sc.renderScaleX = sc.renderScaleY = ratio;
+				sc.renderWidth = static_cast<std::uint32_t>(
+					std::max(1, static_cast<int>(sc.swapChainDesc.Width * ratio)));
+				sc.renderHeight = static_cast<std::uint32_t>(
+					std::max(1, static_cast<int>(sc.swapChainDesc.Height * ratio)));
+				SKSE::log::info("[FrameGen] Render scale (GUI): {:.2f} -> {}x{}", ratio, sc.renderWidth, sc.renderHeight);
+			}
+			ImGui::TextDisabled("Engine render = output x scale; DLSS upscales back. 0.70 = 70%%.");
+		}
+
 		ImGui::Separator();
 		ImGui::Text("FG active: %s", a_fg.fgActive.load() ? "ON" : "OFF");
 		ImGui::Text("DLSS: %s  DLSSG: %s",
@@ -266,6 +290,7 @@ namespace FrameGen
 					<< "FrameGeneration=" << (s.frameGeneration ? 1 : 0) << "\n"
 					<< "EnableUpscale=" << (s.enableUpscale ? 1 : 0) << "\n"
 					<< "QualityMode=" << s.qualityMode << "\n"
+					<< "RenderResolutionScale=" << std::fixed << std::setprecision(2) << s.renderResolutionScale << "\n"
 					<< "PresetDLSS=" << s.presetDLSS << "\n"
 					<< "Sharpness=" << s.sharpness << "\n"
 					<< "StreamlineLogLevel=" << s.streamlineLogLevel << "\n"

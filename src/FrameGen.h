@@ -102,6 +102,10 @@ namespace FrameGen
 		bool enableUpscale = true;     // DLSS 超分/DLAA 重建（false = 仅 FSR3 插帧，帧数最高）
 		int  provider = 0;             // 0=FSR3（AMD 插帧，默认） 1=DLSSG（NVIDIA 插帧）
 		int  qualityMode = 1;          // DLSS 模式：0=DLAA 1=Quality 2=Balanced 3=Performance 4=UltraPerformance
+		// v0.41：渲染分辨率缩放（自定义 DRS）——引擎渲染分辨率 = 输出 × 该比例，DLSS
+		// 再把低分辨率画面放大回输出分辨率（真超分才有 NR/帧生成空间）。0 = 跟随
+		// QualityMode 档位表（旧行为）；>0 = 自定义比例（0.30-1.00，如 0.70 = 70%）。
+		float renderResolutionScale = 0.70f;  // INI RenderResolutionScale / GUI slider
 		// v0.31（对齐 open-shaders）：多倍帧生成（DLSS 4 MFG）——每真实帧生成 N 个插帧
 		// （1=2x 插帧 2=3x 3=4x，取决于 GPU/SL SDK 支持，运行时 clamp 到硬件上限）
 		std::uint32_t dlssgFramesToGenerate = 1;  // INI DLSSGFramesToGenerate

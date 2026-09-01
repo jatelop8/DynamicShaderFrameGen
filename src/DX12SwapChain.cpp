@@ -151,10 +151,14 @@ namespace FrameGen
 		// DLAA=1.0 Quality=2/3 Balanced≈0.585 Performance=0.5 UltraPerf≈0.333。
 		// 引擎渲染到低分辨率后缓冲 → DLSS 放大回输出分辨率（超分才有效果）。
 		// 无降渲染时超分只做重建/锐化，肉眼几乎无感且白付全屏成本（v0.7.6 实测帧数反降）。
+		// v0.41：INI RenderResolutionScale >0 时优先用自定义比例（默认 0.70），
+		// 0 则回退 QualityMode 档位表（旧行为）。
 		{
 			const float kUpscaleRatios[5] = { 1.0f, 2.0f / 3.0f, 0.585f, 0.5f, 0.333f };
 			const std::uint32_t qm = a_qualityMode < 5 ? a_qualityMode : 0;
-			renderScaleX = renderScaleY = kUpscaleRatios[qm];
+			const float customScale = Get().settings.renderResolutionScale;
+			renderScaleX = renderScaleY =
+				customScale > 0.0f ? std::clamp(customScale, 0.30f, 1.0f) : kUpscaleRatios[qm];
 			renderWidth = static_cast<std::uint32_t>(std::max(1, static_cast<int>(swapChainDesc.Width * renderScaleX)));
 			renderHeight = static_cast<std::uint32_t>(std::max(1, static_cast<int>(swapChainDesc.Height * renderScaleY)));
 			SKSE::log::info("[FrameGen] Render scale {:.3f} -> {}x{} render / {}x{} output",

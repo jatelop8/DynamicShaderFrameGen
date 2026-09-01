@@ -147,6 +147,15 @@ namespace FrameGen
 					settings.sharpness = std::clamp(std::stof(v), 0.0f, 1.0f);
 				} catch (...) {}
 			}
+			else if (key == "RenderResolutionScale") {
+				// v0.41：自定义渲染分辨率缩放（0=Auto 跟随 QualityMode 档位表；>0 自定义 0.30-1.00）
+				try {
+					std::string v = line.substr(eq + 1);
+					while (!v.empty() && (v.back() == ' ' || v.back() == '\r' || v.back() == '\n'))
+						v.pop_back();
+					settings.renderResolutionScale = std::clamp(std::stof(v), 0.0f, 1.0f);
+				} catch (...) {}
+			}
 			else if (key == "StreamlineLogLevel")
 				settings.streamlineLogLevel = std::clamp(readInt(line, 0), 0, 2);
 			else if (key == "ToggleKey") {

@@ -1,5 +1,18 @@
 # DynamicShaderFrameGen — What's New
 
+## Render resolution scale (custom DRS) — new in v0.41
+
+Skyrim always renders at 100% resolution, so DLSS had nothing to upscale and frame
+generation paid full-resolution cost. The plugin now lets you set the engine
+render resolution as a percentage of your output (default **70%**) — DLSS really
+upscales from e.g. 1440p back to 4K, which is a large FPS gain and gives DLSS5/NR
+a true upscaling path.
+
+- New INI setting: `RenderResolutionScale=0.70` (`0` = Auto, follows the Quality
+  Mode table as before; `0.30`–`1.00` = custom ratio)
+- In-game: hold `Home` → menu → **Render Resolution Scale** slider (30%–100%,
+  live apply, save via *Save to INI*)
+
 ## Frame generation now uses FSR3 — works on ALL GPUs (NVIDIA & AMD)
 
 The experimental DLSS frame generation (DLSSG) mode has been removed — it proved
