@@ -29,6 +29,10 @@ namespace
 			FrameGen::Get().InstallInputHook();
 			// v0.7.11：Main_UpdateJitter hook（渲染前设 DRS + jitter，CS 同款）
 			FrameGen::Get().InstallDRSHook();
+			// v0.48：Main_PostProcessing hook（DLSS 超分迁到 ENB 前）
+			FrameGen::Get().InstallMainPostProcessingHook();
+			// DLSS5 Neural Rendering 入口（MenuManagerDrawInterfaceStart，UI 绘制前）
+			FrameGen::Get().InstallMenuHook();
 			break;
 		}
 	}

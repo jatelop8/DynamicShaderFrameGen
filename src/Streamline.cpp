@@ -13,6 +13,8 @@
 #include <dxgi.h>
 #include <dxgi1_3.h>
 
+#include <detours/detours.h>
+
 #include <SKSE/SKSE.h>
 
 namespace FrameGen
@@ -187,7 +189,9 @@ namespace FrameGen
 				slPCLSetMarker = reinterpret_cast<PFun_slPCLSetMarker*>(GetProcAddress(interposer, "slPCLSetMarker"));
 			SKSE::log::info("[Streamline] DLSSG/Reflex functions bound (reflex={} pcl={})", featureReflex, featurePCL);
 
-			// 查询多倍帧生成上限（CS 同款）
+			// v0.45：多倍帧生成上限查询（原生，不再 hook/骗上限）。50 系（Blackwell）
+			// 原生 numFramesToGenerateMax=3（支持 4x）；40 系（Ada）锁 1（只能 2x）。
+			// numFramesToGenerate 由 SetDLSSGOptions 按此上限 clamp（50 系可选 4x）。
 			if (slDLSSGGetState) {
 				sl::DLSSGState state{};
 				if (SL_FAILED(r, slDLSSGGetState(viewport, state, nullptr))) {

@@ -34,6 +34,10 @@ add_library(${PROJECT_NAME} SHARED
     src/Streamline.cpp
     src/FidelityFX.cpp
     src/ImguiMenu.cpp
+    # DLSS5 Neural Rendering (NGX Feature 18, ported from CS feature/dlssnr-vr)
+    src/NeuralRendering/Runtime.cpp
+    src/NeuralRendering/D3D12Interop.cpp
+    src/NeuralRendering/Renderer.cpp
     # v0.7：Dear ImGui 源码（vcpkg 下载被代理拦，直接 extern 编译）
     extern/imgui/imgui.cpp
     extern/imgui/imgui_draw.cpp
@@ -76,6 +80,8 @@ target_include_directories(${PROJECT_NAME} PRIVATE "${VCPKG_PREFIX}/include")
 target_include_directories(${PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/extern/imgui")
 target_include_directories(${PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/extern/imgui/backends")
 target_include_directories(${PROJECT_NAME} PRIVATE "${STREAMLINE_DIR}/include")
+# DLSS5 Neural Rendering: NGX SDK headers (nvsdk_ngx.h + helpers) ship inside Streamline SDK
+target_include_directories(${PROJECT_NAME} PRIVATE "${STREAMLINE_DIR}/external/ngx-sdk/include")
 target_include_directories(${PROJECT_NAME} PRIVATE "${FFX_DIR}/Kits")
 target_include_directories(${PROJECT_NAME} PRIVATE "D:/Modding/skyrim-community-shaders-dxr/extern/FidelityFX-SDK/framework/cauldron/framework/libs/pix")
 

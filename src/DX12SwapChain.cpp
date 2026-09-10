@@ -27,6 +27,7 @@
 #include "Streamline.h"
 #include "FidelityFX.h"
 #include "ImguiMenu.h"
+#include "NeuralRendering/Renderer.h"  // DLSS5 Neural Rendering（Present 集成）
 
 namespace FrameGen
 {
@@ -585,6 +586,28 @@ namespace FrameGen
 		// （玩家在游戏设置里切窗口模式等），每帧强制恢复无边框铺满（幂等，<1μs）
 		fg.EnsureBorderless();
 
+		// ===== FPS 诊断探针（v0.42）——每 2 秒报告：真实帧率 / 模式 / 倍率 / DLSSG 上限 =====
+		{
+			static auto probeLast = std::chrono::steady_clock::now();
+			static std::uint64_t probeFrames = 0;
+			probeFrames++;
+			const auto probeNow = std::chrono::steady_clock::now();
+			const double elapsed = std::chrono::duration<double>(probeNow - probeLast).count();
+			if (elapsed >= 2.0) {
+				const double realFps = probeFrames / elapsed;
+				std::uint32_t mult = 1;
+				if (dlssgMode)
+					mult = fg.settings.dlssgFramesToGenerate + 1;   // DLSSG 4x
+				else if (fg.fgActive.load())
+					mult = 2;                                          // FSR3 2x
+				SKSE::log::info("[FrameGen] FPS probe: real={:.1f} | {} {}x | present~={:.1f} | dlssgMax={} req={}",
+					realFps, dlssgMode ? "DLSSG" : "FSR3", mult, realFps * mult,
+					fg.streamline.dlssgMaxFramesToGenerate, fg.settings.dlssgFramesToGenerate);
+				probeFrames = 0;
+				probeLast = probeNow;
+			}
+		}
+
 		// v0.7.13：DRS（dynamicResolution）与 DLSS jitter 由 Main_UpdateJitter hook
 		// 在渲染前设置（v0.7.11 已验证 kMAIN 2560x1440）；DLSS 超分由
 		// MenuManagerDrawInterfaceStart hook 在 UI 绘制前执行（写 kFRAMEBUFFER）。
@@ -659,61 +682,41 @@ namespace FrameGen
 			}
 		}
 
-		// v0.7.17：恢复 Present 超分（v0.7.12 逻辑）——MenuManager 写 kFRAMEBUFFER 方案在
-		// Skyrim SE 上不可行（运行时 kFRAMEBUFFER.texture == nullptr，MenuDraw entry 实锤）。
-		// DLSS 输入 = 引擎 kMAIN（DRS 渲染分辨率 1440p）→ colorOut（4K）→ 覆盖后缓冲。
-		// UI 是否保留取决于 Skyrim UI 是否画在 kMAIN（实测验证；v0.7.12 未实测 UI 状态）。
-		{
-			// jitter 已由 Main_UpdateJitter hook 设置（渲染前）✓
-			// v0.7.24：enableUpscale=false → 跳过 DLSS（回到纯插帧，帧数最高）
-			bool dlssOk = false;
-			if (!dlssgMode && fg.fgActive.load() && fg.settings.enableUpscale && fg.streamline.featureDLSS && fg.GetFrameBuffer()) {
-				ID3D11Resource* depth11 = nullptr;
-				ID3D11Resource* mvec11 = nullptr;
-				ID3D11Resource* colorIn11 = swapChainBufferWrapped ? swapChainBufferWrapped->resource11 : nullptr;
-				if (auto* renderer = RE::BSGraphics::Renderer::GetSingleton()) {
-					auto& depthTex = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
-					auto& mvecTex = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
-					// v0.7.19：DLSS 输入 = 后缓冲（1440p，含 ENB 后处理 + UI）——kMAIN 是
-					// ENB 处理前的 3D 场景，用它覆盖会把 ENB 效果盖掉（用户实测 ENB 没了）
-					depth11 = depthTex.texture ? static_cast<ID3D11Resource*>(depthTex.texture) : nullptr;
-					mvec11 = mvecTex.texture ? static_cast<ID3D11Resource*>(mvecTex.texture) : nullptr;
-					// v0.7.18：extent 用输入纹理实际尺寸（自适应）——kMAIN 应为 1440p（DRS），
-					// 用实际尺寸避免放大/裁剪错乱
-					std::uint32_t inW = renderWidth;
-					std::uint32_t inH = renderHeight;
-					if (swapChainBufferWrapped) {
-						D3D11_TEXTURE2D_DESC md{};
-						static_cast<ID3D11Texture2D*>(swapChainBufferWrapped->resource11)->GetDesc(&md);
-						inW = md.Width;
-						inH = md.Height;
+		// v0.48：DLSS 超分已迁到 Main_PostProcessing（ENB 前，见 FrameGen.cpp）。这里只做
+		// 兜底拷贝：后缓冲（含 ENB + DLSS 超分结果）→ colorOut，供 DLSSNR + FG 消费。
+		if (colorOutWrapped && swapChainBufferWrapped)
+			d3d11Context->CopyResource(colorOutWrapped->resource11, swapChainBufferWrapped->resource11);
+
+		// v0.46b：回退到 colorOut 输入（DLSS 超分结果，1440p）——上一版 kMAIN subrect
+		// 方案在 DRS 失效时（kMAIN 恒 2560x1440，见 Upscale diag）取到的是画面左上角
+		// 裁剪，DLSS5 错位无效 + 超级性能冻结。DRS 失效是根因（kMAIN 不降到渲染分辨率），
+		// 需单独攻；此处先恢复 colorOut 全分辨率稳定态（DLSS5 有效果）。
+		if (fg.settings.neuralRenderingEnabled) {
+			ID3D11Resource* nrColor = !dlssgMode
+				? (colorOutWrapped ? colorOutWrapped->resource11 : nullptr)
+				: (swapChainBufferWrapped ? swapChainBufferWrapped->resource11 : nullptr);
+			if (nrColor) {
+				if (auto* nrRenderer = RE::BSGraphics::Renderer::GetSingleton()) {
+					auto& nrDepth = nrRenderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+					auto& nrMvec = nrRenderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
+					static std::uint32_t nrDiag = 0;
+					if (++nrDiag % 180 == 1) {
+						SKSE::log::info("[FrameGen] DLSSNR: color={} depth={} depthSRV={} mvec={} status={}",
+							nrColor != nullptr, nrDepth.texture != nullptr, nrDepth.depthSRV != nullptr,
+							nrMvec.texture != nullptr, NeuralRendering::Renderer::Instance().StatusText());
 					}
-					// v0.7.18 诊断（节流）：输入实际尺寸 vs 预期 render 尺寸
-					// v0.7.23：加 kMAIN 实际尺寸——确认 DRS（NOP 原 DRS 后）是否真降到 1440p
-					static std::uint32_t diagFrame = 0;
-					if (++diagFrame % 180 == 1) {
-						std::uint32_t kMainW = 0, kMainH = 0;
-						if (auto* r2 = RE::BSGraphics::Renderer::GetSingleton()) {
-							auto& mrt = r2->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
-							if (mrt.texture) {
-								D3D11_TEXTURE2D_DESC kd{};
-								static_cast<ID3D11Texture2D*>(mrt.texture)->GetDesc(&kd);
-								kMainW = kd.Width;
-								kMainH = kd.Height;
-							}
-						}
-						SKSE::log::info("[FrameGen] Upscale diag: backbuffer {}x{} kMAIN {}x{} (expect render {}x{} out {}x{})",
-							inW, inH, kMainW, kMainH, renderWidth, renderHeight, swapChainDesc.Width, swapChainDesc.Height);
+					if (nrDepth.texture && nrDepth.depthSRV && nrMvec.texture) {
+						D3D11_TEXTURE2D_DESC nrCd{}, nrMd{};
+						static_cast<ID3D11Texture2D*>(nrColor)->GetDesc(&nrCd);
+						static_cast<ID3D11Texture2D*>(nrMvec.texture)->GetDesc(&nrMd);
+						NeuralRendering::Renderer::Instance().Apply(
+							d3d11Device.get(), d3d11Context.get(),
+							nrColor, nrDepth.texture, nrDepth.depthSRV, nrMvec.texture, nrColor,
+							nrMd.Width, nrMd.Height, nrCd.Width, nrCd.Height,
+							static_cast<float>(nrMd.Width), static_cast<float>(nrMd.Height), fg.nrTuning);
 					}
-					dlssOk = fg.streamline.EvaluateDLSS(d3d11Context.get(),
-						colorIn11,
-						colorOutWrapped ? colorOutWrapped->resource11 : colorIn11,
-						depth11, mvec11, inW, inH, *fg.GetFrameBuffer(), fg.settings);
 				}
 			}
-			// 兜底：超分未执行/失败 → 引擎画面拷进 colorOut（同尺寸 4K CopyResource）
-			if (!dlssOk && colorOutWrapped && swapChainBufferWrapped)
-				d3d11Context->CopyResource(colorOutWrapped->resource11, swapChainBufferWrapped->resource11);
 		}
 
 		// v0.24.1：游戏内菜单/FPS overlay 绘制——必须在 fence 之前（D3D11 写 colorOut 完成

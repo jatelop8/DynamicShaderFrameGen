@@ -19,6 +19,7 @@
 #include <chrono>
 #include "FidelityFX.h"
 #include "ImguiMenu.h"
+#include "NeuralRendering/Renderer.h"  // DLSS5 Neural Rendering（内置 NGX Feature 18）
 
 namespace FrameGen
 {
@@ -99,6 +100,16 @@ namespace FrameGen
 				return a_default;
 			}
 		};
+		auto readFloat = [](const std::string& a_line, float a_default) {
+			const auto eq = a_line.find('=');
+			if (eq == std::string::npos)
+				return a_default;
+			try {
+				return std::stof(a_line.substr(eq + 1));
+			} catch (...) {
+				return a_default;
+			}
+		};
 
 		std::ifstream f("Data/SKSE/Plugins/DynamicShaderFrameGen.ini");
 		if (!f.is_open()) {
@@ -129,6 +140,28 @@ namespace FrameGen
 				settings.frameGeneration = readBool(line, true);
 			else if (key == "EnableUpscale")
 				settings.enableUpscale = readBool(line, true);   // v0.7.24：DLSS 超分开关
+			// DLSS5 Neural Rendering（内置 NGX Feature 18）——与帧生成互斥
+			else if (key == "NeuralRenderingEnabled")
+				settings.neuralRenderingEnabled = readBool(line, false);
+			// DLSSNR 调优（GUI 滑块，INI 持久化；对齐 CS FoveatedRender）
+			else if (key == "NRIntensity")
+				nrTuning.intensity = std::clamp(readFloat(line, 0.8f), 0.0f, 2.0f);
+			else if (key == "NRLocalTone")
+				nrTuning.localToneStrength = std::clamp(readFloat(line, 0.75f), 0.0f, 2.0f);
+			else if (key == "NRLocalStructure")
+				nrTuning.localStructureStrength = std::clamp(readFloat(line, 0.9f), 0.0f, 2.0f);
+			else if (key == "NRSkinStructure")
+				nrTuning.skinStructureStrength = std::clamp(readFloat(line, 0.9f), 0.0f, 2.0f);
+			else if (key == "NRStyle")
+				nrTuning.style = std::clamp(static_cast<std::uint32_t>(readInt(line, 3)), 0u, 3u);
+			else if (key == "NRAutoMask")
+				nrTuning.useAutoMask = readBool(line, true);
+			else if (key == "NRUICorrection")
+				nrTuning.uiCorrection = readBool(line, false);
+			// v0.44：DLSSNR 输入分辨率缩放（性能优化）。1.0=全分辨率；0.5=半分辨率
+			// （FP8 计算量减 ~75%）。0.5~0.75 推荐，越低越快但细节越少。
+			else if (key == "NRRenderScale")
+				nrTuning.renderScale = std::clamp(readFloat(line, 1.0f), 0.25f, 1.0f);
 			// v0.25：EnableDLSSNR/NRDirectTest/NR* 已移除（NR 改走 ReShade 外挂方案）
 			else if (key == "FpsOverlay")
 				settings.fpsOverlay = readBool(line, true);      // v0.24：FPS 显示器（默认开）
@@ -137,7 +170,7 @@ namespace FrameGen
 			else if (key == "PresetDLSS")
 				settings.presetDLSS = std::clamp(readInt(line, 0), 0, 4);
 			else if (key == "DLSSGFramesToGenerate")
-				settings.dlssgFramesToGenerate = std::clamp(readInt(line, 1), 1, 4);   // v0.31：多倍帧生成
+				settings.dlssgFramesToGenerate = std::clamp(readInt(line, 1), 1, 4);   // v0.31：多倍帧生成（50系可 3=4x，40系 clamp 到 1）
 			else if (key == "Sharpness") {
 				// v0.6.3：DLSS 超分锐化（0-1，0=关闭）
 				try {
@@ -168,11 +201,14 @@ namespace FrameGen
 				} catch (...) {}
 			}
 		}
-		// v0.39（用户决定）：**DLSSG（provider=1）已移除**——用户实测 N 卡
-		// FSR3 帧生成 + DLSS 超分（provider=0）一切正常，DLSSG 在复杂整合环境
-		// 频闪/黑屏不稳定（v0.27-v0.38 十二轮未收敛）。强制 provider=0（FSR3），
-		// 忽略 INI 里的 Provider 值，DLSSG 代码保留但不可达。
-		settings.provider = 0;
+		// v0.45：provider 尊重 INI（0=FSR3 默认稳定，1=DLSSG 供 50 系 MFG）。
+		// DLSSG 多倍帧生成只服务 50 系（Blackwell 原生 numFramesToGenerateMax=3），
+		// 40 系会被 SetDLSSGOptions 按真实上限 clamp 到 1（2x）。不再有任何
+		// 40 系解锁 hack（AdaMidpointFix/NgxMfgHook/MFGUnlock 已删除）。
+		// v0.48：DLSS5 Neural Rendering 由 INI/GUI 控制（NeuralRenderingEnabled）。
+		// renderScale 默认保持 1.0（全分辨率，DLSS5 完整效果）——降分辨率虽提帧数，
+		// 但神经网络在低分辨率上分析会导致脸部重光照细节减少（"没效果"）。性能优化
+		// 交给 GUI 滑块由用户自行权衡，不再默认降。
 		SKSE::log::info("[FrameGen] Config loaded: Enable={} ForceEnable={} ForceBorderless={} Provider={} FrameGeneration={} EnableUpscale={} QualityMode={} PresetDLSS={} SL_LogLevel={} ToggleKey={:#x} FpsOverlay={}",
 			settings.enableFrameGen, settings.forceEnable, settings.forceBorderless, settings.provider, settings.frameGeneration,
 			settings.enableUpscale, settings.qualityMode, settings.presetDLSS, settings.streamlineLogLevel, settings.toggleKey,
@@ -272,6 +308,20 @@ namespace FrameGen
 		{
 			if (auto* st = RE::BSGraphics::State::GetSingleton()) {
 				auto& rd = st->GetRuntimeData();
+				// v0.47d 诊断：统计 scissor 尺寸分布（区分场景渲染 vs 后处理阶段），
+				// 判定引擎是否在场景渲染时用 ratio 缩放了 scissor（出现 1706x960 即 DRS 生效）
+				static std::uint32_t scDiag = 0;
+				static std::uint32_t fullCount = 0, renderCount = 0, otherCount = 0;
+				if (a_right == 2560 && a_bottom == 1440) fullCount++;
+				else if (a_right == 1706 && a_bottom == 960) renderCount++;
+				else otherCount++;
+				if (++scDiag % 900 == 1) {
+					SKSE::log::info("[FrameGen] Scissor dist: full(2560x1440)={} render(1706x960)={} other={} lock={} ratio=({:.3f},{:.3f}) last=({},{},{},{})",
+						fullCount, renderCount, otherCount,
+						static_cast<int>(rd.dynamicResolutionLock),
+						rd.dynamicResolutionWidthRatio, rd.dynamicResolutionHeightRatio,
+						a_left, a_top, a_right, a_bottom);
+				}
 				if (!rd.dynamicResolutionLock) {
 					a_left = static_cast<int>(a_left * rd.dynamicResolutionWidthRatio);
 					a_right = static_cast<int>(a_right * rd.dynamicResolutionWidthRatio);
@@ -312,12 +362,83 @@ namespace FrameGen
 			SKSE::log::error("[FrameGen] SetScissorRect detour failed ({})", scRes);
 		}
 
-		// v0.7.20：NOP 原 DRS 系统（CS 同款）——引擎 DRS 会重置/干扰我们设的 ratio/lock
-		// REL 35556/36555 已验证在 1170 库（36555 -> 0x643300）；0x2D 偏移 CS 用（1.6.1170）
-		REL::safe_write(
-			REL::RelocationID(35556, 36555).address() + REL::Relocate(0x2D, 0x2D, 0x25),
-			REL::NOP5, sizeof(REL::NOP5));
-		SKSE::log::info("[FrameGen] Vanilla DRS system disabled (NOP @ 36555+0x2D)");
+		// v0.48c 实验：取消 NOP（恢复引擎 DRS）。用户反馈早期 V1/V2（DLSS 输入 kMAIN 真超分）
+		// 锐化/LMK 有效果，怀疑 NOP 掉引擎 DRS（0xe587f0）导致引擎读 ratio 设 viewport 的
+		// 机制也失效（viewport 恒 2560x1440 不降）。lock=1 时 0xe587f0 直接 ret 不动态调
+		// ratio，所以取消 NOP 后 ratio 仍固定 0.667（安全）。
+		// REL::safe_write(
+		// 	REL::RelocationID(35556, 36555).address() + REL::Relocate(0x2D, 0x2D, 0x25),
+		// 	REL::NOP5, sizeof(REL::NOP5));
+		// SKSE::log::info("[FrameGen] Vanilla DRS system disabled (NOP @ 36555+0x2D)");
+		SKSE::log::info("[FrameGen] v0.48c: vanilla DRS NOT disabled (NOP removed, experiment)");
+	}
+
+	// v0.48：Main_PostProcessing hook（CS 同款）——引擎后处理管线入口（体积光照后、
+	// 后处理前）。此时做 DLSS 超分（kMAIN → colorOutWrapped → 写回 kMAIN），后处理
+	// （含 ENB）读超分结果 → DLSS 锐化/LMK 在 ENB 前生效 + ENB 保留。之前 DLSS 在
+	// Present（ENB 后）锐化被 ENB 盖掉。REL 100430/107148 + 0x1F0/0x1E7/0x206。
+	struct MainPostProcessingHook
+	{
+		static void thunk(RE::ImageSpaceManager* a_this, std::uint32_t a3, RE::RENDER_TARGET a_target, void* a_4, bool a_5)
+		{
+			Get().OnMainPostProcessing();
+			func(a_this, a3, a_target, a_4, a_5);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
+	void FrameGen::InstallMainPostProcessingHook()
+	{
+		const std::uintptr_t target =
+			REL::RelocationID(100430, 107148).address() + REL::Relocate(0x1F0, 0x1E7, 0x206);
+		if (*(std::uint8_t*)target != 0xE8) {
+			SKSE::log::warn("[FrameGen] Main_PostProcessing hook target not a call (byte {:#x} at {:#x}) - DLSS upscale hook skipped",
+				*(std::uint8_t*)target, target);
+			return;
+		}
+		stl_ext::write_thunk_call<MainPostProcessingHook>(target);
+		SKSE::log::info("[FrameGen] Main_PostProcessing hook installed (DLSS upscale before post-processing)");
+	}
+
+	void FrameGen::OnMainPostProcessing()
+	{
+		// DLSS 超分：kMAIN → colorOutWrapped → CopyResource 写回 kMAIN（后处理含 ENB 读结果）
+		if (!settings.enableUpscale || !streamline.featureDLSS || !GetFrameBuffer())
+			return;
+		if (!dx12SwapChain.d3d11Device || !dx12SwapChain.d3d11Context || !dx12SwapChain.colorOutWrapped)
+			return;
+
+		auto* renderer = RE::BSGraphics::Renderer::GetSingleton();
+		if (!renderer)
+			return;
+		auto& mainTex = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
+		auto& depthTex = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+		auto& mvecTex = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
+		if (!mainTex.texture || !depthTex.texture || !depthTex.depthSRV || !mvecTex.texture)
+			return;
+
+		// 1:1 DLAA（DRS 失效，kMAIN 全分辨率）。DLSS 输入=输出=全分辨率，锐化/LMK 生效。
+		D3D11_TEXTURE2D_DESC d{};
+		static_cast<ID3D11Texture2D*>(mainTex.texture)->GetDesc(&d);
+		const std::uint32_t w = d.Width;
+		const std::uint32_t h = d.Height;
+
+		const bool ok = streamline.EvaluateDLSS(dx12SwapChain.d3d11Context.get(),
+			mainTex.texture, dx12SwapChain.colorOutWrapped->resource11,
+			depthTex.texture, mvecTex.texture, w, h, *GetFrameBuffer(), settings);
+
+		// v0.48 诊断：确认 DLSS 超分在 Main_PostProcessing 是否真执行 + sharpness/preset 值
+		static std::uint32_t diag = 0;
+		if (++diag % 180 == 1) {
+			SKSE::log::info("[FrameGen] PostProcDLSS: ok={} w={} h={} sharpness={:.2f} preset={} qualityMode={}",
+				ok, w, h, settings.sharpness, settings.presetDLSS, settings.qualityMode);
+		}
+
+		if (!ok)
+			return;
+
+		// 写回 kMAIN（后处理含 ENB 读 DLSS 超分结果）
+		dx12SwapChain.d3d11Context->CopyResource(mainTex.texture, dx12SwapChain.colorOutWrapped->resource11);
 	}
 
 	void FrameGen::OnMainUpdateJitter(RE::BSGraphics::State* a_state)
@@ -423,6 +544,10 @@ namespace FrameGen
 				dx12SwapChain.colorOutWrapped != nullptr, dx12SwapChain.d3d11Context != nullptr,
 				renderer != nullptr, hasMain, hasFb);
 		}
+
+		// DLSS5 Neural Rendering 已迁移到 DX12SwapChain::Present（kFRAMEBUFFER 在
+		// Skyrim SE 上恒为 nullptr——v0.7.17 已实锤，OnMenuDrawStart 里跑不了）。
+		// 见 DX12SwapChain.cpp Present 的 DLSSNR 集成块（后缓冲作 color 输入）。
 
 		if (dx12SwapChain.dlssgMode || !fgActive.load() || !streamline.featureDLSS || !GetFrameBuffer())
 			return;

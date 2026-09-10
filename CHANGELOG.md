@@ -1,5 +1,47 @@
 # DynamicShaderFrameGen — What's New
 
+## DLSS 5 Neural Rendering is now built in — v0.48
+
+The headline of this release: DLSS 5 neural rendering (the "DLSS-NR" pass) now
+runs straight from the plugin. No ReShade add-on, no `dlss5-dx11-bridge`, no
+extra DLLs dropped in your game root.
+
+- Sharper skin, hair, foliage and stone detail, with automatic masking so flat
+  and uniform surfaces are left untouched
+- Runs **together with frame generation** — the neural pass goes first, frame
+  generation interpolates the result (the two used to be mutually exclusive)
+- Tune it live in the menu (hold `Home`): Intensity, Local Tone, Local
+  Structure, Skin Structure, Style, Automatic Mask, UI Correction and NR Render
+  Scale (lower = faster, 1.0 = full-resolution analysis)
+- Needs an RTX GPU and the `nvngx_dlssnr.dll` **310.8.x** runtime that ships
+  with the mod. Any other version is refused at load, so the plugin turns itself
+  off instead of misbehaving
+
+## DLSS sharpening now lands before ENB, not after — v0.48
+
+DLSS upscaling used to run in `Present` — after ENB — so ENB's own
+post-processing painted over the DLSS sharpening and the preset's LMK. The
+upscale now runs at the engine's post-processing entry point (before ENB), so
+the sharpening survives and ENB still composites on top of the upscaled frame.
+
+## Frame gen provider choice is back — v0.42 / v0.45
+
+- Pick **FSR3 (2x, all GPUs)** or **DLSSG (NVIDIA)** in the menu; changing it
+  needs a game restart
+- DLSSG multi-frame generation: 2x on RTX 40, up to **4x on RTX 50**. The
+  ceiling now comes from the Streamline runtime itself (`numFramesToGenerateMax`)
+  instead of an unlock hack — no more forced values, no more guessing
+- Default `DLSSGFramesToGenerate` is 3, so an RTX 50 gets 4x out of the box and
+  a 40-series card quietly clamps to 2x
+
+## Smaller changes
+
+- `RenderResolutionScale` default is now `0` (Auto) — follows the DLSS Quality
+  Mode table instead of a hard-coded 0.70. Set `0.30`–`1.00` for a custom ratio
+- New compute shaders for the neural pass ship under
+  `Shaders/Upscaling/NeuralRendering/` (depth-guide copy + downscale)
+- `version.rc` bumped to 0.48.0.0
+
 ## Render resolution scale (custom DRS) — new in v0.41
 
 Skyrim always renders at 100% resolution, so DLSS had nothing to upscale and frame

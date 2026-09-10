@@ -10,6 +10,7 @@
 
 #include "ImguiMenu.h"
 #include "DX12SwapChain.h"
+#include "NeuralRendering/Renderer.h"  // DLSSNR 状态显示
 
 #include <imgui.h>
 #include <imgui_impl_dx11.h>
@@ -235,11 +236,23 @@ namespace FrameGen
 		// v0.25：DLSS-NR 菜单项已移除（NR 改由外部 ReShade 方案提供）
 
 		ImGui::Separator();
-		// v0.39（用户决定）：DLSSG 已移除——仅 FSR3 帧生成（N 卡也完美，+DLSS 超分）。
-		// Provider 选项移除，避免用户误开 DLSSG（复杂环境频闪/黑屏不稳定）。
-		// v0.40（用户要求）：面向玩家命名中性化——不叫"FSR"，避免误以为 AMD 专用。
-		ImGui::Text("FrameGen: FSR3 tech (all GPUs)");
-		ImGui::TextDisabled("Universal frame interpolation - works on NVIDIA & AMD");
+		// v0.42：恢复 Provider 选项（DLSSG 4x MFG）——Provider 决定 swapchain 路径，
+		// 运行时切换需重启游戏生效（重建 D3D12 proxy）。
+		const char* providers[] = { "FSR3 (2x, all GPUs)", "DLSSG (NVIDIA, 4x MFG)" };
+		ImGui::Combo("Frame Gen Provider", &s.provider, providers, 2);
+		if (s.provider == 1) {
+			const char* mfgModes[] = { "2x", "3x", "4x" };
+			int mfg = static_cast<int>(s.dlssgFramesToGenerate) - 1;
+			if (mfg < 0) mfg = 0;
+			if (ImGui::Combo("MFG Multiplier", &mfg, mfgModes, IM_ARRAYSIZE(mfgModes)))
+				s.dlssgFramesToGenerate = static_cast<std::uint32_t>(mfg + 1);
+			// v0.45：40 系锁定由 SL 原生上限 clamp（50系=4x，40系=2x），无需解锁开关。
+			ImGui::TextDisabled("3x/4x needs RTX 50 (40-series locked to 2x). Restart to apply provider.");
+			ImGui::TextDisabled("Provider change needs restart.");
+		} else {
+			ImGui::Text("FrameGen: FSR3 tech (all GPUs)");
+			ImGui::TextDisabled("Universal frame interpolation - works on NVIDIA & AMD");
+		}
 
 		ImGui::Separator();
 		const char* qualityModes[] = { "DLAA", "Quality", "Balanced", "Performance", "Ultra Performance" };
@@ -247,6 +260,37 @@ namespace FrameGen
 		const char* presets[] = { "Auto", "J", "K", "L", "M" };
 		ImGui::Combo("DLSS Preset", &s.presetDLSS, presets, 5);
 		ImGui::SliderFloat("Sharpness", &s.sharpness, 0.0f, 1.0f, "%.2f");
+
+		// ---- DLSS5 Neural Rendering (NGX Feature 18) ----
+		ImGui::Separator();
+		ImGui::Text("DLSS5 Neural Rendering (NGX Feature 18)");
+		bool nrOn = s.neuralRenderingEnabled;
+		if (ImGui::Checkbox("Enable DLSS Neural Rendering", &nrOn)) {
+			s.neuralRenderingEnabled = nrOn;
+			// v0.42：DLSSNR 与 FG 串联（不再互斥）——DLSSNR 处理画面后 FG 在结果上插帧。
+			// 若叠加闪烁再回退互斥。开 DLSSNR 不再自动关 FG。
+			SKSE::log::info("[FrameGen] DLSSNR {} (GUI)", nrOn ? "enabled" : "disabled");
+		}
+		if (s.neuralRenderingEnabled) {
+			auto& t = a_fg.nrTuning;
+			ImGui::SliderFloat("Intensity", &t.intensity, 0.0f, 2.0f, "%.2f");
+			ImGui::SliderFloat("Local Tone", &t.localToneStrength, 0.0f, 2.0f, "%.2f");
+			ImGui::SliderFloat("Local Structure", &t.localStructureStrength, 0.0f, 2.0f, "%.2f");
+			ImGui::SliderFloat("Skin Structure", &t.skinStructureStrength, 0.0f, 2.0f, "%.2f");
+			static const char* nrStyles[] = { "Style 0", "Style 1", "Style 2", "Style 3" };
+			int style = static_cast<int>(t.style);
+			if (ImGui::Combo("Style", &style, nrStyles, IM_ARRAYSIZE(nrStyles)))
+				t.style = static_cast<std::uint32_t>(style);
+			ImGui::Checkbox("Automatic Mask", &t.useAutoMask);
+			ImGui::Checkbox("UI Correction", &t.uiCorrection);
+			// v0.44：DLSSNR 输入分辨率缩放（性能优化）。低 = 快但细节少。
+			if (ImGui::SliderFloat("DLSSNR Render Scale", &t.renderScale, 0.25f, 1.0f, "%.2f"))
+				NeuralRendering::Renderer::Instance().ResetHistory();
+			ImGui::TextDisabled("Lower = faster (fewer FP8 ops) but less detail. 0.75 = 1080p in.");
+			ImGui::TextDisabled("Status: %s | frames: %llu",
+				NeuralRendering::Renderer::Instance().StatusText(),
+				static_cast<unsigned long long>(NeuralRendering::Renderer::Instance().SuccessfulFrames()));
+		}
 
 		// v0.41：自定义渲染分辨率缩放——引擎渲染分辨率 = 输出 × 比例，DLSS 放大回输出。
 		// Auto=跟随 QualityMode 档位表（旧行为）；自定义 0.30-1.00 实时生效（下帧 kMAIN 重建）。
@@ -293,6 +337,16 @@ namespace FrameGen
 					<< "RenderResolutionScale=" << std::fixed << std::setprecision(2) << s.renderResolutionScale << "\n"
 					<< "PresetDLSS=" << s.presetDLSS << "\n"
 					<< "Sharpness=" << s.sharpness << "\n"
+					<< "NeuralRenderingEnabled=" << (s.neuralRenderingEnabled ? 1 : 0) << "\n"
+					<< "NRIntensity=" << a_fg.nrTuning.intensity << "\n"
+					<< "NRLocalTone=" << a_fg.nrTuning.localToneStrength << "\n"
+					<< "NRLocalStructure=" << a_fg.nrTuning.localStructureStrength << "\n"
+					<< "NRSkinStructure=" << a_fg.nrTuning.skinStructureStrength << "\n"
+					<< "NRStyle=" << a_fg.nrTuning.style << "\n"
+					<< "NRAutoMask=" << (a_fg.nrTuning.useAutoMask ? 1 : 0) << "\n"
+					<< "NRUICorrection=" << (a_fg.nrTuning.uiCorrection ? 1 : 0) << "\n"
+					<< "NRRenderScale=" << std::fixed << std::setprecision(2) << a_fg.nrTuning.renderScale << "\n"
+					<< "DLSSGFramesToGenerate=" << s.dlssgFramesToGenerate << "\n"
 					<< "StreamlineLogLevel=" << s.streamlineLogLevel << "\n"
 					<< "ToggleKey=0x" << std::hex << s.toggleKey << std::dec << "\n";
 				ini.close();

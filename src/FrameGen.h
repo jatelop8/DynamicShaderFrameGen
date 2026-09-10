@@ -17,6 +17,8 @@
 #include <d3d12.h>
 #include <winrt/base.h>
 
+#include "NeuralRendering/Runtime.h"  // DLSS5 Tuning（GUI 滑块绑定）
+
 // COM 异常辅助（精简自 CS PCH.h）
 namespace DX
 {
@@ -100,12 +102,16 @@ namespace FrameGen
 		// v0.7.24：DLSS 超分独立开关——4K 下 DLAA 重建每帧 ~3-5ms（原生 50→37→FG 100+→75）；
 		// 关掉回到 v0.6.2.2 纯插帧状态（100+ 帧，画面 = 引擎原生 4K）
 		bool enableUpscale = true;     // DLSS 超分/DLAA 重建（false = 仅 FSR3 插帧，帧数最高）
+		// DLSS5 Neural Rendering（内置 NGX Feature 18）——开启时在 DLSS 超分结果上做
+		// neural rendering（UI 前）。与帧生成互斥（跟 CS 一致：关 FG 才激活，避免
+		// 两套 temporal 叠加闪烁）。
+		bool neuralRenderingEnabled = false;  // INI NeuralRenderingEnabled
 		int  provider = 0;             // 0=FSR3（AMD 插帧，默认） 1=DLSSG（NVIDIA 插帧）
 		int  qualityMode = 1;          // DLSS 模式：0=DLAA 1=Quality 2=Balanced 3=Performance 4=UltraPerformance
 		// v0.41：渲染分辨率缩放（自定义 DRS）——引擎渲染分辨率 = 输出 × 该比例，DLSS
 		// 再把低分辨率画面放大回输出分辨率（真超分才有 NR/帧生成空间）。0 = 跟随
 		// QualityMode 档位表（旧行为）；>0 = 自定义比例（0.30-1.00，如 0.70 = 70%）。
-		float renderResolutionScale = 0.70f;  // INI RenderResolutionScale / GUI slider
+		float renderResolutionScale = 0.0f;  // INI RenderResolutionScale / GUI slider（0=Auto 跟随 QualityMode 档位表）
 		// v0.31（对齐 open-shaders）：多倍帧生成（DLSS 4 MFG）——每真实帧生成 N 个插帧
 		// （1=2x 插帧 2=3x 3=4x，取决于 GPU/SL SDK 支持，运行时 clamp 到硬件上限）
 		std::uint32_t dlssgFramesToGenerate = 1;  // INI DLSSGFramesToGenerate
@@ -124,6 +130,9 @@ namespace FrameGen
 	{
 	public:
 		Settings settings;
+
+		// DLSS5 Neural Rendering 调优参数（GUI 滑块实时改，Apply 每帧传入；对齐 CS）
+		NeuralRendering::Tuning nrTuning;
 
 		// 加载 INI 配置（main.cpp 启动时调用）
 		void LoadConfig();
@@ -182,6 +191,13 @@ namespace FrameGen
 		// 在渲染前设置（vs Present 帧尾），引擎重建 kMAIN 为目标渲染分辨率。
 		void InstallDRSHook();
 		void OnMainUpdateJitter(RE::BSGraphics::State* a_state);
+
+		// v0.48：Main_PostProcessing hook（CS 同款）——引擎后处理管线入口（体积光照后、
+		// 后处理前）。此时做 DLSS 超分（kMAIN → 中间纹理 → 写回 kMAIN），后处理（含 ENB）
+		// 读超分结果 → DLSS 锐化/LMK 在 ENB 前生效 + ENB 保留。之前 DLSS 在 Present（ENB
+		// 后），锐化被 ENB 盖掉。
+		void InstallMainPostProcessingHook();
+		void OnMainPostProcessing();
 
 		// v0.7.13：安装 MenuManagerDrawInterfaceStart hook（CS 同款）——引擎 UI 绘制
 		// 开始前回调。此时把 DLSS 超分结果写入引擎 kFRAMEBUFFER（4K），UI 随后叠加

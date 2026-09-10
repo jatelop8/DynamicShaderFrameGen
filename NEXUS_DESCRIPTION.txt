@@ -1,12 +1,12 @@
 [center][size=5][color=#E8A33D]⚡ DynamicShaderFrameGen ⚡[/color][/size]
 
-[size=4][b]FSR 3.1 Frame Generation + DLSS Upscaling for Skyrim SE (AE)[/b][/size]
+[size=4][b]FSR 3.1 Frame Generation + DLSS Upscaling + DLSS 5 Neural Rendering[/b][/size]
 
 [color=#AAAAAA]Fully open-source · ENB-compatible · No paid runtime[/color][/center]
 
 [hr]
 
-An open-source SKSE plugin that adds [b]AMD FSR 3.1 Frame Generation[/b] and [b]NVIDIA DLSS Upscaling / DLAA[/b] to Skyrim Special Edition (Anniversary Edition 1.6.1170), designed to work side-by-side with ENB.
+An open-source SKSE plugin that adds [b]AMD FSR 3.1 Frame Generation[/b], [b]NVIDIA DLSS Upscaling / DLAA[/b] and [b]DLSS 5 Neural Rendering[/b] to Skyrim Special Edition (Anniversary Edition 1.6.1170), designed to work side-by-side with ENB.
 
 Frame generation uses motion-vector based interpolation to [b]double the effective frame rate[/b] and significantly stabilizes frame pacing. Because the plugin proxies the swap chain (D3D11 shared textures + a D3D12 swap chain), ENB composites its post-processing onto the shared backbuffer — [color=#7EC8E3][b]ENB effects survive frame generation[/b][/color].
 
@@ -17,8 +17,9 @@ Frame generation uses motion-vector based interpolation to [b]double the effecti
 [list]
 [*] [b]FSR 3.1 Frame Generation[/b] (AMD FidelityFX SDK) — up to [b]2× effective frame rate[/b]; works on [b]ANY DX12 GPU[/b] (NVIDIA / AMD / Intel)
 [*] [b]NVIDIA DLSS Upscaling & DLAA[/b] (NVIDIA Streamline SDK) — temporal upscaling with reconstruction and sharpening; runs as DLAA at native resolution
+[*] [b]DLSS 5 Neural Rendering[/b] [color=#7EC8E3](built in since v0.48)[/color] — neural re-lighting and detail synthesis on top of the upscaled frame; runs [b]in series with frame generation[/b]
 [*] [b]ENB compatibility[/b] — verified side-by-side; also works with ReShade (they proxy different API layers)
-[*] [b]In-game ImGui menu[/b] (hold [b]Home[/b]) — toggle FG / DLSS upscale, quality mode, sharpness, FPS overlay, save to INI
+[*] [b]In-game ImGui menu[/b] (hold [b]Home[/b]) — toggle FG / DLSS upscale / DLSS5 NR, quality mode, sharpness, NR tuning sliders, FPS overlay, save to INI
 [*] [b]FPS overlay[/b] — white frame counter in the top-right; doubles while FG is active
 [*] [b]Render scale[/b] via engine dynamic resolution — perf gain, backbuffer stays at output resolution
 [/list]
@@ -32,6 +33,7 @@ Frame generation uses motion-vector based interpolation to [b]double the effecti
 [*] SKSE64 (2.2.x for AE) + Address Library (1.6.1170)
 [*] ENB Series — optional but recommended (fully supported)
 [*] Any DX12 GPU for FSR3 FG; NVIDIA RTX for DLSS / DLAA
+[*] [b]DLSS 5 Neural Rendering[/b] (optional) — RTX GPU + the [i]nvngx_dlssnr.dll[/i] [b]310.8.x[/b] runtime included in the archive
 [/list]
 
 [hr]
@@ -43,7 +45,10 @@ Install via MO2 / Vortex, or copy the mod folder into your Data folder:
 [code]
 SKSE/Plugins/DynamicShaderFrameGen.dll
 SKSE/Plugins/DynamicShaderFrameGen.ini
-Shaders/   (upscale copy shaders + FidelityFX / Streamline runtimes)
+Shaders/Upscaling/                  (copy shaders + upscale shaders)
+Shaders/Upscaling/FidelityFX/       (AMD FSR3 frame-generation runtime)
+Shaders/Upscaling/Streamline/       (NVIDIA Streamline runtime + nvngx_dlssnr.dll)
+Shaders/Upscaling/NeuralRendering/  (DLSS5 depth-guide / downscale compute shaders)
 [/code]
 
 [hr]
@@ -53,9 +58,11 @@ Shaders/   (upscale copy shaders + FidelityFX / Streamline runtimes)
 Hold [b]Home[/b] to open the in-game menu.
 
 [list]
-[*] [b]Frame Generation[/b] — toggle FSR 3.1 FG (all GPUs)
+[*] [b]Frame Generation[/b] — toggle frame interpolation (FSR 3.1 on all GPUs, or DLSSG on NVIDIA)
+[*] [b]Frame Gen Provider[/b] — FSR3 (2x, all GPUs) or DLSSG (NVIDIA, 3x/4x MFG; needs a restart)
 [*] [b]DLSS Upscale[/b] — toggle DLSS upscaling / DLAA
 [*] [b]Quality Mode / Sharpness[/b] — adjust DLSS settings (live)
+[*] [b]DLSS5 Neural Rendering[/b] — enable the built-in neural pass + tuning sliders
 [*] [b]FPS Overlay[/b] — toggle the frame counter
 [*] [b]Save to INI[/b] — persist all settings
 [/list]
@@ -64,16 +71,19 @@ Hold [b]Home[/b] to open the in-game menu.
 
 [hr]
 
-[h2]🧠 DLSS 5 / DLSS-NR (Neural Rendering) — Recommended Route[/h2]
+[h2]🧠 DLSS 5 Neural Rendering — now built in (v0.48)[/h2]
 
-Since v0.25 this plugin no longer bundles DLSS-NR internally. For the latest [b]DLSS 5 neural-rendering quality[/b] (sharper skin / hair / foliage detail), use the external ReShade addon route:
+As of [b]v0.48[/b] the plugin drives DLSS 5 neural rendering (NGX [b]Feature 18[/b], [i]nvngx_dlssnr.dll[/i]) [b]natively from inside the plugin[/b] — no ReShade add-on, no [i]dlss5-dx11-bridge[/i], no proxy DLLs in the game root. The runtime is loaded on the plugin's own private D3D12 session.
 
 [list]
-[*] [b]Deployment pack[/b] — a complete DLSS5 pack ([i]dlss5-dx11-bridge + renodx-dlss5 + universal nvngx_dlssnr.dll[/i]) is in the [b]Files[/b] section. Unpack and copy everything into your game root folder, then enable [b]DLSS 5 Neural Rendering[/b] in the ReShade overlay (Home).
-[*] [b]GPU support[/b] — the bundled [i]nvngx_dlssnr.dll[/i] works across [b]RTX 20 / 30 / 40 / 50[/b] series (patched universal build). RTX 40/50 give the best results; RTX 20/30 run with a performance cost.
-[*] [b]Coexists with this mod[/b] — ReShade proxies dxgi.dll, this plugin uses its own swap-chain proxy, so both run side-by-side.
-[*] ReShade itself: [url=https://reshade.me]reshade.me[/url] (6.x with add-on support)
+[*] [b]What it does[/b] — after DLSS upscaling resolves the frame, the neural renderer re-lights and re-details the image before UI composition: sharper skin, hair, foliage and stone detail, with automatic per-pixel masking so flat areas stay untouched
+[*] [b]Runs in series with frame generation[/b] — neural pass first, frame generation interpolates the result (older builds made the two mutually exclusive; that restriction is gone)
+[*] [b]GPU support[/b] — RTX 20 / 30 / 40 / 50. RTX 40/50 give the best quality-per-cost; RTX 20/30 work at a higher performance cost
+[*] [b]Runtime[/b] — [i]nvngx_dlssnr.dll[/i] [b]310.8.x[/b] must sit at [i]Data/Shaders/Upscaling/Streamline/[/i] (shipped in the archive). Any other version is rejected at load and logged — the plugin stays off instead of misbehaving
+[*] [b]In-game tuning[/b] (hold [b]Home[/b] → [i]DLSS5 Neural Rendering[/i]) — Intensity, Local Tone, Local Structure, Skin Structure, Style (0–3), Automatic Mask, UI Correction and [b]DLSSNR Render Scale[/b] (0.25–1.0; lower = faster, 1.0 = full-resolution analysis). All values persist to the INI
 [/list]
+
+[color=#AAAAAA][b]Alternative — external ReShade route:[/b] if you already run the DLSS5 ReShade pack ([i]dlss5-dx11-bridge + renodx-dlss5 + nvngx_dlssnr.dll[/i] in the game root), that still works and coexists with this plugin. Use [b]either[/b] the built-in NR [b]or[/b] the ReShade add-on — not both, or the image gets two passes of neural processing.[/color]
 
 [hr]
 
@@ -93,13 +103,15 @@ Since v0.25 this plugin no longer bundles DLSS-NR internally. For the latest [b]
 [*] [b]Nothing happens[/b] — verify SKSE64 + Address Library (1.6.1170), check [i]My Games\Skyrim Special Edition\SKSE\DynamicShaderFrameGen.log[/i]
 [*] [b]DLSS menu greyed out[/b] — non-NVIDIA GPU or Streamline runtime missing
 [*] [b]FPS counter shows 2×[/b] — frame generation is active
+[*] [b]DLSS5 Neural Rendering does nothing[/b] — check the log for [i][DLSSNR][/i] lines; the runtime must be [i]nvngx_dlssnr.dll[/i] [b]310.8.x[/b] under [i]Shaders/Upscaling/Streamline/[/i] (other versions are rejected), and an RTX GPU is required
+[*] [b]Picture looks double-sharpened[/b] — the built-in neural pass and the external ReShade DLSS5 add-on are both active; disable one
 [/list]
 
 [hr]
 
 [h2]📜 Credits & License[/h2]
 
-[color=#AAAAAA]Fully open-source — [b]GPL-3.0-or-later WITH Modding Exception AND GPL-3.0 Linking Exception[/b]. Built on Community Shaders, ENBFrameGeneration, Dear ImGui, CommonLibSSE-NG, Microsoft Detours, Skyrim-Upscaler, dlss5-dx11-bridge. Runtime: NVIDIA Streamline + AMD FidelityFX SDKs (official SDK licenses).[/color]
+[color=#AAAAAA]Fully open-source — [b]GPL-3.0-or-later WITH Modding Exception AND GPL-3.0 Linking Exception[/b]. Built on Community Shaders (incl. the [i]feature/dlssnr-vr[/i] Neural Rendering fork), ENBFrameGeneration, Dear ImGui, CommonLibSSE-NG, Microsoft Detours, Skyrim-Upscaler, dlss5-dx11-bridge. Runtime: NVIDIA Streamline + AMD FidelityFX SDKs (official SDK licenses).[/color]
 
 [hr]
 
