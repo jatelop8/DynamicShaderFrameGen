@@ -14,13 +14,36 @@ Fully open-source, no paid or closed-source runtime is bundled; the Streamline a
 
 [line]
 
+[size=5][b]⚠️ Please read — two honest notes[/b][/size]
+
+[b]1. DLSS super-resolution (DLAA) has been removed.[/b]
+
+Earlier builds (v0.41–v0.49) shipped DLSS super-resolution / DLAA together with engine dynamic-resolution scaling, so the Quality / Balanced / Performance presets could actually change the frame rate. In practice this path was never stable on Skyrim: true super-resolution (rendering below native and reconstructing with DLSS) produced ghosting, incorrect lighting, and broken presentation (the picture stuck in the top-left corner or doubled).
+
+The root cause is that Skyrim's dynamic-resolution system was added with the Anniversary Edition, and its motion-vector / jitter conventions do not match what DLSS's temporal pass expects, so the temporal reprojection is misaligned and artifacts appear. There is no mature reference to copy — Community Shaders locks DRS to 1:1 (DLAA) on Skyrim and has never shipped true super-resolution either.
+
+Rather than keep an unstable feature that corrupts the picture, it was removed entirely. The engine now renders at native resolution (e.g. 2560×1440), which is clean and stable, and the two features that work reliably are kept: [b]FSR 3.1 frame generation[/b] and [b]DLSS 5 neural rendering[/b].
+
+[b]2. Multi-frame generation (3×/4×) is experimental test content.[/b]
+
+The DLSS-G provider can output up to 4×. Please treat it as a test feature:
+
+[list]
+[*] [b]3×/4× requires an RTX 50-series GPU.[/b] The Streamline runtime exposes this ceiling natively; RTX 40-series is locked to 2× by the runtime and cannot be unlocked.
+[*] [b]3×/4× is experimental[/b] and not guaranteed stable in every mod setup; it may be adjusted or removed in future builds.
+[*] [b]The recommended stable option is FSR 3.1 (2×) on any GPU.[/b]
+[/list]
+
+[line]
+
 [size=5][b]🎯 Features[/b][/size]
 
 [list]
-[*] [b]FSR 3.1 Frame Generation[/b] (AMD FidelityFX SDK) — up to [b]2× effective frame rate[/b]; works on [b]ANY DX12 GPU[/b] (NVIDIA / AMD / Intel)
+[*] [b]FSR 3.1 Frame Generation[/b] (AMD FidelityFX SDK) — [b]2× effective frame rate[/b]; works on [b]ANY DX12 GPU[/b] (NVIDIA / AMD / Intel); the recommended stable option
 [*] [b]DLSS 5 Neural Rendering[/b] [color=#7EC8E3](built in since v0.48)[/color] — neural re-lighting and detail synthesis on top of the rendered frame; runs [b]in series with frame generation[/b]
+[*] [b]DLSS-G multi-frame generation[/b] (optional) — 2× on RTX 40, up to 4× on RTX 50; [b]experimental[/b], see the note above
 [*] [b]ENB compatibility[/b] — verified side-by-side; also works with ReShade (they proxy different API layers)
-[*] [b]In-game ImGui menu[/b] (hold [b]Home[/b]) — toggle FG / DLSS5 NR and NR tuning sliders, FPS overlay, save to INI
+[*] [b]In-game ImGui menu[/b] (hold [b]Home[/b]) — toggle FG / DLSS5 NR, provider, MFG multiplier, NR tuning sliders, FPS overlay, save to INI
 [*] [b]FPS overlay[/b] — white frame counter in the top-right; doubles while FG is active
 [/list]
 
@@ -58,13 +81,13 @@ Shaders/Upscaling/NeuralRendering/  (DLSS5 depth-guide / downscale compute shade
 Hold [b]Home[/b] to open the in-game menu.
 
 [list]
-[*] [b]Frame Generation[/b] — toggle frame interpolation (FSR 3.1 on all GPUs, or DLSSG on NVIDIA)
-[*] [b]Frame Gen Provider[/b] — FSR3 (2x, all GPUs) or DLSSG (NVIDIA, 3x/4x MFG; needs a restart)
+[*] [b]Frame Generation[/b] — toggle frame interpolation
+[*] [b]Frame Gen Provider[/b] — FSR3 (2×, all GPUs, recommended) or DLSSG (NVIDIA, 2×–4×; needs a restart)
+[*] [b]MFG Multiplier[/b] (DLSSG only) — 2× / 3× / 4×; 3×–4× requires RTX 50, 40-series clamps to 2×; [b]experimental[/b]
 [*] [b]DLSS5 Neural Rendering[/b] — enable the built-in neural pass + tuning sliders
 [*] [b]FPS Overlay[/b] — toggle the frame counter
 [*] [b]Save to INI[/b] — persist all settings
 [/list]
-
 
 [line]
 
@@ -166,4 +189,5 @@ This post is published to keep the record complete and transparent. If you are o
 [center][color=#E8A33D][b]If you enjoy the mod, please endorse it![/b][/color]
 [color=#AAAAAA]Bug reports and feature requests are welcome on the Posts / Bugs tabs.[/color]
 
-[size=4][b]— ElderJiang[/b][/size][/center]
+[b]— ElderJiang[/b]
+[color=#AAAAAA]Nexus Mods: JET654 · GitHub: jatelop8[/color][/center]
