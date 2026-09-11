@@ -134,17 +134,7 @@ namespace FrameGen
 		// v0.5.10：upgrade 接口为 SL 代理（swapchain 必调，presentCommon 路径）
 		void UpgradeInterface(void** a_ppInterface);
 
-		// 每帧：设置相机常量 + DLSS 选项 + 评估（超分 + 帧生成）
-		// v0.7.6：返回是否成功——失败时调用方把原画面拷进 colorOut 兜底（防黑屏）
-		// v0.7.8：a_renderWidth/Height = 渲染分辨率（colorIn/depth/mvec extent），
-		// 输出 extent = 输出分辨率（fg.screenWidth/Height）——超分放大
-		bool EvaluateDLSS(ID3D11DeviceContext* a_ctx,
-			ID3D11Resource* a_colorIn, ID3D11Resource* a_colorOut,
-			ID3D11Resource* a_depth, ID3D11Resource* a_motionVectors,
-			std::uint32_t a_renderWidth, std::uint32_t a_renderHeight,
-			const FrameBuffer& a_frameBuffer,
-			const Settings& a_settings);
-
+		// 每帧：设置相机常量 + 评估帧生成（v0.50：DLSS 超分已拔掉，仅保留 DLSSG 插帧）
 		// v0.3：DLSSG 插帧（D3D12 路径）——设置选项 + 评估
 		void SetDLSSGOptions(std::uint32_t a_width, std::uint32_t a_height,
 			std::uint32_t a_mvecDepthW, std::uint32_t a_mvecDepthH, DXGI_FORMAT a_colorFormat);
@@ -173,6 +163,5 @@ namespace FrameGen
 
 	private:
 		void CheckFrameConstants(const FrameBuffer& a_fb, float a_aspect, float a_near, float a_far);
-		void SetDLSSOptions(std::uint32_t a_outputWidth, const Settings& a_settings);
 	};
 }

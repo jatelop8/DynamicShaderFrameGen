@@ -161,11 +161,5 @@ namespace FrameGen
 		winrt::com_ptr<ID3D11PixelShader> copyMvecPS;
 		bool mvecCopyReady = false;
 		bool mvecCopyFailed = false;
-
-		// v0.7.8：color 采样放大拷贝（超分失败兜底：游戏画面渲染尺寸 → colorOut 4K）
-		void CopyColorToShared(ID3D11ShaderResourceView* a_colorSRV, ID3D11RenderTargetView* a_colorRTV);
-		winrt::com_ptr<ID3D11PixelShader> copyColorPS;
-		bool colorCopyReady = false;
-		bool colorCopyFailed = false;
 	};
 }

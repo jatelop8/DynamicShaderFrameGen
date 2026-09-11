@@ -228,8 +228,6 @@ namespace FrameGen
 			a_fg.fgActive.store(fgOn);
 			SKSE::log::info("[FrameGen] Frame generation {} (GUI)", fgOn ? "ENABLED" : "DISABLED");
 		}
-		// v0.7.24：DLSS 超分开关——4K 下 DLAA 重建 ~3-5ms/帧；关掉回到纯插帧（帧数最高）
-		ImGui::Checkbox("DLSS Upscale (DLAA rebuild)", &s.enableUpscale);
 		ImGui::Checkbox("Force Enable (<120Hz)", &s.forceEnable);
 		ImGui::Checkbox("FPS Overlay (top-right)", &s.fpsOverlay);
 
@@ -253,13 +251,6 @@ namespace FrameGen
 			ImGui::Text("FrameGen: FSR3 tech (all GPUs)");
 			ImGui::TextDisabled("Universal frame interpolation - works on NVIDIA & AMD");
 		}
-
-		ImGui::Separator();
-		const char* qualityModes[] = { "DLAA", "Quality", "Balanced", "Performance", "Ultra Performance" };
-		ImGui::Combo("DLSS Quality Mode", &s.qualityMode, qualityModes, 5);
-		const char* presets[] = { "Auto", "J", "K", "L", "M" };
-		ImGui::Combo("DLSS Preset", &s.presetDLSS, presets, 5);
-		ImGui::SliderFloat("Sharpness", &s.sharpness, 0.0f, 1.0f, "%.2f");
 
 		// ---- DLSS5 Neural Rendering (NGX Feature 18) ----
 		ImGui::Separator();
@@ -331,13 +322,8 @@ namespace FrameGen
 					<< "Enable=" << (s.enableFrameGen ? 1 : 0) << "\n"
 					<< "ForceEnable=" << (s.forceEnable ? 1 : 0) << "\n"
 					<< "Provider=" << s.provider << "\n"
-					<< "FrameGeneration=" << (s.frameGeneration ? 1 : 0) << "\n"
-					<< "EnableUpscale=" << (s.enableUpscale ? 1 : 0) << "\n"
-					<< "QualityMode=" << s.qualityMode << "\n"
-					<< "RenderResolutionScale=" << std::fixed << std::setprecision(2) << s.renderResolutionScale << "\n"
-					<< "PresetDLSS=" << s.presetDLSS << "\n"
-					<< "Sharpness=" << s.sharpness << "\n"
-					<< "NeuralRenderingEnabled=" << (s.neuralRenderingEnabled ? 1 : 0) << "\n"
+				<< "FrameGeneration=" << (s.frameGeneration ? 1 : 0) << "\n"
+				<< "NeuralRenderingEnabled=" << (s.neuralRenderingEnabled ? 1 : 0) << "\n"
 					<< "NRIntensity=" << a_fg.nrTuning.intensity << "\n"
 					<< "NRLocalTone=" << a_fg.nrTuning.localToneStrength << "\n"
 					<< "NRLocalStructure=" << a_fg.nrTuning.localStructureStrength << "\n"

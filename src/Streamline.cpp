@@ -340,7 +340,11 @@ namespace FrameGen
 				ui->IsMenuOpen(istrings->journalMenu) || ui->IsMenuOpen("PauseMenu"))
 				c.reset = sl::Boolean::eTrue;
 		}
-		c.mvecScale = { 1.0f, 1.0f };
+		// v0.49k（修重影）：真超分（DRS）下引擎 TAA 生成 mvec 用 screenSize(2560) 常量
+		// 算 UV（不随 DRS viewport 缩放，Skyrim DRS 只缩 viewport 不缩 screenSize），而
+		// DLSS 期望 mvec 归一化基准是渲染分辨率(1706)。引擎 mvec=位移/2560，DLSS 期望
+		// 位移/1706 → 差 1/renderScale 倍，需放大补偿，否则 temporal 重投影错 → 重影。
+		c.mvecScale = { 1.0f / Get().dx12SwapChain.renderScaleX, 1.0f / Get().dx12SwapChain.renderScaleY };
 		c.motionVectors3D = sl::Boolean::eFalse;
 		c.motionVectorsInvalidValue = FLT_MIN;
 		c.orthographicProjection = sl::Boolean::eFalse;
@@ -352,92 +356,7 @@ namespace FrameGen
 			SKSE::log::error("[Streamline] slSetConstants failed: {}", (int)r);
 	}
 
-	void Streamline::SetDLSSOptions(std::uint32_t a_outputWidth, const Settings& a_settings)
-	{
-		sl::DLSSOptions opts{};
-		switch (a_settings.qualityMode) {
-		case 1:
-			opts.mode = sl::DLSSMode::eMaxQuality;
-			break;
-		case 2:
-			opts.mode = sl::DLSSMode::eBalanced;
-			break;
-		case 3:
-			opts.mode = sl::DLSSMode::eMaxPerformance;
-			break;
-		case 4:
-			opts.mode = sl::DLSSMode::eUltraPerformance;
-			break;
-		default:
-			opts.mode = sl::DLSSMode::eDLAA;
-			break;
-		}
-
-		opts.outputWidth = a_outputWidth;
-		opts.outputHeight = static_cast<std::uint32_t>(Get().screenHeight);
-
-		// HDR 检测：kMAIN 格式
-		bool isHDR = false;
-		if (auto* renderer = RE::BSGraphics::Renderer::GetSingleton()) {
-			auto& main = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
-			if (main.texture) {
-				D3D11_TEXTURE2D_DESC desc{};
-				static_cast<ID3D11Texture2D*>(main.texture)->GetDesc(&desc);
-				isHDR = desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM;
-			}
-		}
-		opts.colorBuffersHDR = isHDR ? sl::Boolean::eTrue : sl::Boolean::eFalse;
-		opts.useAutoExposure = sl::Boolean::eTrue;
-
-		// 预设（DLSS 模型选择）
-		auto applyPreset = [&](sl::DLSSPreset p) {
-			opts.dlaaPreset = p;
-			opts.ultraQualityPreset = p;
-			opts.qualityPreset = p;
-			opts.balancedPreset = p;
-			opts.performancePreset = p;
-			opts.ultraPerformancePreset = p;
-		};
-		switch (a_settings.presetDLSS) {
-		case 1:
-			applyPreset(sl::DLSSPreset::ePresetJ);
-			break;
-		case 2:
-			applyPreset(sl::DLSSPreset::ePresetK);
-			break;
-		case 3:
-			applyPreset(sl::DLSSPreset::ePresetL);
-			break;
-		case 4:
-			applyPreset(sl::DLSSPreset::ePresetM);
-			break;
-		default:
-			if (isRTXBelow40series) {
-				opts.dlaaPreset = sl::DLSSPreset::ePresetJ;
-				opts.ultraQualityPreset = sl::DLSSPreset::ePresetJ;
-				opts.qualityPreset = sl::DLSSPreset::ePresetJ;
-				opts.balancedPreset = sl::DLSSPreset::ePresetJ;
-				opts.performancePreset = sl::DLSSPreset::ePresetJ;
-				opts.ultraPerformancePreset = sl::DLSSPreset::ePresetM;
-			} else {
-				opts.dlaaPreset = sl::DLSSPreset::ePresetJ;
-				opts.ultraQualityPreset = sl::DLSSPreset::ePresetJ;
-				opts.qualityPreset = sl::DLSSPreset::ePresetM;
-				opts.balancedPreset = sl::DLSSPreset::ePresetM;
-				opts.performancePreset = sl::DLSSPreset::ePresetM;
-				opts.ultraPerformancePreset = sl::DLSSPreset::ePresetL;
-			}
-			break;
-		}
-
-		opts.preExposure = 1.0f;
-		opts.sharpness = a_settings.sharpness;  // v0.6.3：INI 可调锐化（0=关闭）
-
-		if (SL_FAILED(r, slDLSSSetOptions(viewport, opts)))
-			SKSE::log::error("[Streamline] slDLSSSetOptions failed: {}", (int)r);
-	}
-
-	// v0.3：DLSSG 选项（NVIDIA 插帧）——Provider=1 时每帧调用
+	// v0.3：DLSSG 插帧（D3D12 路径）——设置选项（多倍帧生成 clamp 到硬件上限）
 	void Streamline::SetDLSSGOptions(std::uint32_t a_width, std::uint32_t a_height,
 		std::uint32_t a_mvecDepthW, std::uint32_t a_mvecDepthH, DXGI_FORMAT a_colorFormat)
 	{
@@ -447,20 +366,15 @@ namespace FrameGen
 		opts.mode = sl::DLSSGMode::eOn;
 		// v0.31（对齐 open-shaders ConfigureDLSSG）：多倍帧生成——
 		// numFramesToGenerate = clamp(INI DLSSGFramesToGenerate, 1, 硬件上限)。
-		// 之前硬编码 1（恒 2x 插帧）；RTX 50 系 + 新驱动可 2/3（3x/4x 插帧）。
 		dlssgFramesToGenerate = std::clamp<std::uint32_t>(Get().settings.dlssgFramesToGenerate, 1, std::max<std::uint32_t>(1, dlssgMaxFramesToGenerate));
 		opts.numFramesToGenerate = dlssgFramesToGenerate;  // 1=2x 2=3x 3=4x 插帧
-		opts.numBackBuffers = 3;  // v0.5.25：对齐 SkyrimUpscaler（proxy BufferCount=3，8-13 日志实锤）
+		opts.numBackBuffers = 3;
 		opts.colorWidth = a_width;
 		opts.colorHeight = a_height;
 		opts.mvecDepthWidth = a_mvecDepthW;
 		opts.mvecDepthHeight = a_mvecDepthH;
 		opts.colorBufferFormat = static_cast<std::uint32_t>(a_colorFormat);
 		opts.hudLessBufferFormat = static_cast<std::uint32_t>(a_colorFormat);
-		// v0.5：mvec/depth 格式从引擎渲染目标取（DLSSG 需要精确格式解码运动矢量/深度）
-		// v0.5.14：depth 声明必须与实际喂给 DLSSG 的共享纹理格式一致——引擎深度是 D32_FLOAT，
-		// 但共享 depth 纹理是自建的 R32_FLOAT（DX12SwapChain CreateInterop）；声明 D32 实际 R32
-		// 会让 NGX 内部按错格式初始化 → sl.dlss_g.dll 在 Allocate 时 0xC0000005 崩溃（dump 实锤）
 		if (auto* renderer = RE::BSGraphics::Renderer::GetSingleton()) {
 			auto& mvecTex = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 			if (mvecTex.texture) {
@@ -470,14 +384,10 @@ namespace FrameGen
 			}
 		}
 		opts.depthBufferFormat = static_cast<std::uint32_t>(DXGI_FORMAT_R32_FLOAT);
-		// v1：UI 重合成未接入（无 UI 分离）→ HUD 在插帧时可能模糊/重影（已知限制）
 		opts.enableUserInterfaceRecomposition = sl::Boolean::eFalse;
 		if (SL_FAILED(r, slDLSSGSetOptions(viewport, opts)))
 			SKSE::log::error("[Streamline] slDLSSGSetOptions failed: {}", (int)r);
 
-		// v0.34（对齐 CS ConfigureDLSSG:961-975）：每次 SetOptions 后查询 DLSSG 状态——
-		// status 非 eOk = 本会话不生成帧（诊断关键），numFramesActuallyPresented 变化
-		// = 插帧真的在 Present
 		if (slDLSSGGetState) {
 			sl::DLSSGState state{};
 			if (SL_FAILED(r, slDLSSGGetState(viewport, state, &opts))) {
@@ -485,7 +395,6 @@ namespace FrameGen
 				if (++stateFail % 60 == 1)
 					SKSE::log::warn("[Streamline] slDLSSGGetState failed {} times: {}", stateFail, (int)r);
 			} else {
-				// 仅在状态变化时打（防刷屏）：非 eOk 或帧数停滞
 				static sl::DLSSGStatus lastStatus = sl::DLSSGStatus::eOk;
 				static std::uint32_t lastFrames = 0;
 				if (state.status != lastStatus || (state.status != sl::DLSSGStatus::eOk && state.numFramesActuallyPresented == lastFrames)) {
@@ -660,68 +569,6 @@ namespace FrameGen
 		slPCLSetMarker(sl::PCLMarker::ePresentEnd, *frameToken);
 	}
 
-	bool Streamline::EvaluateDLSS(ID3D11DeviceContext* a_ctx,
-		ID3D11Resource* a_colorIn, ID3D11Resource* a_colorOut,
-		ID3D11Resource* a_depth, ID3D11Resource* a_motionVectors,
-		std::uint32_t a_renderWidth, std::uint32_t a_renderHeight,
-		const FrameBuffer& a_fb, const Settings& a_settings)
-	{
-		// v0.8.20：SL 强制 D3D12 后，D3D11 超分不再可用（feature 是 D3D12 的，
-		// 用 D3D11 ctx 调 slEvaluateFeature 类型不匹配）。直接跳过 → 调用方兜底
-		// （colorOut = 引擎画面拷贝），NR 验证阶段优先。
-		if (useD3D12)
-			return false;
-		if (!initialized || !featureDLSS)
-			return false;
-
-		auto& fg = Get();
-		const float aspect = fg.screenHeight > 0 ? fg.screenWidth / fg.screenHeight : 16.0f / 9.0f;
-		const float nearZ = fg.cameraNear ? *fg.cameraNear : 1.0f;
-		const float farZ = fg.cameraFar ? *fg.cameraFar : 10000.0f;
-
-		CheckFrameConstants(a_fb, aspect, nearZ, farZ);
-		// 输出分辨率（4K）——DLSS 放大目标；screenWidth 为 float（窗口尺寸）
-		SetDLSSOptions(static_cast<std::uint32_t>(fg.screenWidth) > 0 ? static_cast<std::uint32_t>(fg.screenWidth) : a_renderWidth, a_settings);
-
-		sl::Resource colorInRes = { sl::ResourceType::eTex2d, a_colorIn, 0 };
-		sl::Resource colorOutRes = { sl::ResourceType::eTex2d, a_colorOut, 0 };
-		sl::Resource depthRes = { sl::ResourceType::eTex2d, a_depth, 0 };
-		sl::Resource mvecRes = { sl::ResourceType::eTex2d, a_motionVectors, 0 };
-
-		// v0.7.8：输入 extent = 渲染分辨率（低），输出 extent = 输出分辨率（4K）——
-		// DLSS 把渲染分辨率画面放大到输出分辨率（超分才有意义）
-		const std::uint32_t inW = std::max(1u, a_renderWidth);
-		const std::uint32_t inH = std::max(1u, a_renderHeight);
-		const std::uint32_t outW = std::max(1u, static_cast<std::uint32_t>(fg.screenWidth));
-		const std::uint32_t outH = std::max(1u, static_cast<std::uint32_t>(fg.screenHeight));
-		sl::Extent extentIn{ 0, 0, inW, inH };
-		sl::Extent extentOut{ 0, 0, outW, outH };
-
-		sl::ResourceTag tags[] = {
-			{ &colorInRes, sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eOnlyValidNow, &extentIn },
-			{ &colorOutRes, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eOnlyValidNow, &extentOut },
-			{ &depthRes, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent, &extentIn },
-			{ &mvecRes, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent, &extentIn },
-		};
-
-		// v0.7.4：超分路径改用 slSetTagForFrame（v0.5.11 只改了 DLSSG，这里漏改）——
-		// flag 已设 eUseFrameBasedResourceTagging，要求 frame-based tagging；旧 slSetTag
-		// 弃用后 tags 不生效 → slEvaluateFeature 报 20（eErrorMissingInputParameter）
-		if (!frameToken) {
-			SKSE::log::warn("[Streamline] slSetTagForFrame skipped (DLSS) - null frameToken");
-			return false;
-		}
-		slSetTagForFrame(*frameToken, viewport, tags, _countof(tags), a_ctx);
-
-		sl::ViewportHandle view(viewport);
-		const sl::BaseStructure* inputs[] = { &view };
-
-		if (SL_FAILED(r, slEvaluateFeature(sl::kFeatureDLSS, *frameToken, inputs, _countof(inputs), a_ctx))) {
-			SKSE::log::error("[Streamline] slEvaluateFeature failed: {}", (int)r);
-			return false;
-		}
-		return true;
-	}
 
 	void Streamline::DestroyResources()
 	{

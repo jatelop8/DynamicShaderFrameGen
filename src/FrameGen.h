@@ -186,18 +186,9 @@ namespace FrameGen
 		void EnsureBorderless();
 		HWND hwnd = nullptr;  // 游戏主窗口（CreateDevice hook 时记录）
 
-		// v0.7.11：安装 Main_UpdateJitter hook（CS 同款）——引擎每帧渲染前回调，
-		// 用其 State* 参数设置引擎 DRS（dynamicResolution）渲染分辨率 + DLSS jitter。
-		// 在渲染前设置（vs Present 帧尾），引擎重建 kMAIN 为目标渲染分辨率。
-		void InstallDRSHook();
-		void OnMainUpdateJitter(RE::BSGraphics::State* a_state);
-
-		// v0.48：Main_PostProcessing hook（CS 同款）——引擎后处理管线入口（体积光照后、
-		// 后处理前）。此时做 DLSS 超分（kMAIN → 中间纹理 → 写回 kMAIN），后处理（含 ENB）
-		// 读超分结果 → DLSS 锐化/LMK 在 ENB 前生效 + ENB 保留。之前 DLSS 在 Present（ENB
-		// 后），锐化被 ENB 盖掉。
-		void InstallMainPostProcessingHook();
-		void OnMainPostProcessing();
+		// v0.50：DLSS 超分/DRS/Halton jitter 已全部拔掉（引擎回到 2560 原生渲染）。
+		// InstallDRSHook / OnMainUpdateJitter / InstallMainPostProcessingHook /
+		// OnMainPostProcessing 已移除。仅保留 DLSS5(DLSSNR) + FSR3 FG 串联。
 
 		// v0.7.13：安装 MenuManagerDrawInterfaceStart hook（CS 同款）——引擎 UI 绘制
 		// 开始前回调。此时把 DLSS 超分结果写入引擎 kFRAMEBUFFER（4K），UI 随后叠加

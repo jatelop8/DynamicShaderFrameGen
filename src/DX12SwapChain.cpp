@@ -512,57 +512,6 @@ namespace FrameGen
 		d3d11Context->VSSetShader(nullptr, nullptr, 0);
 	}
 
-	// v0.7.8：color 采样放大拷贝（超分失败兜底：游戏画面渲染尺寸 → colorOut 4K）
-	void DX12SwapChain::CopyColorToShared(ID3D11ShaderResourceView* a_colorSRV, ID3D11RenderTargetView* a_colorRTV)
-	{
-		if (!colorCopyReady && !colorCopyFailed) {
-			try {
-				EnsureUpscaleStates();
-				if (!copyColorPS) {
-					auto psBlob = CompileShaderFromFile(L"Data\\Shaders\\Upscaling\\CopyColorToSharedBufferPS.hlsl", "PSHADER", "ps_5_0");
-					DX::ThrowIfFailed(d3d11Device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, copyColorPS.put()));
-				}
-				colorCopyReady = true;
-				SKSE::log::info("[FrameGen] color-copy shaders ready (CopyColorToSharedBufferPS)");
-			} catch (const DX::com_exception& e) {
-				colorCopyFailed = true;
-				SKSE::log::warn("[FrameGen] color-copy shader init failed - fallback copy disabled ({})", e.what());
-				return;
-			}
-		}
-		if (!colorCopyReady)
-			return;
-
-		D3D11_VIEWPORT viewport = {};
-		viewport.TopLeftX = 0.0f;
-		viewport.TopLeftY = 0.0f;
-		viewport.Width = static_cast<float>(swapChainDesc.Width);
-		viewport.Height = static_cast<float>(swapChainDesc.Height);
-		viewport.MinDepth = 0.0f;
-		viewport.MaxDepth = 1.0f;
-		d3d11Context->RSSetViewports(1, &viewport);
-
-		d3d11Context->IASetInputLayout(nullptr);
-		d3d11Context->IASetVertexBuffers(0, 0, nullptr, nullptr, nullptr);
-		d3d11Context->IASetIndexBuffer(nullptr, DXGI_FORMAT_UNKNOWN, 0);
-		d3d11Context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-		d3d11Context->VSSetShader(upscaleVS.get(), nullptr, 0);
-		d3d11Context->RSSetState(upscaleRasterizerState.get());
-		d3d11Context->OMSetBlendState(upscaleBlendState.get(), nullptr, 0xffffffff);
-
-		ID3D11ShaderResourceView* srvViews[1] = { a_colorSRV };
-		d3d11Context->PSSetShaderResources(0, 1, srvViews);
-		ID3D11RenderTargetView* rtvViews[1] = { a_colorRTV };
-		d3d11Context->OMSetRenderTargets(1, rtvViews, nullptr);
-		d3d11Context->PSSetShader(copyColorPS.get(), nullptr, 0);
-		d3d11Context->Draw(3, 0);
-
-		ID3D11ShaderResourceView* nullSrv[1] = { nullptr };
-		d3d11Context->PSSetShaderResources(0, 1, nullSrv);
-		d3d11Context->OMSetRenderTargets(0, nullptr, nullptr);
-		d3d11Context->PSSetShader(nullptr, nullptr, 0);
-		d3d11Context->VSSetShader(nullptr, nullptr, 0);
-	}
 
 	void DX12SwapChain::SetD3D11Device(ID3D11Device* a_d3d11Device)
 	{
@@ -705,15 +654,19 @@ namespace FrameGen
 							nrColor != nullptr, nrDepth.texture != nullptr, nrDepth.depthSRV != nullptr,
 							nrMvec.texture != nullptr, NeuralRendering::Renderer::Instance().StatusText());
 					}
-					if (nrDepth.texture && nrDepth.depthSRV && nrMvec.texture) {
-						D3D11_TEXTURE2D_DESC nrCd{}, nrMd{};
+					// v0.49j（修重影+光影根因）：DLSSNR 的 depth/mvec 必须与 color(2560 超分后)
+					// 对齐。引擎原始 depth/mvec 是 DRS 渲染分辨率(1706)内容（在 2560 纹理左上角），
+					// 与 color(2560 全屏)不对齐 → temporal 错乱 → 重影 + 光影不对。改用已 upscale
+					// 到 2560 的 depthWrapped/mvecWrapped（CopyDepthToShared/CopyMvecToShared 采样
+					// 放大 1706→2560），DLSSNR 1:1（guide=2560）与 colorOut 对齐。
+					if (depthWrapped && mvecWrapped && depthWrapped->srv) {
+						D3D11_TEXTURE2D_DESC nrCd{};
 						static_cast<ID3D11Texture2D*>(nrColor)->GetDesc(&nrCd);
-						static_cast<ID3D11Texture2D*>(nrMvec.texture)->GetDesc(&nrMd);
 						NeuralRendering::Renderer::Instance().Apply(
 							d3d11Device.get(), d3d11Context.get(),
-							nrColor, nrDepth.texture, nrDepth.depthSRV, nrMvec.texture, nrColor,
-							nrMd.Width, nrMd.Height, nrCd.Width, nrCd.Height,
-							static_cast<float>(nrMd.Width), static_cast<float>(nrMd.Height), fg.nrTuning);
+							nrColor, depthWrapped->resource11, depthWrapped->srv, mvecWrapped->resource11, nrColor,
+							nrCd.Width, nrCd.Height, nrCd.Width, nrCd.Height,
+							static_cast<float>(nrCd.Width), static_cast<float>(nrCd.Height), fg.nrTuning);
 					}
 				}
 			}
