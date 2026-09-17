@@ -409,7 +409,39 @@ namespace FrameGen
 		// 算 UV（不随 DRS viewport 缩放，Skyrim DRS 只缩 viewport 不缩 screenSize），而
 		// DLSS 期望 mvec 归一化基准是渲染分辨率(1706)。引擎 mvec=位移/2560，DLSS 期望
 		// 位移/1706 → 差 1/renderScale 倍，需放大补偿，否则 temporal 重投影错 → 重影。
-		c.mvecScale = { 1.0f / Get().dx12SwapChain.renderScaleX, 1.0f / Get().dx12SwapChain.renderScaleY };
+		// v0.57: the 1/renderScale compensation below is the ONE value in this file
+		// that both the field's own definition and the reference implementation
+		// disagree with, and it is fed to DLSS-G every frame - a wrong value puts
+		// wrong motion into every generated frame.
+		//
+		//   sl_consts.h: "scale factors used to normalize motion vectors (so the
+		//   values are in [-1,1] range)"
+		//   ProgrammingGuideDLSS_G.md: "values in {-1,1} range -> scale factor
+		//   should be {1,1}"; not in range -> "adjusted so that values end up in
+		//   [-1,1] range"
+		//   open-shaders Streamline.cpp: "The standard full-frame DLSS path ...
+		//   must keep mvecScale at identity or DLSS massively over-estimates motion"
+		//
+		// The v0.49k comment states its own premise - "engine mvec = displacement/2560"
+		// - and a value reaching 1.0 for a full-screen pan is already inside [-1,1],
+		// so that premise argues for identity. But 1.5 was tuned in-game against a
+		// different defect (the depth/mvec extent that v0.56 removed), so it is not
+		// discarded on inference alone: it becomes one INI line, defaulted to the old
+		// behaviour, so the A/B costs no rebuild.
+		{
+			const auto& sc = Get().dx12SwapChain;
+			const float ov = Get().settings.mvecScaleOverride;
+			const float mvsX = (ov > 0.0f) ? ov : (1.0f / sc.renderScaleX);
+			const float mvsY = (ov > 0.0f) ? ov : (1.0f / sc.renderScaleY);
+			c.mvecScale = { mvsX, mvsY };
+			static bool mvecScaleLogged = false;
+			if (!mvecScaleLogged) {
+				mvecScaleLogged = true;
+				SKSE::log::info("[Streamline] mvecScale = {{ {:.4f}, {:.4f} }} "
+					"(renderScale={:.4f} override={:.2f}) - 1.0 means already in [-1,1]",
+					mvsX, mvsY, sc.renderScaleX, ov);
+			}
+		}
 		c.motionVectors3D = sl::Boolean::eFalse;
 		c.motionVectorsInvalidValue = FLT_MIN;
 		c.orthographicProjection = sl::Boolean::eFalse;

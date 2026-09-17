@@ -267,6 +267,7 @@ namespace FrameGen
 			<< "ReflexFpsLimit=" << s.reflexFpsLimit << "\n"
 			<< "Sharpness=" << s.sharpness << "\n"
 			<< "RenderResolutionScale=" << std::fixed << std::setprecision(2) << s.renderResolutionScale << "\n"
+			<< "MvecScaleOverride=" << std::fixed << std::setprecision(2) << s.mvecScaleOverride << "\n"
 			<< "StreamlineLogLevel=" << s.streamlineLogLevel << "\n"
 			<< "ToggleKey=0x" << std::hex << s.toggleKey << std::dec << "\n";
 		ini.close();

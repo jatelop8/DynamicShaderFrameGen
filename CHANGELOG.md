@@ -1,3 +1,108 @@
+# v0.57 - mvecScale: the last self-contradictory constant, made switchable
+
+Reported: still flickering after v0.56.
+
+This round deliberately changes no behaviour. It closes a question v0.56 opened,
+and makes the answer testable with one INI line instead of another rebuild cycle.
+
+## What v0.56 opened
+
+v0.56 corrected the depth/mvec `ResourceTag::extent`. That fix is now confirmed
+against this project's own reference implementation - open-shaders is on this
+machine at D:\Modding\open-shaders - and the confirmation runs from the opposite
+direction:
+
+    open-shaders/src/Features/Upscaling/Streamline.cpp, TagDX12Resources()
+
+      sl::Extent extent{ 0, 0, width, height };            // display/output size
+      // Depth/mvec carry valid data only in the render-resolution subrect of
+      // their display-sized targets; declare that extent, matching the FSR FG
+      // dispatch.
+      auto renderSizeF = globals::state->screenSize * upscaling.resolutionScale;
+      sl::Extent renderExtent{ 0, 0, renderSizeF.x, renderSizeF.y };
+      ...
+      { &depthRes, sl::kBufferTypeDepth,         ..., &renderExtent },
+      { &mvecRes,  sl::kBufferTypeMotionVectors, ..., &renderExtent },
+
+The reference declares the RENDER subrect and is right to: it never upscales.
+Its mvec path is a bare `CopyResource(dst, motionVector.texture)`
+(Upscaling.cpp:2206), which only works when the dimensions are identical, and its
+interop targets are built from the engine's own desc (DX12SwapChain.cpp:695-708).
+The data genuinely occupies a corner of a larger target.
+
+DFG is the opposite, and its own comment says why (DX12SwapChain.cpp:662):
+
+    // 引擎 depth/mvec 是渲染尺寸（低）→ 都走 shader 采样放大（CopyResource 尺寸不匹配）
+
+That blit runs in the DLSS-G path as well - `if ((dlssgMode || ...))`, line 663 -
+and draws a fullscreen triangle with viewport = swapChainDesc.Width x Height
+through a shader that returns the sampled value unchanged. DFG's interop
+depth/mvec are therefore valid over the WHOLE 2560x1440.
+
+Same constant, opposite correctness. `renderExtent` was copied from the reference
+when it was still right; v0.7.8 changed how the buffers are filled and it was
+never revisited. v0.56 stands.
+
+## What was still self-contradictory: mvecScale
+
+    Streamline.cpp:412
+      // v0.49k（修重影）：... 引擎 mvec=位移/2560，DLSS 期望 位移/1706 →
+      // 差 1/renderScale 倍，需放大补偿，否则 temporal 重投影错 → 重影。
+      c.mvecScale = { 1.0f / renderScaleX, 1.0f / renderScaleY };   // = {1.5, 1.5}
+
+Three sources, none of which agrees with 1.5:
+
+| source | says |
+|---|---|
+| `sl_consts.h:203`, the field's own definition | "scale factors used to normalize motion vectors (so the values are in [-1,1] range)" |
+| `ProgrammingGuideDLSS_G.md:653` | "values in {-1,1} range -> scale factor should be {1,1}"; otherwise "adjusted so that values end up in [-1,1]" |
+| open-shaders `Streamline.cpp:490` | "The standard full-frame DLSS path ... must keep mvecScale at identity or DLSS massively over-estimates motion" |
+
+The v0.49k comment carries its own refutation: "引擎 mvec = 位移/2560". A UV
+displacement that reaches 1.0 for a full-screen pan is already inside [-1,1] -
+exactly the condition the guide gives for scale = {1,1}. At 1.5, DLSS-G would
+over-estimate motion by 50% in every generated frame, and wrong motion in every
+generated frame alternating with correct real frames is the reported symptom.
+
+But 1.5 was tuned in-game against a *different* defect - the depth/mvec extent that
+v0.56 removed - so which value is right is decidable only in-game. Nothing is
+changed silently.
+
+## Change
+
+  * `Streamline.cpp` reads `MvecScaleOverride` from the INI. 0 (default) = the
+    legacy `1/renderScale`, so default behaviour is identical to v0.56. 1.00 =
+    identity, the reference-implementation value.
+  * the effective value is logged exactly once, so it is observed at runtime
+    instead of inferred from source:
+
+        [Streamline] mvecScale = { 1.5000, 1.5000 } (renderScale=0.6667 override=0.00)
+        - 1.0 means already in [-1,1]
+
+  * `FrameGen.h` / `FrameGen.cpp` / `ImguiMenu.cpp`: one new setting, one reader,
+    one writer, so the INI contract stays symmetric. Verified in the built binary:
+    the key string `MvecScaleOverride` occurs exactly twice, and the old direct
+    assignment is gone.
+
+## Build
+
+Built clean: 7/7 objects, exit 0, `1223168 bytes md5=73fa4a5c2c762635703ca952205a1192`,
+deployed byte-identical to
+`E:\EJ\mod\mods\DynamicShaderFrameGen\SKSE\Plugins\`.
+
+The sandbox blocked `reg.exe`, which breaks `VsDevCmd.bat` and leaves the Windows
+SDK paths unset - every translation unit then fails on `crtdbg.h`, including ones
+this round never touched. Working manual environment, including the cppwinrt trap:
+
+    INCLUDE = <MSVC>\include ; <SDK>\ucrt ; <SDK>\shared ; <SDK>\um ; <SDK>\winrt
+    LIB     = <MSVC>\lib\x64 ; <SDK>\Lib\ucrt\x64 ; <SDK>\Lib\um\x64
+
+`<SDK>\cppwinrt` must NOT be added: vcpkg ships the matching C++/WinRT set
+(`E:\vcpkg-full\installed\x64-windows-static-md\include\winrt`, 2.0.250303.1)
+and the SDK's own copy is 2.0.250303.5, so mixing them makes `base.h` fire
+`static_assert(... "Mismatched C++/WinRT headers.")`. `wrl/client.h` comes from
+`<SDK>\winrt`, which is the only part of that directory that is needed.
+
 # v0.56 - declared != actual: DLSS-G was told the motion buffers were 1706x960
 
 Reported: "it still flickers."

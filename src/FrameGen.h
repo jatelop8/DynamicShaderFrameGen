@@ -112,6 +112,14 @@ namespace FrameGen
 		// 再把低分辨率画面放大回输出分辨率（真超分才有 NR/帧生成空间）。0 = 跟随
 		// QualityMode 档位表（旧行为）；>0 = 自定义比例（0.30-1.00，如 0.70 = 70%）。
 		float renderResolutionScale = 0.0f;  // INI RenderResolutionScale / GUI slider（0=Auto 跟随 QualityMode 档位表）
+		// v0.57：mvecScale 覆盖（0 = 保留旧推导 1/renderScale，默认零行为变化）。
+		// 运动矢量逐帧喂给 DLSS-G，值错了每张生成帧的 motion 都错 → 频闪。
+		// 参照实现 open-shaders 的标准全屏路径用 identity（注释原话：must keep
+		// mvecScale at identity or DLSS massively over-estimates motion），官方
+		// 指南也写「值已在 {-1,1} 则 scale={1,1}」；而本工程用的是 v0.49k 为修重影
+		// 调出的 1/renderScale（=1.5，即 150%）。两者冲突，只有游戏内 A/B 能定。
+		// 设 1.00 即切到 identity。
+		float mvecScaleOverride = 0.0f;   // INI MvecScaleOverride（0=旧行为 1.0=identity）
 		// v0.31（对齐 open-shaders）：多倍帧生成（DLSS 4 MFG）——每真实帧生成 N 个插帧
 		// （1=2x 插帧 2=3x 3=4x，取决于 GPU/SL SDK 支持，运行时 clamp 到硬件上限）
 		std::uint32_t dlssgFramesToGenerate = 1;  // INI DLSSGFramesToGenerate

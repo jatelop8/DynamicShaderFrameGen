@@ -197,6 +197,15 @@ namespace FrameGen
 					settings.renderResolutionScale = std::clamp(std::stof(v), 0.0f, 1.0f);
 				} catch (...) {}
 			}
+			else if (key == "MvecScaleOverride") {
+				// v0.57：mvecScale 覆盖（单变量 A/B：0=旧行为 1.0=identity）
+				try {
+					std::string v = line.substr(eq + 1);
+					while (!v.empty() && (v.back() == ' ' || v.back() == '\r' || v.back() == '\n'))
+						v.pop_back();
+					settings.mvecScaleOverride = std::clamp(std::stof(v), 0.0f, 4.0f);
+				} catch (...) {}
+			}
 			else if (key == "StreamlineLogLevel")
 				settings.streamlineLogLevel = std::clamp(readInt(line, 0), 0, 2);
 			else if (key == "ToggleKey") {
