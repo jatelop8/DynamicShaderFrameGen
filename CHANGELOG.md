@@ -1,3 +1,43 @@
+# v0.53 - the FPS number stops lying, and MFG gets a measurement
+
+Reported: "check it yourself before I go in again, I do not want another launch
+that is completely wrong."
+
+Audit of the whole chain (all verified against on-disk state, not assumed):
+  * Deployment is correct. The DLL in the active MO2 instance is byte-identical to
+    the build output; the active INI is Provider=1 / DLSSGFramesToGenerate=3 /
+    MFGMaxFramesOverride=3; overwrite/ carries no copy of it; the two other mods
+    that also ship an INI of this name are DISABLED in the DIPEI profile, so there
+    is no file conflict. PLUGIN_DEPLOY_DIR points at the instance that is played.
+  * RTXMFG-Universal (the competing unlocker that also detours slInit /
+    setOptions / ngxCreate) has been inert since 2026-09-11 - its proxy is sitting
+    in the game dir renamed to dinput8.dll.disabled.
+  * Streamline is 2.13.0.0 everywhere (game root and mod folder agree), and
+    nvngx_dlssg.dll is 3.10.8, inside DLSSG-Transfusion's supported range.
+
+Defect found and fixed - the overlay could not have shown the difference:
+  * ImguiMenu::DrawFps hardcoded `mult = fgActive ? 2.0f : 1.0f`. It never knew
+    about MFG, so 3x/4x could not appear on screen, and it multiplied the number
+    even when the runtime had rejected the request. Switching FSR3 -> DLSSG was
+    therefore guaranteed to look like "nothing changed". The factor now comes from
+    dlssgFramesPresentedLast, and when DLSSG is not generating nothing is inflated
+    (the overlay says so instead).
+
+New evidence channel:
+  * sl::DLSSGState::numFramesActuallyPresented is documented as "frames presented
+    since the last slDLSSGGetState call" - a per-interval count. Since
+    SetDLSSGOptions runs once per real frame, that value IS the multiplier that
+    actually happened. It is now recorded every frame and logged periodically as
+    "DLSSG presented per real frame = N" (1 = no interpolation). This is the first
+    number in this project that is measured rather than computed.
+
+Also: version.rc string version said 0.50.0.0 while FILEVERSION said 0.52 - both
+now 0.53. The INI documents DLSSG-Transfusion's own Ctrl+Alt+2/3/4 hotkeys, which
+are how the multiplier is really driven, not the game's video menu.
+
+Still unproven: Provider=1 has never completed a session on this machine. Every
+log so far is the FSR3 path. The next launch is the first real test; if the runtime
+rejects 4x the ladder probe steps back to whatever it accepts and says so.
 # v0.52 - switch states that actually stick, and diagnostics that can be falsified
 
 Reported: "I switched DLSS and nothing changed at all."

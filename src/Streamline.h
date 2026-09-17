@@ -115,6 +115,14 @@ namespace FrameGen
 		std::uint32_t dlssgAcceptedFrames = 0;  // 运行时**实际接受**的插帧数（0 = 被拒/尚未探测出）
 		std::uint32_t mfgProbeStep = 0;         // 阶梯探测当前档（0 = 未开始）
 		bool mfgProbeLatched = false;           // 已有一档被接受 → 停止下探
+		// v0.53: the runtime's own measurement. Streamline documents
+		// numFramesActuallyPresented as "number of frames presented since the last
+		// slDLSSGGetState call" - a PER-INTERVAL count, not a cumulative one.
+		// SetDLSSGOptions runs once per real frame, so this value IS the multiplier that
+		// actually happened: 1 = no interpolation at all (rejected, or DLSSG idle),
+		// 2 = 2x, 4 = 4x. It is the only number that proves MFG really generates frames,
+		// and the FPS overlay reads it instead of inventing a factor.
+		std::uint32_t dlssgFramesPresentedLast = 0;  // 0 = never queried yet
 
 		// v0.5.23：Present 前后 PCL 标记（RSYNC 建立）
 		// v0.31（对齐 open-shaders DX12SwapChain.cpp:365-403）：补全 PCL 序列——

@@ -184,11 +184,29 @@ namespace FrameGen
 			s_fps = s_fps * 0.92f + inst * 0.08f;  // EMA smoothing
 		}
 
-		// Frame generation active -> show on-screen (displayed) fps (FSR3/DLSSG are 2x)
-		const float mult = a_fg.fgActive.load() ? 2.0f : 1.0f;
+		// v0.53: honesty fix. This line hardcoded x2 whenever frame generation was on.
+		// Two consequences: it could never show 3x/4x, so switching from FSR3 2x to
+		// DLSSG MFG looked like "nothing changed any more"; and it printed a doubled
+		// number even when the runtime had rejected the request. The factor now comes
+		// from what the runtime actually reported doing, and nothing is inflated when
+		// nothing is generated.
+		float mult = 1.0f;
+		const char* tag = "";
+		if (a_fg.dx12SwapChain.dlssgMode) {
+			// dlssgFramesPresentedLast = frames the runtime really presented for the last
+			// real frame. >1 is measured evidence of multi-frame generation; <=1 means
+			// DLSSG is not generating, so the number must NOT be doubled.
+			const std::uint32_t presented = a_fg.streamline.dlssgFramesPresentedLast;
+			if (presented > 1u)
+				mult = static_cast<float>(presented);
+			else
+				tag = " (MFG off)";
+		} else if (a_fg.fgActive.load()) {
+			mult = 2.0f;  // FSR3 generates exactly one frame (verified by the dispatch probe)
+		}
 
 		char buf[32];
-		std::snprintf(buf, sizeof(buf), "%.0f FPS", s_fps * mult);
+		std::snprintf(buf, sizeof(buf), "%.0f FPS%s", s_fps * mult, tag);
 
 		ImFont* font = fontFps ? fontFps : ImGui::GetFont();
 		const float size = font->LegacySize;  // font size passed to AddFont* (36.0f)

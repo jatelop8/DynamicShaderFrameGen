@@ -478,6 +478,16 @@ namespace FrameGen
 					SKSE::log::info("[Streamline] DLSSG state: status={} framesPresented={}",
 						static_cast<int>(state.status), state.numFramesActuallyPresented);
 				}
+				// v0.53: publish the runtime's own measurement. numFramesActuallyPresented counts
+				// frames presented since the PREVIOUS slDLSSGGetState call, and this function runs
+				// once per real frame - so the value is the effective multiplier of that frame.
+				// 1 means no interpolation happened at all, whatever we asked for. The overlay uses
+				// it, and the periodic line below is the evidence that MFG really runs (or not).
+				dlssgFramesPresentedLast = state.numFramesActuallyPresented;
+				static std::uint32_t presentedLog = 0;
+				if (++presentedLog % 240 == 1)
+					SKSE::log::info("[Streamline] DLSSG presented per real frame = {} (status={}) - 1 means NO interpolation",
+						dlssgFramesPresentedLast, static_cast<int>(state.status));
 				if (state.status != sl::DLSSGStatus::eOk && state.status != lastStatus) {
 					lastStatus = state.status;
 					SKSE::log::warn("[Streamline] DLSS-G not generating frames this session: status={}", static_cast<int>(state.status));
