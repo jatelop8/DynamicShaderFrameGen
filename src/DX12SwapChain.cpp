@@ -124,6 +124,14 @@ namespace FrameGen
 		// v0.27：dlssgMode 必须先赋值（CreateD3D12Device 内据此决定是否延迟 slInit）
 		dlssgMode = a_dlssgMode;
 
+		// v0.52：记录本次构建实际生效的 Provider。Provider 是**一次性**读取的——它决定
+		// dlssgMode / BufferCount / D3D12 proxy 路径，全都在这里定型；运行中改 INI 或 GUI
+		// 不会走回这里，所以切换注定"没有任何变化"（必须重启）。把值记下来，GUI 与日志
+		// 才能明确说出"当前跑的是 X、INI 写的是 Y、需重启"。
+		providerAtCreate = Get().settings.provider;
+		SKSE::log::info("[FrameGen] Provider in effect this session: {} ({})", providerAtCreate,
+			dlssgMode ? "DLSSG" : "FSR3");
+
 		CreateD3D12Device(adapter);
 
 		IDXGIFactory4* dxgiFactory;
@@ -554,11 +562,15 @@ namespace FrameGen
 					mult = fg.streamline.dlssgFramesToGenerate + 1;
 				else if (fg.fgActive.load())
 					mult = 2;                                          // FSR3 2x
+				// v0.52：同时打出「本次运行真正在跑的 Provider」和「INI 里写的 Provider」。
+				// 只打前者的话，用户在菜单里切了 Provider 会以为"切了没反应"——其实只是没重启。
+				const int cfgProvider = fg.settings.provider;
 				SKSE::log::info("[FrameGen] FPS probe: real={:.1f} | {} | cap~={:.1f} (=real*{}, COMPUTED not measured) | "
-					"hwMax={} ask={} accepted={}",
+					"hwMax={} ask={} accepted={} | cfgProvider={}{}",
 					realFps, dlssgMode ? "DLSSG" : "FSR3", realFps * mult, mult,
 					fg.streamline.dlssgMaxFramesToGenerate + 1, fg.streamline.dlssgFramesToGenerate + 1,
-					fg.streamline.dlssgAcceptedFrames ? fg.streamline.dlssgAcceptedFrames + 1 : 0);
+					fg.streamline.dlssgAcceptedFrames ? fg.streamline.dlssgAcceptedFrames + 1 : 0,
+					cfgProvider, cfgProvider == providerAtCreate ? "" : " (CHANGED - RESTART REQUIRED)");
 				probeFrames = 0;
 				probeLast = probeNow;
 			}
@@ -655,12 +667,25 @@ namespace FrameGen
 				if (auto* nrRenderer = RE::BSGraphics::Renderer::GetSingleton()) {
 					auto& nrDepth = nrRenderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 					auto& nrMvec = nrRenderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
+					// v0.52（诚实上报）：原诊断打的是**引擎原生** kMAIN depth / kMOTION_VECTOR，
+					// 而 Apply() 实际吃的是 depthWrapped/mvecWrapped（采样放大到输出分辨率的那份）
+					// ——不是同一个对象，所以原来那条日志无论 NR 有没有跑都显示 true，无法证伪。
+					// 现在打真正决定执行的门禁 + NGX 成功帧计数：
+					//   inputs = Apply 的输入是否就绪（false = NR 每帧被静默跳过）
+					//   frames = 成功评估帧数（0 = 从没跑起来，例如特性/内核不可用）
+					const bool nrInputsReady = depthWrapped && mvecWrapped && depthWrapped->srv;
 					static std::uint32_t nrDiag = 0;
 					if (++nrDiag % 180 == 1) {
-						SKSE::log::info("[FrameGen] DLSSNR: color={} depth={} depthSRV={} mvec={} status={}",
-							nrColor != nullptr, nrDepth.texture != nullptr, nrDepth.depthSRV != nullptr,
-							nrMvec.texture != nullptr, NeuralRendering::Renderer::Instance().StatusText());
+						SKSE::log::info("[FrameGen] DLSSNR: color={} engineDepthSRV={} engineMvec={} inputs={} frames={} status={}",
+							nrColor != nullptr, nrDepth.depthSRV != nullptr, nrMvec.texture != nullptr, nrInputsReady,
+							static_cast<unsigned long long>(NeuralRendering::Renderer::Instance().SuccessfulFrames()),
+							NeuralRendering::Renderer::Instance().StatusText());
 					}
+					static std::uint32_t nrSkip = 0;
+					if (!nrInputsReady && ++nrSkip % 300 == 1)
+						SKSE::log::warn("[FrameGen] DLSSNR skipped: shared depth/mvec not ready (depthWrapped={} mvecWrapped={} srv={})",
+							depthWrapped != nullptr, mvecWrapped != nullptr,
+							depthWrapped != nullptr && depthWrapped->srv != nullptr);
 					// v0.49j（修重影+光影根因）：DLSSNR 的 depth/mvec 必须与 color(2560 超分后)
 					// 对齐。引擎原始 depth/mvec 是 DRS 渲染分辨率(1706)内容（在 2560 纹理左上角），
 					// 与 color(2560 全屏)不对齐 → temporal 错乱 → 重影 + 光影不对。改用已 upscale

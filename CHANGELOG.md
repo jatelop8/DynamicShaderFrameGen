@@ -1,3 +1,44 @@
+# v0.52 - switch states that actually stick, and diagnostics that can be falsified
+
+Reported: "I switched DLSS and nothing changed at all."
+
+Diagnosis (from the 13:59-14:01 SKSE log + on-disk state):
+  * The "Frame Gen Provider" combo only mutated in-memory state. Provider is consumed
+    exactly once, in DX12SwapChain::CreateSwapChain (dlssgMode / BufferCount / D3D12
+    proxy path), so changing it mid-session is a no-op BY CONSTRUCTION - and it wrote
+    no log line, so there was no trace of the switch anywhere.
+  * It was never persisted either: the combo never touched the INI, and "Save to INI"
+    wrote a different path literal than LoadConfig reads, silently dropped keys and
+    never logged a failure. overwrite/SKSE/Plugins had no FrameGen INI at all, which
+    proves no save ever succeeded -> even a restart read Provider=0 back.
+  * The DLSSNR diag line printed the ENGINE's kMAIN depth / kMOTION_VECTOR while
+    Apply() is actually fed depthWrapped/mvecWrapped, so it could not falsify
+    "is NR running?", and the log carried no success counter.
+  * The menu header still advertised "DLSS Upscaling (live adjust)" although DLSS
+    upscaling was removed in v0.48, and EnableUpscale / PresetDLSS are parsed but
+    wired to nothing -> dead switches that look live.
+
+Changes:
+  * ImguiMenu: SaveSettingsToIni() is now the single writer, used by the Save button
+    AND by every switch that changed (Provider / MFG multiplier / MFG override /
+    DLSSNR). It uses the exact LoadConfig path, writes EVERY key LoadConfig knows
+    (the old one truncated the file to 17 keys, silently wiping QualityMode,
+    RenderResolutionScale, Sharpness, FpsOverlay, EnableUpscale, PresetDLSS) and logs
+    the result either way.
+  * MFG multiplier + override are no longer hidden behind provider==1, so DLSSG can be
+    pre-configured while on FSR3.
+  * DX12SwapChain: records providerAtCreate; GUI shows "PENDING RESTART: running X,
+    INI wants Y"; the FPS probe line now prints both (cfgProvider=) and appends
+    "(CHANGED - RESTART REQUIRED)" on a mismatch.
+  * DLSSNR diag now prints the inputs Apply() actually consumes plus the NGX success
+    frame counter, and warns once when the shared depth/mvec inputs are missing
+    instead of silently skipping the pass.
+  * INI: EnableUpscale / PresetDLSS marked as parsed-but-not-wired; Provider documented
+    as applying on the next launch only. Version 0.50 -> 0.52.
+
+Config: Provider=1 (DLSSG), DLSSGFramesToGenerate=3 (4x), MFGMaxFramesOverride=3,
+paired with DLSSG-Transfusion v1.4.1 (version.dll) in the game directory.
+
 # DynamicShaderFrameGen — What's New
 
 ## Multi-frame generation on RTX 40/30/20 — v0.50

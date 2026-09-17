@@ -206,6 +206,56 @@ namespace FrameGen
 		dl->AddText(font, size, pos, IM_COL32(255, 255, 255, 255), buf);
 	}
 
+	// v0.52：INI 写回统一入口（"Save to INI" 按钮 + 改动即存共用）。
+	// ① 写侧路径必须与 LoadConfig 的读取路径**逐字一致**（LoadConfig 用
+	//    "Data/SKSE/Plugins/..."）。旧版写侧用反斜杠，且失败只改按钮文字、不写日志
+	//    ——用户改了开关、重启后配置没变，日志里也查不到任何痕迹，表现就是
+	//    "切换了没有任何变化"。
+	// ② 必须写全 LoadConfig 认识的**每一个**键。旧版只写 17 个，文件是截断重写，
+	//    于是点一次 Save 就把 QualityMode / RenderResolutionScale / Sharpness /
+	//    FpsOverlay / EnableUpscale / PresetDLSS 整行删掉（自定义渲染比例被静默重置）。
+	// 注意：MO2 下对 mod 提供的文件写入会被重定向到 overwrite（优先级高于 mods），
+	// 这是预期行为——写进 overwrite 的那份会盖住 mod 里的模板，下次启动即生效。
+	static bool SaveSettingsToIni(FrameGen& a_fg)
+	{
+		auto& s = a_fg.settings;
+		const char* iniPath = "Data/SKSE/Plugins/DynamicShaderFrameGen.ini";
+		std::ofstream ini(iniPath);
+		if (!ini) {
+			SKSE::log::error("[FrameGen] INI save FAILED: cannot open {} (CWD must be the game dir)", iniPath);
+			return false;
+		}
+		ini << "[FrameGeneration]\n"
+			<< "Enable=" << (s.enableFrameGen ? 1 : 0) << "\n"
+			<< "ForceEnable=" << (s.forceEnable ? 1 : 0) << "\n"
+			<< "ForceBorderless=" << (s.forceBorderless ? 1 : 0) << "\n"
+			<< "Provider=" << s.provider << "\n"
+			<< "FrameGeneration=" << (s.frameGeneration ? 1 : 0) << "\n"
+			<< "EnableUpscale=" << (s.enableUpscale ? 1 : 0) << "\n"
+			<< "NeuralRenderingEnabled=" << (s.neuralRenderingEnabled ? 1 : 0) << "\n"
+			<< "NRIntensity=" << a_fg.nrTuning.intensity << "\n"
+			<< "NRLocalTone=" << a_fg.nrTuning.localToneStrength << "\n"
+			<< "NRLocalStructure=" << a_fg.nrTuning.localStructureStrength << "\n"
+			<< "NRSkinStructure=" << a_fg.nrTuning.skinStructureStrength << "\n"
+			<< "NRStyle=" << a_fg.nrTuning.style << "\n"
+			<< "NRAutoMask=" << (a_fg.nrTuning.useAutoMask ? 1 : 0) << "\n"
+			<< "NRUICorrection=" << (a_fg.nrTuning.uiCorrection ? 1 : 0) << "\n"
+			<< "NRRenderScale=" << std::fixed << std::setprecision(2) << a_fg.nrTuning.renderScale << "\n"
+			<< "FpsOverlay=" << (s.fpsOverlay ? 1 : 0) << "\n"
+			<< "QualityMode=" << s.qualityMode << "\n"
+			<< "PresetDLSS=" << s.presetDLSS << "\n"
+			<< "DLSSGFramesToGenerate=" << s.dlssgFramesToGenerate << "\n"
+			<< "MFGMaxFramesOverride=" << s.mfgMaxFramesOverride << "\n"
+			<< "Sharpness=" << s.sharpness << "\n"
+			<< "RenderResolutionScale=" << std::fixed << std::setprecision(2) << s.renderResolutionScale << "\n"
+			<< "StreamlineLogLevel=" << s.streamlineLogLevel << "\n"
+			<< "ToggleKey=0x" << std::hex << s.toggleKey << std::dec << "\n";
+		ini.close();
+		SKSE::log::info("[FrameGen] INI saved: Provider={} DLSSGFramesToGenerate={} MFGMaxFramesOverride={} NR={}",
+			s.provider, s.dlssgFramesToGenerate, s.mfgMaxFramesOverride, s.neuralRenderingEnabled ? 1 : 0);
+		return true;
+	}
+
 	void ImguiMenu::DrawMenu(FrameGen& a_fg)
 	{
 		auto& s = a_fg.settings;
@@ -218,7 +268,10 @@ namespace FrameGen
 			return;
 		}
 
-		ImGui::TextWrapped("Frame Generation + DLSS Upscaling (live adjust)");
+		// v0.52：标题别再写 "DLSS Upscaling"——超分在 v0.48 已移除，否则用户会一直找那个
+		// 不存在的开关（"切换 DLSS 没反应"的一部分就来自这类过期文案）。
+		ImGui::TextWrapped("Frame Generation + DLSS5 Neural Rendering (live adjust)");
+		ImGui::TextDisabled("NOTE: DLSS upscaling was removed in v0.48 - there is no DLSS upscale switch.");
 		ImGui::Separator();
 
 		ImGui::Checkbox("Enable (master)", &s.enableFrameGen);
@@ -237,30 +290,57 @@ namespace FrameGen
 		// v0.42：恢复 Provider 选项（DLSSG 4x MFG）——Provider 决定 swapchain 路径，
 		// 运行时切换需重启游戏生效（重建 D3D12 proxy）。
 		const char* providers[] = { "FSR3 (2x, all GPUs)", "DLSSG (NVIDIA, 4x MFG)" };
-		ImGui::Combo("Frame Gen Provider", &s.provider, providers, 2);
-		if (s.provider == 1) {
+		// v0.52：Provider 只在 DX12SwapChain::CreateSwapChain 里被消费一次（决定 dlssgMode /
+		// BufferCount / D3D12 proxy 路径），**运行中切换不会有任何即时变化**——这是结构性的，
+		// 没有热切方案。所以要保证两点：① 改动立刻写回 INI（否则重启后读回旧值，表现就是
+		// "切了跟没切一样"）；② 明确记录日志 + 界面提示需重启，不再让用户对着一个"没反应"
+		// 的下拉框猜。
+		if (ImGui::Combo("Frame Gen Provider", &s.provider, providers, 2)) {
+			const bool saved = SaveSettingsToIni(a_fg);
+			SKSE::log::info("[FrameGen] Provider -> {} ({}) | {} | RESTART REQUIRED (swapchain path is fixed at creation)",
+				s.provider, s.provider == 1 ? "DLSSG" : "FSR3", saved ? "INI saved." : "INI SAVE FAILED.");
+		}
+		const bool providerPending = sc.providerAtCreate >= 0 && s.provider != sc.providerAtCreate;
+		if (providerPending) {
+			ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.2f, 1.0f),
+				"PENDING RESTART: running %s, INI wants %s - no effect until you relaunch the game",
+				sc.providerAtCreate == 1 ? "DLSSG" : "FSR3", s.provider == 1 ? "DLSSG" : "FSR3");
+		}
+		if (s.provider == 0) {
+			ImGui::Text("FrameGen: FSR3 tech (all GPUs)");
+			ImGui::TextDisabled("Universal frame interpolation - works on NVIDIA & AMD");
+		}
+
+		// v0.52：DLSSG 参数不再藏在 provider==1 后面——在 FSR3 下也能先设好（否则"切了没反应"
+		// 时根本无从判断到底改没改），改动立即持久化，不必再记得按 Save to INI。
+		{
 			// v0.50：2x..6x（1=2x 2=3x 3=4x 4=5x 5=6x）
 			const char* mfgModes[] = { "2x", "3x", "4x", "5x", "6x" };
 			int mfg = static_cast<int>(s.dlssgFramesToGenerate) - 1;
 			if (mfg < 0) mfg = 0;
 			if (mfg > 4) mfg = 4;
-			if (ImGui::Combo("MFG Multiplier", &mfg, mfgModes, IM_ARRAYSIZE(mfgModes)))
+			if (ImGui::Combo("MFG Multiplier (DLSSG)", &mfg, mfgModes, IM_ARRAYSIZE(mfgModes))) {
 				s.dlssgFramesToGenerate = static_cast<std::uint32_t>(mfg + 1);
+				SaveSettingsToIni(a_fg);
+				SKSE::log::info("[FrameGen] MFG multiplier -> {}x (DLSSGFramesToGenerate={})", mfg + 1, s.dlssgFramesToGenerate);
+			}
 
 			// v0.50：上限覆盖（老卡多倍帧生成解锁）。0=跟随硬件上报；1..5=抬到 N 个插帧。
 			int ov = static_cast<int>(s.mfgMaxFramesOverride);
 			if (ImGui::SliderInt("MFG Max Override", &ov, 0, 5,
-				ov == 0 ? "Off (hardware max)" : "%d"))
+				ov == 0 ? "Off (hardware max)" : "%d")) {
 				s.mfgMaxFramesOverride = static_cast<std::uint32_t>(ov < 0 ? 0 : ov);
+				SaveSettingsToIni(a_fg);
+				SKSE::log::info("[FrameGen] MFG max override -> {} (1=2x ... 5=6x)", s.mfgMaxFramesOverride);
+			}
 
 			const char* archNote = s.mfgMaxFramesOverride > 0
 				? "Override ON - raising this only changes what we REQUEST. The runtime still\nvalidates it and will reject >hwMax with eErrorInvalidState unless an external MFG\nkernel unlocker (DLSSG-Transfusion / dlssg_for_sm86 / MFG Bridge) is installed.\nCheck the log for 'MFG probe: runtime REJECTED' vs 'ACCEPTED'."
 				: "RTX 50 does 4x natively. 40/30/20 need an external kernel unlocker.\nThe v0.51 ladder probe steps the request down to whatever the runtime accepts.";
 			ImGui::TextDisabled("%s", archNote);
+			if (s.provider == 0)
+				ImGui::TextDisabled("These apply to DLSSG. You are on FSR3 now - the values are saved to the INI\nand take effect after you switch Provider and restart.");
 			ImGui::TextDisabled("Provider change needs restart.");
-		} else {
-			ImGui::Text("FrameGen: FSR3 tech (all GPUs)");
-			ImGui::TextDisabled("Universal frame interpolation - works on NVIDIA & AMD");
 		}
 
 		// ---- DLSS5 Neural Rendering (NGX Feature 18) ----
@@ -271,7 +351,13 @@ namespace FrameGen
 			s.neuralRenderingEnabled = nrOn;
 			// v0.42：DLSSNR 与 FG 串联（不再互斥）——DLSSNR 处理画面后 FG 在结果上插帧。
 			// 若叠加闪烁再回退互斥。开 DLSSNR 不再自动关 FG。
-			SKSE::log::info("[FrameGen] DLSSNR {} (GUI)", nrOn ? "enabled" : "disabled");
+			// v0.52：改动立即持久化；日志带上运行时真实状态与成功帧数——"切了到底有没有
+			// 生效"以前完全看不出来（旧日志只记 enabled/disabled，无法证伪）。
+			SaveSettingsToIni(a_fg);
+			SKSE::log::info("[FrameGen] DLSSNR {} (GUI) | runtime status={} frames={}",
+				nrOn ? "enabled" : "disabled",
+				NeuralRendering::Renderer::Instance().StatusText(),
+				static_cast<unsigned long long>(NeuralRendering::Renderer::Instance().SuccessfulFrames()));
 		}
 		if (s.neuralRenderingEnabled) {
 			auto& t = a_fg.nrTuning;
@@ -326,32 +412,12 @@ namespace FrameGen
 		ImGui::Text("Keys: Hold Home = Menu | FG switch in GUI");
 
 		if (ImGui::Button("Save to INI")) {
-			// Write back INI (relative path, CWD=game dir, no Data prefix)
-			std::ofstream ini("Data\\SKSE\\Plugins\\DynamicShaderFrameGen.ini");
-			if (ini) {
-				ini << "[FrameGeneration]\n"
-					<< "Enable=" << (s.enableFrameGen ? 1 : 0) << "\n"
-					<< "ForceEnable=" << (s.forceEnable ? 1 : 0) << "\n"
-					<< "Provider=" << s.provider << "\n"
-				<< "FrameGeneration=" << (s.frameGeneration ? 1 : 0) << "\n"
-				<< "NeuralRenderingEnabled=" << (s.neuralRenderingEnabled ? 1 : 0) << "\n"
-					<< "NRIntensity=" << a_fg.nrTuning.intensity << "\n"
-					<< "NRLocalTone=" << a_fg.nrTuning.localToneStrength << "\n"
-					<< "NRLocalStructure=" << a_fg.nrTuning.localStructureStrength << "\n"
-					<< "NRSkinStructure=" << a_fg.nrTuning.skinStructureStrength << "\n"
-					<< "NRStyle=" << a_fg.nrTuning.style << "\n"
-					<< "NRAutoMask=" << (a_fg.nrTuning.useAutoMask ? 1 : 0) << "\n"
-					<< "NRUICorrection=" << (a_fg.nrTuning.uiCorrection ? 1 : 0) << "\n"
-					<< "NRRenderScale=" << std::fixed << std::setprecision(2) << a_fg.nrTuning.renderScale << "\n"
-					<< "DLSSGFramesToGenerate=" << s.dlssgFramesToGenerate << "\n"
-					<< "MFGMaxFramesOverride=" << s.mfgMaxFramesOverride << "\n"
-					<< "StreamlineLogLevel=" << s.streamlineLogLevel << "\n"
-					<< "ToggleKey=0x" << std::hex << s.toggleKey << std::dec << "\n";
-				ini.close();
-				ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "Saved");
-			} else {
-				ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Save failed");
-			}
+			// v0.52：改走统一写回函数（与自动保存同一份键表，不再漏键、不再静默失败）。
+			const bool saved = SaveSettingsToIni(a_fg);
+			if (saved)
+				ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "Saved (see log for result)");
+			else
+				ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Save FAILED - see log");
 		}
 
 		ImGui::End();

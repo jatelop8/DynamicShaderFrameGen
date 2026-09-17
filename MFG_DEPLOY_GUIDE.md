@@ -1,179 +1,124 @@
-# DynamicShaderFrameGen v0.50 — 多倍帧生成（RTX 40/30/20）部署与验证
+# DynamicShaderFrameGen — 多倍帧生成（MFG）状态说明
 
-生成时间：2026-09-17
-工程路径：`D:\Modding\DynamicShaderFrameGen`
-备份：`D:\workbuddy2\backup\DynamicShaderFrameGen_mfg_20260917_121051\source_full.tar.gz`
-Git 提交：`6729bcd` v0.50: MFG max-frames override
+**版本**：v0.52 · 构建 `Sep 17 2026 14:08` · DLL MD5 `f93031f7df63b1ec84976439e2621ae0`（1213952 字节）
+**工程**：`D:\Modding\DynamicShaderFrameGen`（提交基线 `44591b7` → v0.52）
+**Git 回退点**：`44591b7`（v0.51）；源码备份 `D:\workbuddy2\backup\DynamicShaderFrameGen_mfg_20260917_121051\`
 
 ---
 
-## 一、已完成的部分（代码层）
+## 一、这次修的是什么（"切换 DLSS 没有任何变化"）
 
-### 改动的文件
+### 日志给出的硬事实
 
-| 文件 | 改动 |
+本次会话（13:59:55 启动）唯一被记录的菜单交互是：
+
+```
+14:00:54.445  [FrameGen] DLSSNR disabled (GUI)
+14:00:55.019  [FrameGen] DLSSNR enabled  (GUI)
+```
+
+除此之外**什么都没有**。而配置自始至终是 `Provider=0`：
+
+```
+13:59:55.164  Config loaded: ... Provider=0 ... QualityMode=1 ...
+每一行 FPS probe: real=55.8 | FSR3 | ...
+每一行 MenuDraw entry: dlssg=false ...
+```
+
+### 三条各自独立的原因
+
+**① Provider 下拉框在运行中切换，按设计就是"零效果"**
+
+`Provider` 只在 `DX12SwapChain::CreateSwapChain()` 里被消费**一次**：它决定 `dlssgMode`、`BufferCount`（DLSSG 三缓冲 / FSR3 双缓冲）、以及整条 D3D12 proxy 路径。这些在 swapchain 创建时定型，运行中改内存变量不会重建任何东西。
+
+> 这是结构性的，**没有热切方案**。原来那条 `ImGui::Combo` 连一行日志都没写，所以"切了没反应"连个痕迹都查不到。
+
+**② 改动根本没落盘**
+
+下拉框只改内存里的 `s.provider`；只有点 "Save to INI" 才写文件。而全盘检查证明那次保存从未成功：
+
+| 检查 | 结果 |
 |---|---|
-| `src/Streamline.h` | 声明 `ApplyMfgOverride()` |
-| `src/Streamline.cpp` | 新增 `ApplyMfgOverride()`；`PostDevice()` 里改为 `hwMax` + 调用覆盖；`SetDLSSGOptions()` 里 `effectiveMax = max(hardware max, override)` |
-| `src/FrameGen.h` | 新增 `Settings::mfgMaxFramesOverride` |
-| `src/FrameGen.cpp` | 读取 INI `MFGMaxFramesOverride`（0-5）；`DLSSGFramesToGenerate` 上限 4→5 |
-| `src/ImguiMenu.cpp` | MFG 倍率选项 3 档→5 档（2x-6x）；新增 `MFG Max Override` 滑块 |
-| `src/version.rc` | 0.48.0.0 → 0.50.0.0 |
-| `CHANGELOG.md` | 新增 v0.50 条目 |
-| `SKSE/Plugins/DynamicShaderFrameGen.ini` | 新增 `MFGMaxFramesOverride`；Provider→1 |
+| 全盘 9 份同名 INI，指纹比对日志 | 生效的是 `E:\EJ\mod\mods\DynamicShaderFrameGen\...ini`（13:30 我写的那份，`Provider=0`）|
+| `E:\EJ\mod\overwrite\SKSE\Plugins\` 有 FrameGen INI 吗 | **没有**（只有 CrashLogger / po3 / ImmersiveHUD 等）→ 说明 Save 从未成功过 |
+| MO2 档案 `DIPEI` 里哪些 FrameGen mod 启用 | 只有 `+DynamicShaderFrameGen`（DLL MD5 `7d9ee3be`，13:30 构建）；另两个 v047b / NR 都是 `-` 禁用 |
 
-### 构建产物
+**③ 旧版 "Save to INI" 还会静默删键**
 
-- `D:\Modding\DynamicShaderFrameGen\build\NINJA\DynamicShaderFrameGen.dll`（1201152 字节）
-- 自动部署到 `E:\EJ\mod\mods\DynamicShaderFrameGen\SKSE\Plugins\`
-- MD5 一致：`27ccc313af5732c7e2075fd475efef05`
-- 编译 EXITCODE=0，无错误
+它把文件**截断重写**成 17 个键，于是 `QualityMode` / `RenderResolutionScale` / `Sharpness` / `FpsOverlay` / `EnableUpscale` / `PresetDLSS` 整行消失 —— 自定义渲染比例会被无声重置。
 
-### 当前生效配置
-
-```ini
-Provider=1                 ; DLSSG 路径（多倍帧生成只在这条路径上）
-DLSSGFramesToGenerate=3    ; 4x
-MFGMaxFramesOverride=3     ; 抬高上报上限到 3（=4x）
-```
-
-### 核心逻辑说明
-
-问题根源：Streamline 运行时在 Ada 及更早架构上报 `numFramesToGenerateMax = 1`，
-而旧代码 `clamp(INI值, 1, 硬件上限)` 把一切请求压到 2x。日志证据：`dlssgMax=1 req=3`。
-
-v0.50 的行为：
-
-```
-ApplyMfgOverride(hwMax):
-    if override == 0  -> 不动（严格跟随硬件，50 系仍可 4x，零倒退）
-    if override > hwMax -> 抬到 override（解锁路径）
-    if override <= hwMax -> 不动
-
-SetDLSSGOptions:
-    effectiveMax = max(1, max(hardwareMax, override))
-    numFramesToGenerate = clamp(INI, 1, effectiveMax)
-```
+另外，菜单标题还写着 "DLSS Upscaling (live adjust)"，但**超分在 v0.48 就移除了**（`EnableUpscale`、`PresetDLSS` 只被解析、没有任何实现引用）→ 用户会一直去找那个不存在的开关。
 
 ---
 
-## 二、还差的部分（内核层）
+## 二、v0.52 改了什么
 
-**这一半无法用源码解决。** `nvngx_dlssg.dll` 里没有 Ada/Ampere/Turing 的内核，
-抬高上限只是让请求发得出去，内核不在 → 高倍率无内核可执行。
-
-需要外部内核解锁器。已选定 **DLSSG-Transfusion v1.4.1**。
-
-### 为什么是 Transfusion
-
-1. **只 patch 进程映射内存，不改磁盘 DLL** — 不与插件的 swapchain 接管冲突
-2. 你的 `nvngx_dlssg.dll` 是 **310.8.0.0**，在其支持列表内（3.10.1 - 3.10.9）
-3. 热键 `Ctrl+Alt+2..6`，与插件 `Home` 键不冲突
-4. 默认 `multiplier: 4` + `blackwellTransfusion: true`，正好对上 4x
-
-### 已下载并校验
-
-- 源：`https://github.com/TonyJoaca/DLSSG-Transfusion/releases/download/1.4.1/DLSSG-Transfusion-v1.4.1.zip`
-- SHA256 校验**通过**（与官方发布值一致）
-- 解压位置：`D:\Modding\DLSSG-Transfusion\extracted\`
-- 已改名为 `version.dll` 的安装包：`D:\Modding\DLSSG-Transfusion\ready\`
-
----
-
-## 三、待确认：游戏目录
-
-Transfusion 必须放在**游戏主程序 exe 同级目录**。需要确认你的 MO2 实例
-（mods 指向 `E:\EJ\mod\mods\`）实际关联的游戏目录。
-
-候选（本机存在多个副本）：
-- `D:\EJ-1.0\SkyrimSE\`
-- `E:\ej-all in one\SkyrimAe\`
-- `E:\ENB-EJ\Skyrim Special Edition\`
-- `D:\ENB-EJ\Skyrim Special Edition\`
-
-**部署前必须确认哪一个是当前 MO2 实际启动的**，否则放错位置不生效。
-
-### 部署步骤（确认目录后执行）
-
-1. 把 `D:\Modding\DLSSG-Transfusion\ready\version.dll` 复制到 **游戏 exe 同级目录**
-2. 把 `DLSSG-Transfusion.json` 复制到同一目录
-3. 检查该目录**是否已存在 `version.dll`** — 若存在说明被别的模组占用：
-   - CET / OptiScaler / 某些 SKSE 插件会用 `version.dll`
-   - 存在冲突时改用 `dinput8.dll` 或 `winmm.dll`（把 DLL 重命名即可）
-4. 启动游戏
-
----
-
-## 四、验证清单
-
-### 步骤 1：先验证插件本身（不装 Transfusion 就跑一次）
-
-启动游戏进主菜单，等 10 秒，然后立刻看：
-
-```
-C:\Users\Administrator\Documents\My Games\Skyrim Special Edition\SKSE\DynamicShaderFrameGen.log
-```
-
-（注意：每次启动覆盖，必须在游戏还开着时读）
-
-**必看的行：**
-
-| 日志行 | 期望值 | 含义 |
+| # | 改动 | 影响 |
 |---|---|---|
-| `Config loaded: ... Provider=1` | `Provider=1` | 已切到 DLSSG 路径 |
-| `DLSS-G supports up to Nx frame generation` | N=2 | 硬件原生上报（40 系） |
-| `MFG override ACTIVE: raising reported max 1 -> 3` | 出现这行 | **覆盖生效**（核心验证点） |
-| `FPS probe: real=... \| DLSSG ... \| dlssgMax=3 req=3` | `dlssgMax=3` | 上限已抬高（之前是 1） |
-| `DLSSNR: ... status=initialized` | `initialized` | NGX Core 没被抢 |
-
-**判读：**
-- `dlssgMax=3 req=3` + 画面正常 → 请求链打通，可以进行步骤 2
-- `dlssgMax=3 req=3` + **黑屏/卡死** → 正是预期的"内核缺失"表现，装 Transfusion 解决
-- `dlssgMax=1` 仍然出现 → 覆盖没生效，回传日志给我
-- `status=not-probed` 或 `0xBAD00007` → NGX Core 被抢（检查是否有 ENB Anti-Aliasing）
-
-### 步骤 2：装 Transfusion 后再跑一次
-
-同样的日志 + 额外看：
-
-```
-<游戏目录>\DLSSG-Transfusion.log
-```
-
-| 检查项 | 期望 |
-|---|---|
-| Transfusion 日志出现 | DLL 被加载 |
-| 提到 kernel transfusion / sm_120 → sm_89 | 内核转换成功 |
-| 出现 "fails closed to native 2x" | **失败回退**，说明 patch 没成功 |
-| `FPS probe` 里 `present~` | 应约为 `real × 4`（不是 ×2） |
-
-### 步骤 3：游戏内确认
-
-- `Ctrl + Alt + O` 开 Transfusion 叠加层 → 应显示当前倍率与 FG 状态
-- `Ctrl + Alt + 4` 锁 4x，`Ctrl + Alt + 3` 锁 3x
-- `Ctrl + Alt + 6` 冲 6x（注意：6x 下真实渲染帧会大幅下降）
+| 1 | `SaveSettingsToIni()` 统一写入口，**Save 按钮与所有开关共用** | 开关改动**立即落盘**，不再需要记得按 Save |
+| 2 | 写路径与 `LoadConfig` 读取路径**逐字一致**，并写全 **24 个键** | 不再静默失败、不再删掉别的键 |
+| 3 | 写成功/失败**都记日志**（`INI saved:` / `INI save FAILED:`） | 静默失败这类 bug 下次能被日志抓住 |
+| 4 | 记录 `providerAtCreate`，GUI 显示 **PENDING RESTART** 横幅 | 切了 Provider 会明确告诉你"要重启" |
+| 5 | FPS probe 增加 `cfgProvider=`，不一致时追加 `(CHANGED - RESTART REQUIRED)` | 一条日志同时给出"在跑的"和"INI 写的" |
+| 6 | MFG 倍率/上限控件**不再藏在 provider==1 后面** | FSR3 下也能先把 DLSSG 参数设好 |
+| 7 | DLSSNR 诊断改打 **Apply 真正吃的输入 + NGX 成功帧数**，输入没就绪时警告一次 | 以前那条日志读的是引擎原生 depth/mvec，**无论 NR 有没有跑都显示 true**，无法证伪 |
+| 8 | INI 标注 `EnableUpscale`/`PresetDLSS` 为 parsed-but-not-wired；Provider 注明仅下次启动生效 | 不再让人追死开关 |
+| 9 | 版本 0.50 → 0.52 | — |
 
 ---
 
-## 五、风险与注意事项
+## 三、当前配置与"两半"的对应关系
 
-| 风险 | 说明 |
-|---|---|
-| **显存** | 4x 起需要额外显存；8GB 卡建议 2x/3x。出现 "Out of Video Memory" 就降倍率或关后台硬件加速程序 |
-| **伪影** | 倍率越高伪影越明显。Transfusion 的 `qualityValidWarp` 已开，能减电线/栅栏撕裂与 HUD 重影 |
-| **UIR** | Skyrim 是单表面管线（无独立 UI 缓冲），`forceUiRecomposition` 保持 `false` 正确 |
-| **反作弊** | 仅单机使用。Skyrim 无影响，但别把这个思路用到网游 |
-| **易碎** | NVIDIA 驱动 / Streamline / DLSS 运行时的 OTA 更新都可能使其失效 |
-| **回滚** | 删掉游戏目录的 `version.dll` + `DynamicShaderFrameGen.json` 即完全卸载；插件用 `git checkout b20dae4` 回退 |
+拿 4-6 倍帧生成需要**两半同时到位**，现在都装了：
+
+| 半边 | 位置 | 状态 |
+|---|---|---|
+| **代码：把请求发出去** | `MFGMaxFramesOverride=3` | ✅ 已配（`=0` 时阶梯探测只会请求硬件上限 1→2x）|
+| **内核：让请求能执行** | `D:\ENB-EJ\Skyrim Special Edition\version.dll` | ✅ DLSSG-Transfusion v1.4.1，SHA256 `a7f517ca…` 与官方发布包一致 |
+
+**生效配置**（`E:\EJ\mod\mods\DynamicShaderFrameGen\SKSE\Plugins\DynamicShaderFrameGen.ini`）：
+
+```
+Provider=1                 ; DLSSG 路径
+DLSSGFramesToGenerate=3    ; 4x
+MFGMaxFramesOverride=3     ; 抬到 4x（=0 会被压回 2x）
+NeuralRenderingEnabled=1
+```
+
+> 活动 MO2 实例：档案 **DIPEI**，`base_directory=E:\EJ\mod`，`gamePath=D:\ENB-EJ\Skyrim Special Edition`。
+> 游戏根目录里 `version.dll` 原本不存在（ENB 占的是 `d3d11.dll`），所以代理名无冲突。
+
+### 回退（10 秒）
+
+1. **只退回 FSR3**：菜单里把 Provider 切回 `FSR3` —— v0.52 起它会**立刻写入 INI**，重启即生效；或直接改 INI 的 `Provider=0`。
+2. **连解锁器一起撤**：删掉 `D:\ENB-EJ\Skyrim Special Edition\version.dll` 与 `DLSSG-Transfusion.json`。
 
 ---
 
-## 六、回滚命令
+## 四、进游戏后怎么验证（每次启动覆盖日志）
 
-```bash
-# 回退插件源码
-cd /d/Modding/DynamicShaderFrameGen && git checkout b20dae4 -- src/ SKSE/
+日志：`Documents\My Games\Skyrim Special Edition\SKSE\DynamicShaderFrameGen.log`
 
-# 或从备份完整还原
-tar -xzf /d/workbuddy2/backup/DynamicShaderFrameGen_mfg_20260917_121051/source_full.tar.gz -C /d/Modding/DynamicShaderFrameGen
-```
+| 看这一行 | 期望 | 含义 |
+|---|---|---|
+| `Provider in effect this session: 1 (DLSSG)` | 出现 | swapchain 走了 DLSSG 路径 |
+| `FPS probe: ... cfgProvider=1` | 无 `(CHANGED ...)` 后缀 | 在跑的和 INI 写的一致 |
+| `MFG probe: runtime ACCEPTED 4x` | **出现** | **唯一可信的"4 倍生效"证据** |
+| `MFG probe: runtime REJECTED` | 不应大量出现 | 被拒 → 阶梯探测会逐帧降档并锁定 |
+| `cap~=real*4` | — | 只是**推算**的理论上限，**不是测量值** |
+| `DLSSNR: ... inputs=true frames=N` | `frames` **持续增长** | NR 真的在跑（`frames=0` = 从未执行）|
+
+**判读**：
+
+- `ACCEPTED 4x` + 画面正常 → 成功，4 倍到手
+- `REJECTED` 且锁定在 `accepted=1x(2x)` → 解锁器没生效，看游戏目录的 `DLSSG-Transfusion.log`（JSON 里 `logPerformance: true`、`showOverlay: true`）
+- 画面闪 → 先看有没有 `REJECTED`；v0.51 的阶梯探测就是为这个加的，理论上不该再闪
+
+---
+
+## 五、诚实的边界
+
+- **倍率上限由运行时决定**，不是写了就一定拿到。`dlssgFramesToGenerate` 只是请求；真正决定的是 Streamline 运行时接不接受。
+- **Provider 切换永远需要重启**（swapchain 路径一次性定型）。v0.52 做的是让它"落盘 + 记日志 + 界面提示"，不是让它热切。
+- `EnableUpscale` / `PresetDLSS` 是**死开关**（v0.48 移除超分后遗留），已在 INI 里标注。
+- 6x 需要把 `MFGMaxFramesOverride` 与 Transfusion 的 `multiplier` 一起提到 6；4x 是当前两边一致的配置。

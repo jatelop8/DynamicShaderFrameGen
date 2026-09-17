@@ -103,6 +103,11 @@ namespace FrameGen
 
 		bool dlssgMode = false;  // v0.3：NVIDIA DLSSG 模式（普通 swapchain + SL 插帧）
 
+		// v0.52：构建本 swapchain 时实际生效的 Provider。-1 = 尚未构建。
+		// Provider 只在这里被消费（决定 dlssgMode / BufferCount / D3D12 proxy 路径），
+		// 运行中改 INI 或 GUI 都不会重建 swapchain —— GUI 用它显示 "PENDING RESTART"。
+		int providerAtCreate = -1;
+
 		WrappedResource* swapChainBufferWrapped = nullptr;
 		WrappedResource* colorOutWrapped = nullptr;   // v0.7.5：DLSS 超分独立输出（CS 同款，防 in-place 失效）
 		WrappedResource* nrOutWrapped = nullptr;      // v0.8：DLSS-NR 输出（NGX 写这里，再拷贝呈现）
