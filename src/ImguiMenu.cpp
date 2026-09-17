@@ -254,8 +254,8 @@ namespace FrameGen
 				s.mfgMaxFramesOverride = static_cast<std::uint32_t>(ov < 0 ? 0 : ov);
 
 			const char* archNote = s.mfgMaxFramesOverride > 0
-				? "Unlock ON - requires an external MFG kernel unlocker (e.g. DLSSG-Transfusion)."
-				: "RTX 50 does 4x natively. 40/30/20 need an external kernel unlocker.";
+				? "Override ON - raising this only changes what we REQUEST. The runtime still\nvalidates it and will reject >hwMax with eErrorInvalidState unless an external MFG\nkernel unlocker (DLSSG-Transfusion / dlssg_for_sm86 / MFG Bridge) is installed.\nCheck the log for 'MFG probe: runtime REJECTED' vs 'ACCEPTED'."
+				: "RTX 50 does 4x natively. 40/30/20 need an external kernel unlocker.\nThe v0.51 ladder probe steps the request down to whatever the runtime accepts.";
 			ImGui::TextDisabled("%s", archNote);
 			ImGui::TextDisabled("Provider change needs restart.");
 		} else {
@@ -344,6 +344,7 @@ namespace FrameGen
 					<< "NRUICorrection=" << (a_fg.nrTuning.uiCorrection ? 1 : 0) << "\n"
 					<< "NRRenderScale=" << std::fixed << std::setprecision(2) << a_fg.nrTuning.renderScale << "\n"
 					<< "DLSSGFramesToGenerate=" << s.dlssgFramesToGenerate << "\n"
+					<< "MFGMaxFramesOverride=" << s.mfgMaxFramesOverride << "\n"
 					<< "StreamlineLogLevel=" << s.streamlineLogLevel << "\n"
 					<< "ToggleKey=0x" << std::hex << s.toggleKey << std::dec << "\n";
 				ini.close();

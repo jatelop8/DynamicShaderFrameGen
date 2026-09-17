@@ -104,8 +104,17 @@ namespace FrameGen
 		PFun_slPCLSetMarker* slPCLSetMarker{};
 
 		// v0.31（对齐 open-shaders Streamline.cpp:300-320）：多倍帧生成
-		std::uint32_t dlssgMaxFramesToGenerate = 1;   // 硬件支持上限（slDLSSGGetState 查询）
-		std::uint32_t dlssgFramesToGenerate = 1;      // 用户配置（INI DLSSGFramesToGenerate）
+		std::uint32_t dlssgMaxFramesToGenerate = 1;   // 运行时上报上限（**永不被覆盖改写**，只读）
+		std::uint32_t dlssgFramesToGenerate = 1;      // 本次**向运行时请求**的插帧数
+		// v0.51：诚实上报 + 安全阶梯探测。
+		// v0.50 的 MFGMaxFramesOverride 只抬高本文件里的 clamp 上限，运行时仍按自己的能力
+		// 校验 → slDLSSGSetOptions 每帧被拒（eErrorInvalidState=38），而插件照旧按请求值
+		// 呈现 → 频闪 + 进不去游戏。现在：请求值逐级下探直到运行时接受并锁定；被拒事实
+		// 如实记录；绝不把"请求值"当成"生效值"。
+		std::uint32_t dlssgEffectiveMax = 1;    // max(运行时上限, 覆盖值) —— 只是请求上限，≠ 被接受
+		std::uint32_t dlssgAcceptedFrames = 0;  // 运行时**实际接受**的插帧数（0 = 被拒/尚未探测出）
+		std::uint32_t mfgProbeStep = 0;         // 阶梯探测当前档（0 = 未开始）
+		bool mfgProbeLatched = false;           // 已有一档被接受 → 停止下探
 
 		// v0.5.23：Present 前后 PCL 标记（RSYNC 建立）
 		// v0.31（对齐 open-shaders DX12SwapChain.cpp:365-403）：补全 PCL 序列——

@@ -221,6 +221,7 @@ namespace FrameGen
 	void Streamline::ApplyMfgOverride(std::uint32_t a_hwMax)
 	{
 		const std::uint32_t want = Get().settings.mfgMaxFramesOverride;
+		dlssgEffectiveMax = std::max<std::uint32_t>(1, a_hwMax);   // v0.51：默认 = 运行时上限
 		if (want == 0) {
 			SKSE::log::info("[Streamline] MFG override disabled (INI MFGMaxFramesOverride=0) - hardware max {}x", a_hwMax + 1);
 			return;
@@ -230,10 +231,14 @@ namespace FrameGen
 			SKSE::log::info("[Streamline] MFG override {} <= hardware max {} - no change needed", clamped, a_hwMax);
 			return;
 		}
-		dlssgMaxFramesToGenerate = clamped;
-		SKSE::log::warn("[Streamline] MFG override ACTIVE: raising reported max {} -> {} ({}x frame generation). "
-			"Requires an external MFG kernel unlocker (DLSSG-Transfusion / dlssg_for_sm86 / MFG Bridge) for this architecture.",
-			a_hwMax, clamped, clamped + 1);
+		// v0.51：只抬高**请求**上限，不改 dlssgMaxFramesToGenerate（那是运行时上报的真值）。
+		// 运行时仍会用自己的能力校验，被拒时由 SetDLSSGOptions 的阶梯探测逐级下探。
+		dlssgEffectiveMax = clamped;
+		SKSE::log::warn("[Streamline] MFG override REQUEST: will ask the runtime for {}x (runtime reports {}x). "
+			"The runtime will REJECT this unless an external MFG kernel unlocker "
+			"(DLSSG-Transfusion / dlssg_for_sm86 / MFG Bridge) is installed; the ladder probe in "
+			"SetDLSSGOptions steps back down to whatever the runtime actually accepts.",
+			clamped + 1, a_hwMax + 1);
 	}
 
 	void Streamline::SetD3DDevice(ID3D11Device* a_device)
@@ -399,10 +404,12 @@ namespace FrameGen
 		// v0.50 上限：effectiveMax = max(硬件上限, 覆盖值)。
 		// overrides==0 -> 完全跟随硬件上报（50 系仍可 4X，零功能倒退）；
 		// overrides>0 -> 抬到覆盖值（老卡解锁路径，由外部内核解锁器提供内核）。
-		const std::uint32_t hwOrOverride = std::max<std::uint32_t>(
-			1, std::max<std::uint32_t>(dlssgMaxFramesToGenerate, Get().settings.mfgMaxFramesOverride));
-		const std::uint32_t effectiveMax = hwOrOverride;
-		dlssgFramesToGenerate = std::clamp<std::uint32_t>(Get().settings.dlssgFramesToGenerate, 1, effectiveMax);
+		const std::uint32_t effectiveMax = std::max<std::uint32_t>(1, dlssgEffectiveMax);
+		// v0.51：阶梯探测——首帧按配置请高倍率，被拒就下一帧降一档，直到运行时接受（锁定）
+		// 或降到 1（说明该架构没有可用内核）。绝不把"请求"当"生效"。
+		if (mfgProbeStep == 0 || mfgProbeStep > effectiveMax)
+			mfgProbeStep = std::clamp<std::uint32_t>(Get().settings.dlssgFramesToGenerate, 1, effectiveMax);
+		dlssgFramesToGenerate = mfgProbeStep;   // = 本次请求值（是否被接受见下方结果处理）
 		opts.numFramesToGenerate = dlssgFramesToGenerate;  // 1=2x 2=3x 3=4x 插帧
 		opts.numBackBuffers = 3;
 		opts.colorWidth = a_width;
@@ -421,8 +428,40 @@ namespace FrameGen
 		}
 		opts.depthBufferFormat = static_cast<std::uint32_t>(DXGI_FORMAT_R32_FLOAT);
 		opts.enableUserInterfaceRecomposition = sl::Boolean::eFalse;
-		if (SL_FAILED(r, slDLSSGSetOptions(viewport, opts)))
-			SKSE::log::error("[Streamline] slDLSSGSetOptions failed: {}", (int)r);
+		// v0.51：处理结果——接受则锁定，被拒则降档。原实现只打一条 error 就继续，
+		// 于是每帧都按被拒的倍率呈现（6671 条/场，画面频闪）。
+		// v0.51b：必须自己声明——原 SL_FAILED(r,...) 宏会声明 r，改成裸赋值后 r 未声明；
+		// 用独立名字避免与下方 line 466 处 SL_FAILED 再次声明 r 造成的遮蔽。
+		const sl::Result setOptRes = slDLSSGSetOptions(viewport, opts);
+		if (setOptRes == sl::Result::eOk) {
+			if (!mfgProbeLatched || dlssgAcceptedFrames != mfgProbeStep) {
+				SKSE::log::info("[Streamline] MFG probe: runtime ACCEPTED {}x ({} interpolated frames) | "
+					"runtimeReportsMax={}x overrideAsksMax={}x",
+					mfgProbeStep + 1, mfgProbeStep, dlssgMaxFramesToGenerate + 1, effectiveMax + 1);
+			}
+			mfgProbeLatched = true;
+			dlssgAcceptedFrames = mfgProbeStep;
+		} else {
+			dlssgAcceptedFrames = 0;
+			const std::uint32_t rejected = mfgProbeStep;
+			if (mfgProbeStep > 1) {
+				mfgProbeStep--;
+				static std::uint32_t lastRejectedStep = 0xFFFFFFFFu;
+				if (lastRejectedStep != rejected) {
+					lastRejectedStep = rejected;
+					SKSE::log::warn("[Streamline] MFG probe: runtime REJECTED {}x (result {} = eErrorInvalidState) "
+						"-> retrying at {}x next frame", rejected + 1, (int)setOptRes, mfgProbeStep + 1);
+				}
+			} else {
+				static bool loggedFloor = false;
+				if (!loggedFloor) {
+					loggedFloor = true;
+					SKSE::log::error("[Streamline] MFG probe: runtime rejects even 2x (result {}). No usable DLSS-G "
+						"kernel for this adapter -> set Provider=0 (FSR3 2x) until an MFG unlocker is installed.",
+						(int)setOptRes);
+				}
+			}
+		}
 
 		if (slDLSSGGetState) {
 			sl::DLSSGState state{};

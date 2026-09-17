@@ -118,7 +118,20 @@ namespace FrameGen
 		if (a_useFrameGeneration) {
 			configParameters.frameGenerationEnabled = true;
 
+			// v0.51：探查 FSR3 后端 pacer 到底请求生成几帧。ffxDispatchDescFrameGeneration 带
+			// numGeneratedFrames + outputs[4]（官方 API 支持 1..4 帧）。若后端确实会请求 >1，
+			// 就有机会**不依赖任何 NVIDIA 内核**做多帧生成（40 系可用）；若恒为 1，则这条路
+			// 需要改写 desc，而 outputs 由后端填 → 改错就是新的闪烁源，先不动。
+			// 只读，不写。
 			configParameters.frameGenerationCallback = [](ffxDispatchDescFrameGeneration* params, void* pUserCtx) -> ffxReturnCode_t {
+				static std::uint32_t cbDiag = 0;
+				if (++cbDiag % 300 == 1) {
+					int nonNullOutputs = 0;
+					for (int i = 0; i < 4; ++i)
+						if (params->outputs[i].resource != nullptr) nonNullOutputs++;
+					SKSE::log::info("[FidelityFX] FG dispatch desc: numGeneratedFrames={} outputsFilled={}/4 frameID={}",
+						params->numGeneratedFrames, nonNullOutputs, params->frameID);
+				}
 				return FidelityFX::GetSingleton()->ffxModule.Dispatch(reinterpret_cast<ffxContext*>(pUserCtx), &params->header);
 			};
 			configParameters.frameGenerationCallbackUserContext = &frameGenContext;

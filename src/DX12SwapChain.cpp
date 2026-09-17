@@ -544,14 +544,21 @@ namespace FrameGen
 			const double elapsed = std::chrono::duration<double>(probeNow - probeLast).count();
 			if (elapsed >= 2.0) {
 				const double realFps = probeFrames / elapsed;
+				// v0.51（诚实上报）：原 `present~=real*mult` 是**算出来的理论上限**，不是测量值；
+				// `dlssgMax` 打印的是本地覆盖后的值。两者都会被误读成"插帧已生效"。现在拆开：
+				//   cap~     理论呈现上限（= real * factor，明确标注是推算）
+				//   ask      本次向运行时请求的插帧数
+				//   accepted 运行时**实际接受**的插帧数（0 = 被拒/未知）
 				std::uint32_t mult = 1;
 				if (dlssgMode)
-					mult = fg.settings.dlssgFramesToGenerate + 1;   // DLSSG 4x
+					mult = fg.streamline.dlssgFramesToGenerate + 1;
 				else if (fg.fgActive.load())
 					mult = 2;                                          // FSR3 2x
-				SKSE::log::info("[FrameGen] FPS probe: real={:.1f} | {} {}x | present~={:.1f} | dlssgMax={} req={}",
-					realFps, dlssgMode ? "DLSSG" : "FSR3", mult, realFps * mult,
-					fg.streamline.dlssgMaxFramesToGenerate, fg.settings.dlssgFramesToGenerate);
+				SKSE::log::info("[FrameGen] FPS probe: real={:.1f} | {} | cap~={:.1f} (=real*{}, COMPUTED not measured) | "
+					"hwMax={} ask={} accepted={}",
+					realFps, dlssgMode ? "DLSSG" : "FSR3", realFps * mult, mult,
+					fg.streamline.dlssgMaxFramesToGenerate + 1, fg.streamline.dlssgFramesToGenerate + 1,
+					fg.streamline.dlssgAcceptedFrames ? fg.streamline.dlssgAcceptedFrames + 1 : 0);
 				probeFrames = 0;
 				probeLast = probeNow;
 			}
