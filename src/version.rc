@@ -9,8 +9,8 @@
 #include "resource.h"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,55,0,0
- PRODUCTVERSION 0,55,0,0
+ FILEVERSION 0,56,0,0
+ PRODUCTVERSION 0,56,0,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -27,12 +27,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "ElderJiang\0"
             VALUE "FileDescription", "DynamicShaderFrameGen - FrameGen + DLSS 5 Neural Rendering for Skyrim SE\0"
-            VALUE "FileVersion", "0.55.0.0\0"
+            VALUE "FileVersion", "0.56.0.0\0"
             VALUE "InternalName", "DynamicShaderFrameGen\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 ElderJiang\0"
             VALUE "OriginalFilename", "DynamicShaderFrameGen.dll\0"
             VALUE "ProductName", "DynamicShaderFrameGen\0"
-            VALUE "ProductVersion", "0.55.0.0\0"
+            VALUE "ProductVersion", "0.56.0.0\0"
         END
     END
     BLOCK "VarFileInfo"

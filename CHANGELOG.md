@@ -1,3 +1,88 @@
+# v0.56 - declared != actual: DLSS-G was told the motion buffers were 1706x960
+
+Reported: "it still flickers."
+
+This round is not a guess. The same two buffers were described three different ways,
+and every one of the three numbers was reachable from a different file:
+
+| source | colour | depth / motion |
+|---|---|---|
+| the actual interop textures | 2560x1440 | **2560x1440** |
+| `DLSSGOptions::mvecDepthWidth/Height` | 2560x1440 | **2560x1440** |
+| `ResourceTag::extent` on the tag | 2560x1440 | **1706x960** |
+
+Proof that the textures are 2560x1440 across their whole area:
+
+  * runtime log: `depth interop texture created lazily (R32_FLOAT 2560x1440)`,
+    `mvec interop texture created lazily (2560x1440)`
+  * `CopyDepthToShared` / `CopyMvecToShared` set the viewport to
+    `swapChainDesc.Width x Height` and draw a fullscreen triangle, so the entire
+    texture is written, not a corner
+  * `sl_dlss_g.h`: `mvecDepthWidth` = "Expected width of the input render targets
+    (depth, motion-vector buffers etc)" - the buffer's own size, and 2560x1440 is
+    what the caller passes
+
+And the tag was wrong per NVIDIA's own header, `sl.h`:
+
+    //! The area of the tagged resource to use (if using the entire resource leave as null)
+    Extent extent{};
+
+So DLSS-G was told to use the top-left 1706x960 of a 2560x1440 buffer while the
+colour buffer is 2560x1440 in full. The colour/motion spatial correspondence was
+off by 1/0.667 = 1.5x - and that pair is the input every generated frame is built
+from. The display therefore alternated a correct real frame with a wrong generated
+frame, at the generated rate. Continuous flicker is the expected symptom.
+
+The stale value predates v0.7.8: back then the interop textures really were render
+resolution, so `renderExtent` was right. v0.7.8 resized them to the output
+resolution for FSR3 frame generation and the tag was never updated.
+
+Independent confirmation from the DLSS-G runtime's own log (DLSSG-Transfusion,
+run at 16:34) - it printed the tags it received:
+
+    [MOTION-TAG] type=hudless         rect=(0,0 2560x1440)
+    [MOTION-TAG] type=scaling-output  rect=(0,0 2560x1440)
+    [MOTION-TAG] type=depth           rect=(0,0 1706x960)   <- wrong
+    [MOTION-TAG] type=motion          rect=(0,0 1706x960)   <- wrong
+
+**Fix.** No number is hardcoded any more. The extents come from the D3D12 resource
+(`GetDesc()`), and the options' mvec/depth size comes from the D3D11 interop
+texture. One source of truth, so the three can never drift apart again.
+
+Also fixed in the same class: `CreateInterop`'s eager path built the depth/mvec
+interop textures from the engine kMAIN desc (render resolution) while the lazy path
+forces the output resolution - the same buffers came out at two different sizes
+depending on which path happened to run first. Both are now the output resolution,
+which is what FSR3 frame generation requires anyway.
+
+**Instrumentation added** (so the remaining unknowns are decidable in one launch):
+
+  * `[Streamline] DLSSG tag dims: hudless/scaling-output=... depth=... mvec=...`
+    printed once. depth and mvec must read 2560x1440 on the next run.
+  * `[Streamline] MOTION probe: clipToPrevClip maxDevFromIdentity=...`
+    every 600 frames. Transfusion's log shows `clipToPrev=identity` for the first
+    frames of a run, which is correct on a loading screen but fatal during play -
+    an identity matrix means DLSS-G drops the camera part of its reprojection.
+    Read it while walking: ~0 means the previous view-projection is not live.
+  * `[FrameGen] Present called with SyncInterval=... Flags=...`, printed only when
+    the flag word changes. `DXGI_PRESENT_ALLOW_TEARING` in that argument permits
+    real tearing.
+
+**Not changed on purpose.** The Reflex render cap stays at
+`refreshRate / multiplier - 1` = 39 fps (156 presented on a 160 Hz panel). The
+`-1` looked like a bug, but 156 is 4 Hz below the panel ceiling, which is exactly
+the usual VRR guidance ("cap a few Hz below max refresh to avoid a VRR ceiling
+hit"). On a VRR display the panel simply follows the 156 fps stream and there is
+no beat. It is left alone so the single behavioural variable this run stays the
+extent fix. `ReflexFpsLimit` in the INI overrides it if the display turns out not
+to be running VRR.
+
+Worth recording: DLSSG-Transfusion's own line
+`DLSS-G actual presentation count: 4x (maximum generated frames=5, status=0)` in
+the 16:34 run proves multi frame generation **was** running. "It flickers" and
+"it is not generating frames" were never the same complaint.
+
+---
 # v0.55 - instrumentation: sample the presented-frames counter early and on change
 
 Instrumentation only. No behaviour change - the Reflex render cap, the provider

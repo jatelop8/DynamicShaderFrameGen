@@ -348,15 +348,25 @@ namespace FrameGen
 				if (main.texture) {
 					D3D11_TEXTURE2D_DESC dDesc{};
 					static_cast<ID3D11Texture2D*>(main.texture)->GetDesc(&dDesc);
+					// v0.56: eager interop texture fixed to the output resolution. It used to
+					// inherit the engine kMAIN desc (render resolution), while the lazy path
+					// below forces the output resolution - the same buffer came out at two
+					// different sizes depending on which path happened to run. FSR3 frame
+					// generation requires depth to match the colour input size anyway.
+					dDesc.Width = swapChainDesc.Width;
+					dDesc.Height = swapChainDesc.Height;
 					dDesc.Format = DXGI_FORMAT_R32_FLOAT;
 					dDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
 					depthWrapped = new WrappedResource(dDesc, d3d11Device.get(), d3d12Device.get());
-					SKSE::log::info("[FrameGen] DLSSG: depth interop texture created (R32_FLOAT {0}x{1})", dDesc.Width, dDesc.Height);
+					SKSE::log::info("[FrameGen] DLSSG: depth interop texture created (R32_FLOAT {0}x{1}) [output res]", dDesc.Width, dDesc.Height);
 				}
 				auto& mvecTex = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
 				if (mvecTex.texture) {
 					D3D11_TEXTURE2D_DESC mDesc{};
 					static_cast<ID3D11Texture2D*>(mvecTex.texture)->GetDesc(&mDesc);
+					// v0.56: same as depth above - both creation paths now agree.
+					mDesc.Width = swapChainDesc.Width;
+					mDesc.Height = swapChainDesc.Height;
 					mvecWrapped = new WrappedResource(mDesc, d3d11Device.get(), d3d12Device.get());
 					SKSE::log::info("[FrameGen] DLSSG: mvec interop texture created (format {0})", static_cast<int>(mDesc.Format));
 				}
@@ -583,6 +593,19 @@ namespace FrameGen
 
 		// v0.5.5: stage marker - pinpoint which D3D11/D3D12 call throws (E_INVALIDARG black screen debug)
 		m_stage = "enter";
+
+		// v0.56 probe: does the engine hand DXGI_PRESENT_ALLOW_TEARING to Present?
+		// Present(0, ALLOW_TEARING) permits genuine tearing; the swap chain keeps the
+		// flag only because Present(0) without it was rejected once (v0.38). Printed
+		// only when the flag word changes, so it costs nothing per frame.
+		{
+			static UINT lastPresentFlags = 0xFFFFFFFFu;
+			if (Flags != lastPresentFlags) {
+				lastPresentFlags = Flags;
+				SKSE::log::info("[FrameGen] Present called with SyncInterval={} Flags={:#x}{}", SyncInterval, Flags,
+					(Flags & DXGI_PRESENT_ALLOW_TEARING) ? "  [ALLOW_TEARING - tearing permitted]" : "");
+			}
+		}
 
 		// v0.3：DLSSG 模式 → 深度/运动矢量共享纹理惰性创建（CreateInterop 时引擎渲染目标
 		// 可能还没建好——texture 为 null；首次 Present 时必然已就绪）

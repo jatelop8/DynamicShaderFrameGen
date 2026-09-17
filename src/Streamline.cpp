@@ -364,6 +364,36 @@ namespace FrameGen
 		sl::matrixMul(c.clipToPrevClip, invCurrViewProj, prevViewProjSL);
 		sl::matrixFullInvert(c.prevClipToClip, c.clipToPrevClip);
 
+		// v0.56 probe: DLSS-G reprojects each generated frame with clipToPrevClip.
+		// Transfusion's log shows clipToPrev=identity for the first frames of the run,
+		// which is correct on a loading screen but catastrophic during gameplay - an
+		// identity matrix tells DLSS-G the camera never moved, so the camera part of
+		// the reprojection is silently dropped. This settles which it is: run, walk
+		// around, and read maxDevFromIdentity. Near 0 while moving = the matrix is not
+		// live and the previous view-projection is not being updated.
+		{
+			static std::uint32_t motionProbe = 0;
+			if (++motionProbe % 600 == 1) {
+				float dev = 0.0f;
+				for (int row = 0; row < 4; ++row) {
+					const sl::float4 r = c.clipToPrevClip[row];
+					const float v[4] = { r.x, r.y, r.z, r.w };
+					for (int col = 0; col < 4; ++col) {
+						const float id = (row == col) ? 1.0f : 0.0f;
+						const float d = v[col] - id;
+						const float a = d < 0.0f ? -d : d;
+						if (a > dev)
+							dev = a;
+					}
+				}
+				const sl::float4 r3 = c.clipToPrevClip[3];
+				SKSE::log::info("[Streamline] MOTION probe: clipToPrevClip maxDevFromIdentity={:.6f} "
+					"r3=({:.5f} {:.5f} {:.5f}) - ~0 while the player is moving means the camera "
+					"matrix is NOT live (DLSS-G loses camera reprojection)",
+					dev, r3.x, r3.y, r3.z);
+			}
+		}
+
 		c.jitterOffset = { -Get().jitterX, -Get().jitterY };  // v0.34：DLSS Halton jitter（对齐 CS，之前恒 0）
 		// v0.34（对齐 CS Streamline.cpp:484-488）：菜单打开时运动矢量无效 → reset 让
 		// DLSSG 不用旧数据插帧（用户"停在菜单背景"——菜单帧插错 = 视觉错乱）。
@@ -414,8 +444,38 @@ namespace FrameGen
 		opts.numBackBuffers = 3;
 		opts.colorWidth = a_width;
 		opts.colorHeight = a_height;
-		opts.mvecDepthWidth = a_mvecDepthW;
-		opts.mvecDepthHeight = a_mvecDepthH;
+		// v0.56 (fix: declared != actual). sl_dlss_g.h defines mvecDepthWidth/Height as
+		// "Expected width/height of the input render targets (depth, motion-vector
+		// buffers etc)" - the size of THOSE buffers, not the swap chain. The caller
+		// passed swapChainDesc, which agrees with the lazy-created interop textures
+		// (2560x1440) but would NOT agree if CreateInterop's eager path had won (it
+		// reads the engine kMAIN desc = render resolution). Derive both from the
+		// resource that is actually handed to DLSS-G so they cannot drift apart.
+		std::uint32_t mvecDepthW = a_mvecDepthW;
+		std::uint32_t mvecDepthH = a_mvecDepthH;
+		{
+			auto& dx = Get().dx12SwapChain;
+			WrappedResource* mvSrc = (dx.depthWrapped && dx.depthWrapped->resource11)
+				? dx.depthWrapped
+				: dx.mvecWrapped;
+			if (mvSrc && mvSrc->resource11) {
+				D3D11_TEXTURE2D_DESC rd{};
+				mvSrc->resource11->GetDesc(&rd);
+				mvecDepthW = rd.Width;
+				mvecDepthH = rd.Height;
+			}
+		}
+		opts.mvecDepthWidth = mvecDepthW;
+		opts.mvecDepthHeight = mvecDepthH;
+		{
+			static bool optDimsLogged = false;
+			if (!optDimsLogged) {
+				optDimsLogged = true;
+				SKSE::log::info("[Streamline] DLSSG options dims: color={}x{} mvecDepth={}x{} "
+					"(mvecDepth must equal the real depth/MV interop buffers)",
+					a_width, a_height, mvecDepthW, mvecDepthH);
+			}
+		}
 		opts.colorBufferFormat = static_cast<std::uint32_t>(a_colorFormat);
 		opts.hudLessBufferFormat = static_cast<std::uint32_t>(a_colorFormat);
 		if (auto* renderer = RE::BSGraphics::Renderer::GetSingleton()) {
@@ -550,19 +610,39 @@ namespace FrameGen
 
 		const std::uint32_t w = fg.dx12SwapChain.swapChainDesc.Width;
 		const std::uint32_t h = fg.dx12SwapChain.swapChainDesc.Height;
-		// v0.34（对齐 CS TagDX12Resources:1005-1021）：depth/mvec 只在渲染分辨率
-		// 子矩形有有效数据（DRS 0.667 时全屏 extent 会让 DLSSG 读错运动矢量）——
-		// depth/mvec 用 renderExtent，color 用全屏 extent
-		const std::uint32_t rw = std::max(1u, fg.dx12SwapChain.renderWidth);
-		const std::uint32_t rh = std::max(1u, fg.dx12SwapChain.renderHeight);
+		// v0.56 (flicker root cause, proven). sl.h defines ResourceTag::extent as
+		// "The area of the tagged resource to use (if using the entire resource leave
+		// as null)". Declaring 1706x960 therefore told DLSS-G to use only the top-left
+		// 1706x960 of a 2560x1440 buffer - a 1.5x spatial mismatch against a colour
+		// buffer of 2560x1440, which corrupts the motion input of EVERY generated
+		// frame. The old renderExtent dates from v0.34, when the interop textures were
+		// still render resolution; v0.7.8 resized them to the output resolution and
+		// the tag was never updated (Transfusion's MOTION-TAG log in the 16:34 run
+		// shows exactly this: hudless/scaling-output 2560x1440, depth/motion 1706x960).
+		// Take the extent from the resource itself - correct by construction.
+		const D3D12_RESOURCE_DESC depthDesc = a_depth->GetDesc();
+		const D3D12_RESOURCE_DESC mvecDesc = a_motionVectors->GetDesc();
 		sl::Extent extent{ 0, 0, w, h };
-		sl::Extent renderExtent{ 0, 0, rw, rh };
+		sl::Extent depthExtent{ 0, 0,
+			static_cast<std::uint32_t>(depthDesc.Width), static_cast<std::uint32_t>(depthDesc.Height) };
+		sl::Extent mvecExtent{ 0, 0,
+			static_cast<std::uint32_t>(mvecDesc.Width), static_cast<std::uint32_t>(mvecDesc.Height) };
 		sl::ResourceTag tags[] = {
 			{ &colorInRes, sl::kBufferTypeHUDLessColor, sl::ResourceLifecycle::eOnlyValidNow, &extent },
 			{ &colorOutRes, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eOnlyValidNow, &extent },
-			{ &depthRes, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent, &renderExtent },
-			{ &mvecRes, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent, &renderExtent },
+			{ &depthRes, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent, &depthExtent },
+			{ &mvecRes, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent, &mvecExtent },
 		};
+		{
+			static bool tagDimsLogged = false;
+			if (!tagDimsLogged) {
+				tagDimsLogged = true;
+				SKSE::log::info("[Streamline] DLSSG tag dims: hudless/scaling-output={}x{} depth={}x{} mvec={}x{} "
+					"- depth/mvec must read 2560x1440 (the real interop buffers)",
+					extent.width, extent.height, depthExtent.width, depthExtent.height,
+					mvecExtent.width, mvecExtent.height);
+			}
+		}
 		// v0.5.11：slSetTagForFrame（frame-based tagging）替代弃用的 slSetTag——
 		// 需 eUseFrameBasedResourceTagging flag + frameToken（DLSS-G 指南 306-339 全用此 API）
 		if (!frameToken) {
