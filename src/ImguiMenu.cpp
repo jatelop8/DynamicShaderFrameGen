@@ -239,13 +239,24 @@ namespace FrameGen
 		const char* providers[] = { "FSR3 (2x, all GPUs)", "DLSSG (NVIDIA, 4x MFG)" };
 		ImGui::Combo("Frame Gen Provider", &s.provider, providers, 2);
 		if (s.provider == 1) {
-			const char* mfgModes[] = { "2x", "3x", "4x" };
+			// v0.50：2x..6x（1=2x 2=3x 3=4x 4=5x 5=6x）
+			const char* mfgModes[] = { "2x", "3x", "4x", "5x", "6x" };
 			int mfg = static_cast<int>(s.dlssgFramesToGenerate) - 1;
 			if (mfg < 0) mfg = 0;
+			if (mfg > 4) mfg = 4;
 			if (ImGui::Combo("MFG Multiplier", &mfg, mfgModes, IM_ARRAYSIZE(mfgModes)))
 				s.dlssgFramesToGenerate = static_cast<std::uint32_t>(mfg + 1);
-			// v0.45：40 系锁定由 SL 原生上限 clamp（50系=4x，40系=2x），无需解锁开关。
-			ImGui::TextDisabled("3x/4x needs RTX 50 (40-series locked to 2x). Restart to apply provider.");
+
+			// v0.50：上限覆盖（老卡多倍帧生成解锁）。0=跟随硬件上报；1..5=抬到 N 个插帧。
+			int ov = static_cast<int>(s.mfgMaxFramesOverride);
+			if (ImGui::SliderInt("MFG Max Override", &ov, 0, 5,
+				ov == 0 ? "Off (hardware max)" : "%d"))
+				s.mfgMaxFramesOverride = static_cast<std::uint32_t>(ov < 0 ? 0 : ov);
+
+			const char* archNote = s.mfgMaxFramesOverride > 0
+				? "Unlock ON - requires an external MFG kernel unlocker (e.g. DLSSG-Transfusion)."
+				: "RTX 50 does 4x natively. 40/30/20 need an external kernel unlocker.";
+			ImGui::TextDisabled("%s", archNote);
 			ImGui::TextDisabled("Provider change needs restart.");
 		} else {
 			ImGui::Text("FrameGen: FSR3 tech (all GPUs)");

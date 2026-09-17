@@ -170,7 +170,12 @@ namespace FrameGen
 			else if (key == "PresetDLSS")
 				settings.presetDLSS = std::clamp(readInt(line, 0), 0, 4);
 			else if (key == "DLSSGFramesToGenerate")
-				settings.dlssgFramesToGenerate = std::clamp(readInt(line, 1), 1, 4);   // v0.31：多倍帧生成（50系可 3=4x，40系 clamp 到 1）
+				settings.dlssgFramesToGenerate = std::clamp(readInt(line, 1), 1, 5);   // v0.50：多倍帧生成（1=2x 2=3x 3=4x 4=5x 5=6x）
+			// v0.50：MFG 上限覆盖（老卡多倍帧生成解锁）。0=不覆盖（跟随硬件上报，默认安全）；
+			// 1..5 = 抬高上报上限到 N 个插帧（1=2x ... 5=6x）。需要外部内核解锁器提供
+			// Ada/Ampere/Turing 内核，否则高倍率请求无内核可执行 -> 黑屏/卡死。
+			else if (key == "MFGMaxFramesOverride")
+				settings.mfgMaxFramesOverride = std::clamp(readInt(line, 0), 0, 5);
 			else if (key == "Sharpness") {
 				// v0.6.3：DLSS 超分锐化（0-1，0=关闭）
 				try {

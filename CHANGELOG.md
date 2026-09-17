@@ -1,5 +1,30 @@
 # DynamicShaderFrameGen — What's New
 
+## Multi-frame generation on RTX 40/30/20 — v0.50
+
+Frame generation above 2x used to be unreachable on anything older than
+RTX 50, because the Streamline runtime reports `numFramesToGenerateMax = 1`
+on Ada and earlier, and every request was clamped down to that ceiling.
+
+v0.50 adds `MFGMaxFramesOverride` (INI + in-game slider). It raises the
+reported ceiling so the higher multipliers are actually submitted, up to 6x.
+
+- `MFGMaxFramesOverride=0` follows the hardware report exactly (default, safe)
+- `MFGMaxFramesOverride=1..5` submits 2x / 3x / 4x / 5x / 6x
+- In-game: Home key -> Frame Gen Provider = DLSSG -> MFG Multiplier + MFG Max Override
+
+**This only changes what is requested.** The frame generation kernels for
+Ada / Ampere / Turing are not present in `nvngx_dlssg.dll`, so pair it with
+an external kernel unlocker:
+
+- DLSSG-Transfusion (RTX 40, native DLSS-G path)
+- dlssg_for_sm86 (RTX 30)
+- dlssg_for_sm75 (RTX 20, experimental)
+- NVIDIA MFG Bridge (RTX 20/30)
+
+Without one of those a high multiplier has no kernel to run.
+
+
 ## DLSS 5 Neural Rendering is now built in — v0.48
 
 The headline of this release: DLSS 5 neural rendering (the "DLSS-NR" pass) now

@@ -192,18 +192,48 @@ namespace FrameGen
 			// v0.45：多倍帧生成上限查询（原生，不再 hook/骗上限）。50 系（Blackwell）
 			// 原生 numFramesToGenerateMax=3（支持 4x）；40 系（Ada）锁 1（只能 2x）。
 			// numFramesToGenerate 由 SetDLSSGOptions 按此上限 clamp（50 系可选 4x）。
+			// v0.50：MFG 上限覆盖——驱动把 Ada 及更早架构的 numFramesToGenerateMax 锁 1。
+			// INI MFGMaxFramesOverride>0 时把上报上限抬到该值，让高倍率请求真正下发。
+			// 前提：外部内核解锁器（DLSSG-Transfusion / dlssg_for_sm86 / MFG Bridge）
+			// 已提供该架构的内核；否则请求的倍率无内核可执行。
 			if (slDLSSGGetState) {
 				sl::DLSSGState state{};
 				if (SL_FAILED(r, slDLSSGGetState(viewport, state, nullptr))) {
 					SKSE::log::warn("[Streamline] slDLSSGGetState failed querying numFramesToGenerateMax: {}", (int)r);
 					dlssgMaxFramesToGenerate = 1;
 				} else {
-					dlssgMaxFramesToGenerate = std::max<std::uint32_t>(1, state.numFramesToGenerateMax);
+					const std::uint32_t hwMax = std::max<std::uint32_t>(1, state.numFramesToGenerateMax);
+					dlssgMaxFramesToGenerate = hwMax;
 					SKSE::log::info("[Streamline] DLSS-G supports up to {}x frame generation ({} interpolated frames per real frame)",
-						dlssgMaxFramesToGenerate + 1, dlssgMaxFramesToGenerate);
+						hwMax + 1, hwMax);
+					ApplyMfgOverride(hwMax);
 				}
 			}
 		}
+	}
+
+	// v0.50：MFG 上限覆盖 + 能力守卫。
+	// 动机：驱动/运行时把 Ada 及更早架构的 numFramesToGenerateMax 锁在 1（只能 2x）。
+	// 外部内核解锁器（DLSSG-Transfusion / dlssg_for_sm86 / MFG Bridge）能补上内核，
+	// 但本插件仍按硬件上报的 1 去 clamp -> 高倍率永远下发不出去。此函数在探测到
+	// 覆盖配置时抬高上报上限，使 SetDLSSGOptions 真正请求 >1 个插帧。
+	// 安全：覆盖值超过原生上限时只抬上限、不改 fallback；一旦运行时失败由调用方退回。
+	void Streamline::ApplyMfgOverride(std::uint32_t a_hwMax)
+	{
+		const std::uint32_t want = Get().settings.mfgMaxFramesOverride;
+		if (want == 0) {
+			SKSE::log::info("[Streamline] MFG override disabled (INI MFGMaxFramesOverride=0) - hardware max {}x", a_hwMax + 1);
+			return;
+		}
+		const std::uint32_t clamped = std::clamp<std::uint32_t>(want, 1u, 5u);
+		if (clamped <= a_hwMax) {
+			SKSE::log::info("[Streamline] MFG override {} <= hardware max {} - no change needed", clamped, a_hwMax);
+			return;
+		}
+		dlssgMaxFramesToGenerate = clamped;
+		SKSE::log::warn("[Streamline] MFG override ACTIVE: raising reported max {} -> {} ({}x frame generation). "
+			"Requires an external MFG kernel unlocker (DLSSG-Transfusion / dlssg_for_sm86 / MFG Bridge) for this architecture.",
+			a_hwMax, clamped, clamped + 1);
 	}
 
 	void Streamline::SetD3DDevice(ID3D11Device* a_device)
@@ -366,7 +396,13 @@ namespace FrameGen
 		opts.mode = sl::DLSSGMode::eOn;
 		// v0.31（对齐 open-shaders ConfigureDLSSG）：多倍帧生成——
 		// numFramesToGenerate = clamp(INI DLSSGFramesToGenerate, 1, 硬件上限)。
-		dlssgFramesToGenerate = std::clamp<std::uint32_t>(Get().settings.dlssgFramesToGenerate, 1, std::max<std::uint32_t>(1, dlssgMaxFramesToGenerate));
+		// v0.50 上限：effectiveMax = max(硬件上限, 覆盖值)。
+		// overrides==0 -> 完全跟随硬件上报（50 系仍可 4X，零功能倒退）；
+		// overrides>0 -> 抬到覆盖值（老卡解锁路径，由外部内核解锁器提供内核）。
+		const std::uint32_t hwOrOverride = std::max<std::uint32_t>(
+			1, std::max<std::uint32_t>(dlssgMaxFramesToGenerate, Get().settings.mfgMaxFramesOverride));
+		const std::uint32_t effectiveMax = hwOrOverride;
+		dlssgFramesToGenerate = std::clamp<std::uint32_t>(Get().settings.dlssgFramesToGenerate, 1, effectiveMax);
 		opts.numFramesToGenerate = dlssgFramesToGenerate;  // 1=2x 2=3x 3=4x 插帧
 		opts.numBackBuffers = 3;
 		opts.colorWidth = a_width;

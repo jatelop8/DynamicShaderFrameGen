@@ -127,6 +127,9 @@ namespace FrameGen
 		// 绑定 DLSS/DLSSG/Reflex 功能函数
 		void PostDevice();
 
+		// v0.50：MFG 上限覆盖（老卡多倍帧生成解锁，见 Streamline.cpp 实现注释）
+		void ApplyMfgOverride(std::uint32_t a_hwMax);
+
 		// 设置 D3D 设备（slSetD3DDevice）
 		void SetD3DDevice(ID3D11Device* a_device);
 		void SetD3D12Device(ID3D12Device* a_device);

@@ -115,6 +115,10 @@ namespace FrameGen
 		// v0.31（对齐 open-shaders）：多倍帧生成（DLSS 4 MFG）——每真实帧生成 N 个插帧
 		// （1=2x 插帧 2=3x 3=4x，取决于 GPU/SL SDK 支持，运行时 clamp 到硬件上限）
 		std::uint32_t dlssgFramesToGenerate = 1;  // INI DLSSGFramesToGenerate
+		// v0.50：MFG 上限覆盖（老卡多倍帧生成）——0=不覆盖（严格跟随硬件上报，默认安全）；
+		// 1..5 = 强制上报上限为 N 个插帧（1=2x 2=3x 3=4x 4=5x 5=6x）。需要外部内核
+		// 解锁器提供 Ada/Ampere/Turing 内核，否则运行时会被守卫退回安全倍率。
+		std::uint32_t mfgMaxFramesOverride = 0;  // INI MFGMaxFramesOverride
 		int  presetDLSS = 0;           // DLSS 模型预设：0=Auto 1=J 2=K 3=L 4=M
 		float sharpness = 0.5f;        // v0.6.3：DLSS 超分锐化（0-1，0=关闭）；v0.7.21 默认 0.3→0.5（4K 重建需更明显锐化）
 		// v0.25：DLSS-NR（NGX 直调）已移除——NR 改由外部 ReShade 方案（dlss5-dx11-bridge +
