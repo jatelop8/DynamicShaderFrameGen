@@ -86,9 +86,22 @@ changed silently.
 
 ## Build
 
-Built clean: 7/7 objects, exit 0, `1223168 bytes md5=73fa4a5c2c762635703ca952205a1192`,
-deployed byte-identical to
-`E:\EJ\mod\mods\DynamicShaderFrameGen\SKSE\Plugins\`.
+Built clean: 7/7 objects, exit 0, `1223168 bytes md5=73fa4a5c2c762635703ca952205a1192`.
+
+The build deploys itself - `CMakeLists.txt:105-121` adds a POST_BUILD step that runs
+`copy_if_different` for the DLL **and the INI**, plus `copy_directory` for `Shaders`,
+into `PLUGIN_DEPLOY_DIR` (`E:\EJ\mod\mods\DynamicShaderFrameGen\SKSE\Plugins\`).
+The deployed DLL was verified byte-identical to the build output.
+
+Two consequences:
+
+  * a manual DLL copy is redundant, and a "backup" taken before it captures the
+    already-deployed new build - so there is no DLL-level rollback point. Roll back
+    with `git checkout <commit> -- src` and rebuild.
+  * because the INI is deployed the same way, editing the deployed INI and then
+    rebuilding **reverts the edit**. The new key is therefore documented in the repo
+    INI (`SKSE/Plugins/DynamicShaderFrameGen.ini`) as `MvecScaleOverride=0.00`, which
+    is what reaches the mod folder.
 
 The sandbox blocked `reg.exe`, which breaks `VsDevCmd.bat` and leaves the Windows
 SDK paths unset - every translation unit then fails on `crtdbg.h`, including ones

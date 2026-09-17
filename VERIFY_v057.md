@@ -51,6 +51,12 @@ Open the INI used by MO2 (same folder the log's `INI loaded` line names) and add
 
     MvecScaleOverride=1.00
 
+**Do not rebuild between editing the INI and testing.** The build's POST_BUILD step runs
+`copy_if_different` on the INI into the mod folder, so a rebuild silently reverts your
+edit to whatever the repo copy holds. Either set the value in the repo copy
+(`SKSE/Plugins/DynamicShaderFrameGen.ini`, which is the one that gets deployed), or edit
+the deployed copy and restart the game without building.
+
 Then restart and read line (a) again - it must print `{ 1.0000, 1.0000 }`.
 If it still prints 1.5000, the INI being edited is not the one being loaded.
 
@@ -105,12 +111,20 @@ argument permits genuine tearing.
 
 ## Rollback
 
-    E:\EJ\mod\mods\DynamicShaderFrameGen\SKSE\Plugins\DynamicShaderFrameGen.dll.pre_v056
+**There is no usable DLL-level backup of v0.56 - do not restore `.pre_v056`.** The
+build deploys itself (see the INI note above), so by the time a manual backup was
+taken the deployed DLL was already the v0.57 build; that copy hashes `73fa4a5c`,
+i.e. v0.57.
 
-is the v0.56 binary. Source backups are `.pre_v057` next to each patched file
-(`src/FrameGen.h`, `src/FrameGen.cpp`, `src/ImguiMenu.cpp`, `src/Streamline.cpp`,
-`src/version.rc`). `git checkout .` also returns to commit `135c4e4` (v0.56);
-v0.57 is committed on top of it.
+Rollback is source-level and exact:
+
+    git checkout 135c4e4 -- src
+    # rebuild - the POST_BUILD step redeploys on its own
+
+  * `135c4e4` = v0.56, `4770fae` = v0.57, `9d4ed78` = v0.57 tooling.
+  * per-file source backups `.pre_v057` sit next to each patched file
+    (`src/FrameGen.h`, `src/FrameGen.cpp`, `src/ImguiMenu.cpp`, `src/Streamline.cpp`,
+    `src/version.rc`). Those are valid: nothing overwrites source files during a build.
 
 ## Known but deliberately untouched
 
