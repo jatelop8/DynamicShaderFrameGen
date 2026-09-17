@@ -1,3 +1,26 @@
+# v0.55 - instrumentation: sample the presented-frames counter early and on change
+
+Instrumentation only. No behaviour change - the Reflex render cap, the provider
+choice and the MFG probe are untouched, so the single behavioural variable under
+test remains DLSSG-Transfusion's `patchFlipMetering`.
+
+**Why.** v0.53 added the one measurement that can prove multi frame generation is
+really running (`sl::DLSSGState::numFramesActuallyPresented`), but emitted it with
+`++presentedLog % 240 == 1`. With the v0.54 cap pinning the render rate to
+`refreshRate / multiplier` = 39 fps at 4x on a 160 Hz panel, the first reading needs
+~6.2 s of play. Every debug session so far ended inside that window, so the decisive
+number was never printed once - which is why three rounds of fixes each ended in
+"still flickering" with no data either way.
+
+**Change.** The line is now emitted for the first 8 real frames, then on every change
+of the reported value (capped at 200 change lines), then every 300 frames. A 1 -> 4
+transition - or a 1/4 oscillation, which is what two pacers fighting over one swap
+chain would look like - is therefore visible within a single frame.
+
+Read it as: `= 4` proves 4 frames really reach the display per real frame. `= 1`
+proves none do, no matter what `MFG probe: runtime ACCEPTED 4x` said.
+
+---
 # v0.54 - flicker: the render frame rate was pinned to 60fps regardless of the panel
 
 Reported: "it flickers constantly."

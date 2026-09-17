@@ -485,9 +485,20 @@ namespace FrameGen
 				// it, and the periodic line below is the evidence that MFG really runs (or not).
 				dlssgFramesPresentedLast = state.numFramesActuallyPresented;
 				static std::uint32_t presentedLog = 0;
-				if (++presentedLog % 240 == 1)
+				static std::uint32_t lastPresentedLogged = 0xFFFFFFFFu;
+				static std::uint32_t presentedChanges = 0;
+				++presentedLog;
+				// v0.55: sample early AND on every change. The old '% 240 == 1' interval needed
+				// ~6s of play before the first reading - longer than the debug sessions we have,
+				// so the value was never actually measured. A 1 -> 4 transition, or a 1/4
+				// oscillation (what two pacers fighting over one swap chain looks like), now
+				// shows up within a single frame. Instrumentation only - no behaviour change.
+				const bool presentedChanged = (dlssgFramesPresentedLast != lastPresentedLogged);
+				if (presentedLog <= 8 || (presentedChanged && presentedChanges < 200) || presentedLog % 300 == 0) {
+					if (presentedChanged) { lastPresentedLogged = dlssgFramesPresentedLast; ++presentedChanges; }
 					SKSE::log::info("[Streamline] DLSSG presented per real frame = {} (status={}) - 1 means NO interpolation",
 						dlssgFramesPresentedLast, static_cast<int>(state.status));
+				}
 				if (state.status != sl::DLSSGStatus::eOk && state.status != lastStatus) {
 					lastStatus = state.status;
 					SKSE::log::warn("[Streamline] DLSS-G not generating frames this session: status={}", static_cast<int>(state.status));
