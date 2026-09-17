@@ -176,6 +176,9 @@ namespace FrameGen
 			// Ada/Ampere/Turing 内核，否则高倍率请求无内核可执行 -> 黑屏/卡死。
 			else if (key == "MFGMaxFramesOverride")
 				settings.mfgMaxFramesOverride = std::clamp(readInt(line, 0), 0, 5);
+			// v0.54：Reflex 渲染帧率上限（0 = 自动按 刷新率/总倍数 计算；见 Streamline::ReflexSleep）
+			else if (key == "ReflexFpsLimit")
+				settings.reflexFpsLimit = std::clamp(readInt(line, 0), 0, 480);
 			else if (key == "Sharpness") {
 				// v0.6.3：DLSS 超分锐化（0-1，0=关闭）
 				try {

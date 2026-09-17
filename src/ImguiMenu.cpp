@@ -264,6 +264,7 @@ namespace FrameGen
 			<< "PresetDLSS=" << s.presetDLSS << "\n"
 			<< "DLSSGFramesToGenerate=" << s.dlssgFramesToGenerate << "\n"
 			<< "MFGMaxFramesOverride=" << s.mfgMaxFramesOverride << "\n"
+			<< "ReflexFpsLimit=" << s.reflexFpsLimit << "\n"
 			<< "Sharpness=" << s.sharpness << "\n"
 			<< "RenderResolutionScale=" << std::fixed << std::setprecision(2) << s.renderResolutionScale << "\n"
 			<< "StreamlineLogLevel=" << s.streamlineLogLevel << "\n"

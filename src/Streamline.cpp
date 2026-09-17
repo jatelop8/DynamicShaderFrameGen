@@ -597,7 +597,46 @@ namespace FrameGen
 
 		sl::ReflexOptions opts{};
 		opts.mode = sl::ReflexMode::eLowLatency;  // DLSSG 要求至少 eLowLatency
-		opts.frameLimitUs = 1000000 / 60;         // CS 默认 reflexFPSLimit=60 限帧
+		// v0.54（闪烁根因修复）：渲染帧率上限必须与"显示器刷新率 / 帧生成总倍数"配比。
+		// 旧代码写死 opts.frameLimitUs = 1000000/60（从 CS 抄来的 reflexFPSLimit=60），
+		// Reflex 会如实把**渲染**帧率压在 60fps。2026-09-17 16:26 实测（2560x1440@160Hz）：
+		//   日志 Reflex options applied (frameLimitUs=16666)；perf.csv DeltaMs=17.43(=57.4fps)
+		//   且 Multiplier=4 -> present = 57.4 x 4 = 229.6fps 灌进 160Hz 屏 = 超发 43%。
+		// present 队列积压 -> SL pacer 节奏崩 -> 画面持续闪烁（fixed 模式不自动降档）。
+		// 帧生成只有在"渲染帧率 x 倍数 <= 刷新率"时才成立，故改为按刷新率反推：
+		//   自动 = 刷新率 / 总倍数 - 1fps（留余量避免顶到刷新率边缘）
+		//   160Hz / 4x -> 39fps 渲染 -> 156 present fps，刚好在面板之下。
+		// 倍率优先取运行时**实际接受**值（阶梯探测降档后能自动重算，不会再超发）；
+		// 探测 latch 前回退到请求值。INI ReflexFpsLimit>0 时直接用它，跳过自动。
+		std::uint32_t capFps = 0;
+		std::uint32_t capMult = 1;
+		{
+			const auto& s = Get().settings;
+			if (s.reflexFpsLimit > 0) {
+				capFps = static_cast<std::uint32_t>(s.reflexFpsLimit);
+			} else if (Get().refreshRate > 0.0) {
+				const std::uint32_t mfg = dlssgAcceptedFrames
+					? dlssgAcceptedFrames
+					: std::max<std::uint32_t>(1u, s.dlssgFramesToGenerate);
+				capMult = std::max<std::uint32_t>(1u, mfg + 1u);
+				const double want = Get().refreshRate / static_cast<double>(capMult) - 1.0;
+				capFps = static_cast<std::uint32_t>(want < 15.0 ? 15.0 : want);
+			} else {
+				// 刷新率读不到时不能再默默写死一个值（旧 60fps 就是这么来的 bug）——
+				// 留 0 = 不限帧，并明确告警。
+				SKSE::log::warn("[Streamline] Reflex render cap auto: DISABLED (refresh rate unknown) - over-submit is possible");
+			}
+			opts.frameLimitUs = capFps ? (1000000u / capFps) : 0u;
+			static std::uint32_t lastCapFps = 0;
+			static std::uint32_t lastCapMult = 0;
+			if (capFps != lastCapFps || capMult != lastCapMult) {
+				SKSE::log::info("[Streamline] Reflex render cap = {} fps ({}us) - {}Hz / {}x => ~{} present fps{}",
+					capFps, opts.frameLimitUs, Get().refreshRate, capMult, capFps * capMult,
+					capFps ? "" : "  [UNLIMITED - over-submit possible]");
+				lastCapFps = capFps;
+				lastCapMult = capMult;
+			}
+		}
 		opts.useMarkersToOptimize = featurePCL;   // PCL marker 优化（Reflex 激活必需）
 
 		// 缓存比较：选项变化才下发（CS applyReflexOptionsIfChanged 同款）

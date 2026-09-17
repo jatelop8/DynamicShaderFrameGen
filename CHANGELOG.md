@@ -1,3 +1,43 @@
+# v0.54 - flicker: the render frame rate was pinned to 60fps regardless of the panel
+
+Reported: "it flickers constantly."
+
+Root cause - measured, not guessed. Streamline::ReflexSleep() pushed a hardcoded
+reflex frame limit of 1000000/60 us (inherited from Community Shaders' default), and
+Reflex dutifully enforced it on the RENDER frame rate:
+
+    [16:24:47.175] [Streamline] Reflex options applied (mode=1 frameLimitUs=16666 ...)
+    DLSSG-Transfusion_perf.csv: DeltaMs=17.43 (=57.4 render fps), Multiplier=4
+
+57.4 render fps x 4 = 229.6 presented fps, pushed at a 2560x1440 @ 160Hz panel.
+That is 43% over-submission: the present queue backs up, the SL pacer loses its
+rhythm, and the picture flickers continuously. Transfusion was in `fixed` mode, so
+it never backed the multiplier off.
+
+Frame generation is only correct when the product lands on the panel:
+
+    render fps x multiplier <= refresh rate
+
+So the cap is now derived instead of hardcoded:
+
+    auto: (refreshRate / totalMultiplier) - 1 fps
+          160Hz / 4x -> 39fps -> ~156 presented fps, just under the panel
+    ReflexFpsLimit=N  (new INI key) overrides it with an explicit render fps cap
+
+The multiplier used is the runtime-ACCEPTED one (dlssgAcceptedFrames), falling back
+to the requested DLSSGFramesToGenerate before the staircase probe latches - so a
+stepped-down request re-derives the cap instead of over-submitting again. The value
+is logged whenever it changes:
+
+    [Streamline] Reflex render cap = 39 fps (25641us) - 160Hz / 4x => ~156 present fps
+
+If the refresh rate cannot be read the cap is left at 0 (unlimited) and a warning is
+logged - silently substituting some made-up number is exactly what caused this bug.
+
+This also explains why the FPS counter sat at ~57 no matter what was requested: the
+render side was pinned, so the generated side could never track the panel.
+
+
 # v0.53 - the FPS number stops lying, and MFG gets a measurement
 
 Reported: "check it yourself before I go in again, I do not want another launch
