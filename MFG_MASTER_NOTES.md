@@ -1914,6 +1914,38 @@ v1.08 的插桩在 757 行附近插了行，其后所有行号整体后移。**�
 - 性能恶化：FPS 39.7→13.4、1% Low→1.1、真实帧 571ms —— **未解释**
 - RTX 20/30 系 —— **一行未写**；DLSS5 —— 代码在，**未上机验证**
 
+#### E. 顺带查出的一个 git 陷阱（下一轮可选修，**今晚不动**）
+
+睡眠审计时顺手查的，**有证据**（`git ls-files --eol`，2026-09-19 00:40 实测）：
+
+```
+i/lf  w/lf    MFG_MASTER_NOTES.md        src/DX12SwapChain.cpp
+i/lf  w/lf    src/NeuralRendering/*      tools/*.py
+i/lf  w/crlf  src/Streamline.cpp         src/FrameGen.cpp
+```
+
+- **索引里所有文件都是 `i/lf`** —— 因为 `git config core.autocrlf = true`，而且仓库**没有 `.gitattributes`**。
+- 工作树里那些 `w/lf`（账本、`DX12SwapChain.cpp`、`NeuralRendering/*`、工具脚本）
+  是**上一次直接写入留下的产物**，**不是 git 保证的状态**。
+- ⇒ **任何 `git checkout` / `git reset --hard` / `git stash pop` / 重新 clone，都会把工作树的纯 LF 文件写成 CRLF。**
+
+**为什么危险**：本项目的补丁脚本靠「锚点必须匹配目标文件的行尾」工作（`.h`=CRLF，先 `_fix_eol`）。
+git 一旦悄悄把 `DX12SwapChain.cpp` / `NeuralRendering/*` / 工具脚本翻成 CRLF，
+锚点会 `REFUSED` —— **这个是响的，还行**；但**账本与工具脚本自己变成 CRLF 是静默的**，
+`_fix_eol` 的前提被打破却没有任何提示。**又一次「静默降级」。**
+
+**建议修法（下一轮做，不要跟待上机二进制混在同一批）**：加 `.gitattributes` 把意图写死，
+而不是继承全局设置：
+
+```
+* text=auto eol=lf
+src/Streamline.cpp text eol=crlf
+src/Streamline.h   text eol=crlf
+```
+
+★ 加 `.gitattributes` 本身**不会改动已有的工作树文件**（除非跑 `git add --renormalize .`），
+所以它是纯保护性的；但「加配置」与「改代码」仍不应混在同一批。
+
 ---
 
 ---
