@@ -46,11 +46,26 @@ Checks, in the order a freeze is actually built:
                     1.000000. Unlike clipDev it does NOT grow with frame time,
                     which makes it the only absolute camera-side criterion
                     here. A w away from 1 means the inverse of `cur` and the
-                    `prev` matrix were built from different cameras -- one
-                    folding the eye translation in, one not. That was v1.07b
-                    and earlier: Streamline.cpp inverted curForReproj (the
-                    engine's translation-free ViewProj) while multiplying by
-                    camPrevVP (rebuilt, translation included).
+                    `prev` matrix were NOT built from a consistent camera pair.
+                    NOTE: the v1.07c edit that was supposed to fix this is a
+                    NO-OP on the live path (chapter 17, machine-checked), so a
+                    non-1 w here is still UNEXPLAINED. Section 4c is what
+                    decides it.
+
+  4c. p00(c/p)      The two sides' PROJECTION [0][0], the same family
+                    fingerprint the source-lock uses (0.149 world / 0.839 menu,
+                    5.62x apart). Read from the projection, not ViewProj,
+                    because (P@V)[0][0] = P[0][0]*V[0][0] would mix in the
+                    rotation. [2][3] is the perspective/orthographic
+                    discriminator. This is the reading that separates the two
+                    surviving explanations of a w away from 1:
+                      (a) different families on the two sides -> p00 differs,
+                          and the ratio is a projection ratio, not a translation;
+                      (b) same projection, near-singular inverse -> p00 agrees
+                          while mag(invSrc) is absurd.
+                    Also watch p00 over time: if it FLIPS between two values
+                    while the player is in the world, the menu camera is still
+                    taking turns owning the stream.
 
   5. MULTIPLIER     mult(acc/pres) is (dlssgAcceptedFrames+1)/presented. The
                     two must agree; the pacer is told to expect `pres` flips
@@ -63,6 +78,20 @@ from pathlib import Path
 
 DFG = Path(r"C:\Users\Administrator\Documents\My Games\Skyrim Special Edition\SKSE\DynamicShaderFrameGen.log")
 WD = Path(r"C:\Users\Administrator\Documents\My Games\Skyrim Special Edition\SKSE\DynamicShaderFrameGen.watchdog.log")
+
+# Optional overrides, so the offline regressions can push a SYNTHETIC log
+# through the very same reading logic instead of a re-implementation of it
+# (tools/regress_v108_p00.py does exactly that):
+#     python tools/analyze_session.py --log D:\tmp\synthetic.log
+#     python tools/analyze_session.py --log A --watchdog B
+_args = sys.argv[1:]
+for _i, _a in enumerate(_args):
+    if _i + 1 >= len(_args):
+        continue
+    if _a == "--log":
+        DFG = Path(_args[_i + 1])
+    elif _a == "--watchdog":
+        WD = Path(_args[_i + 1])
 
 VERDICT_OK = "OK"
 VERDICT_BAD = "PROBLEM"
@@ -231,7 +260,7 @@ def main() -> int:
 
     # ---- 4. camera motion -----------------------------------------------
     print("\n4. CAMERA MOTION")
-    hb = re.findall(r"\[XRAY\].*?clipDev=([\d.]+).*?cam\(ok/inv\)=(\d+)/(\d+)"
+    hb = re.findall(r"\[XRAY\].*?clipDev=([-\d.]+).*?cam\(ok/inv\)=(\d+)/(\d+)"
                     r".*?camPrev\(ok/used\)=(\d+)/(\d+)", dfg)
     if hb:
         n = min(3, len(hb))
@@ -276,26 +305,96 @@ def main() -> int:
             print(f"   clipW (clipToPrevClip[3].w, must be 1.000000): "
                   f"last={w:.6f}  n={len(cw)}")
             if abs(w - 1.0) > 0.01:
-                print(f"   {VERDICT_BAD}: w={w:.6f}. The inverse of `cur` and the"
-                      f" `prev` matrix came from DIFFERENT cameras - one picks up"
-                      f" the eye translation, one does not - so DLSS-G is"
-                      f" reprojecting with a non-affine matrix. Fixed in v1.07c"
-                      f" (Streamline.cpp, the matrixFullInvert call): it now"
-                      f" inverts camCurVP when the rebuild succeeded.")
+                print(f"   {VERDICT_BAD}: w={w:.6f} - the two sides do not form a"
+                      f" consistent camera pair, so DLSS-G is reprojecting with a"
+                      f" non-affine matrix. NOTE: the v1.07c invert-site edit is a"
+                      f" NO-OP on the live src=fixed path (chapter 17;"
+                      f" tools/verify_v107c_is_inert.py), so this is NOT"
+                      f" explained yet - section 4c decides between the two"
+                      f" remaining candidates.")
                 problems.append("clipToPrevClip[3].w is not 1 - non-affine reprojection")
             else:
                 print(f"   {VERDICT_OK}: affine, [3].w == 1")
 
+        # ---- 4c. p00(c/p): the projections on the two sides (v1.08 probe) ---
+        # Decides (a) two different families vs (b) one projection, singular
+        # inverse. Without this field the question is not answerable from a log.
+        pp = re.findall(r"p00\(c/p\)=([-\d.]+)/([-\d.]+)", dfg)
+        mo = re.findall(
+            r"PROBE: p00 cur=([-\d.eE+]+) prev=([-\d.eE+]+) \| p23 cur=([-\d.eE+]+) "
+            r"prev=([-\d.eE+]+) \| mag invSrc=([-\d.eE+]+) prevSrc=([-\d.eE+]+)", dfg)
+        if pp:
+            cur = [float(a) for a, _ in pp]
+            prv = [float(b) for _, b in pp]
+            print(f"   p00 (projection [0][0]; world=0.149184, menu=0.8391): "
+                  f"cur min/max={min(cur):.4f}/{max(cur):.4f}  "
+                  f"prev min/max={min(prv):.4f}/{max(prv):.4f}  n={len(pp)}")
+            distinct = sorted({round(v, 3) for v in cur})
+            if len(distinct) >= 2:
+                lo2, hi2 = distinct[0], distinct[-1]
+                ratio = (hi2 / lo2) if lo2 > 0 else 0.0
+                print(f"   p00 takes {len(distinct)} distinct values "
+                      f"({lo2:.4f} .. {hi2:.4f}, ratio {ratio:.2f}x)")
+                if ratio > 1.15:
+                    print(f"   {VERDICT_BAD}: the projection family SWITCHES during"
+                          f" the run - two cameras are still taking turns on the"
+                          f" stream even though the player is in the world")
+                    problems.append("projection family switches mid-run (p00)")
+                else:
+                    print(f"   {VERDICT_OK}: single family (the spread is <15%)")
+            else:
+                print(f"   {VERDICT_OK}: p00 is one family ({distinct[0]:.4f})")
+            mism = sum(1 for a, b in zip(cur, prv) if b != 0.0 and abs(a / b - 1.0) > 0.02)
+            print(f"   cur/prev projection agreement: {len(pp) - mism}/{len(pp)}"
+                  f" within 2%")
+            if mism:
+                print(f"   {VERDICT_BAD}: {mism} heartbeat(s) have the two sides on"
+                      f" DIFFERENT projections -> explanation (a) for a bad clipW")
+        else:
+            print(f"   {VERDICT_UNKNOWN}: no p00(c/p) field - this build predates"
+                  f" the v1.08 probe, so (a) vs (b) cannot be decided")
+        if mo:
+            c0f, p0f = float(mo[-1][0]), float(mo[-1][1])
+            c23, p23, m1, m2 = mo[-1][2], mo[-1][3], mo[-1][4], mo[-1][5]
+            print(f"   [MOTION] non-affine frame: p00 cur={c0f:.4f} prev={p0f:.4f} |"
+                  f" p23 cur={c23} prev={p23} | mag invSrc={m1} prevSrc={m2}")
+            if p0f != 0.0 and abs(c0f / p0f - 1.0) > 0.02:
+                print(f"   -> explanation (a): the two sides carry DIFFERENT"
+                      f" projections (ratio {c0f / p0f:.4f}); the 5.62x world/menu"
+                      f" family ratio is the candidate")
+            else:
+                print(f"   -> explanation (b): the projections AGREE, so the culprit"
+                      f" is the inverse itself (mag(invSrc)={m1}) - a near-singular"
+                      f" invCurrViewProj")
+        else:
+            print(f"   {VERDICT_OK}: no [MOTION] non-affine warning in this run")
+
         # The v1.07c fingerprint: clipDev alternating between ~0 and absurd.
         if len(cd) >= 4:
-            lo = [v for v in cd if v <= 1.0e-4]
+            # 0.0 <= v is not decoration: clipDev is max|I - clip|, so it cannot
+            # be negative, but the parse now accepts a leading '-' (it has to --
+            # a negative reading is itself a finding). Without the lower bound a
+            # bogus -195 would be counted as an "identity" sample and would
+            # manufacture an alternation out of nothing.
+            lo = [v for v in cd if 0.0 <= v <= 1.0e-4]
             hi = [v for v in cd if v > 10.0]
+            neg = [v for v in cd if v < 0.0]
+            if neg:
+                print(f"   {VERDICT_BAD}: clipDev is NEGATIVE on {len(neg)}"
+                      f" heartbeat(s) (min={min(neg):.6f}). clipDev is"
+                      f" max|I - clipToPrevClip|, which cannot be negative, so the"
+                      f" reading itself is broken on those frames - every threshold"
+                      f" below is meaningless there.")
+                problems.append("clipDev reads negative - the metric itself is broken")
             if lo and hi:
                 print(f"   {VERDICT_BAD}: clipDev alternates between identity"
                       f" ({len(lo)} samples <=1e-4) and absurd ({len(hi)} samples"
                       f" >10) in the SAME run. DLSS-G is being told 'still' then"
                       f" 'moved hundreds of units', frame by frame - the picture"
-                      f" cycles back and forth. This is the v1.07c defect.")
+                      f" cycles back and forth. The 23:10 run had this with"
+                      f" max=243.96 and it is STILL UNEXPLAINED: the invert-site"
+                      f" edit in v1.07c changes nothing on the live path"
+                      f" (chapter 17). Section 4c is the reading that decides it.")
                 problems.append("clipDev alternates identity <-> absurd")
     else:
         print(f"   {VERDICT_UNKNOWN}: no [XRAY] heartbeat lines")

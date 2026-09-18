@@ -167,6 +167,26 @@ namespace FrameGen
 			// the previous matrix did not come from the same camera. Unlike
 			// clipDevMax this one is absolute -- it does not grow with frame time.
 			float clipW = 1.0f;
+			// ---- v1.08 PROBE (instrument only) ----------------------------
+			// The two projections' [0][0], i.e. the family fingerprint the
+			// source-lock already uses (0.149 world / 0.839 menu), read from
+			// the PROJECTION and not from ViewProj: (P@V)[0][0] is P[0][0]
+			// times V[0][0] and would mix in the rotation.
+			//
+			// [2][3] is the perspective/orthographic discriminator -- exactly
+			// 0 for an orthographic projection, non-zero for a perspective
+			// one -- so a 3D-menu (curve/ortho) camera facing a world camera
+			// shows up in BOTH numbers at once, independently of orientation.
+			//
+			// probeInvSrcMag is finiteMagOf(invCurrViewProj): a near-singular
+			// inverse blows up here, which is the competing explanation for
+			// clipToPrevClip[3].w = -195.22.
+			float probeCurP00 = 0.0f;
+			float probePrevP00 = 0.0f;
+			float probeCurP23 = 0.0f;
+			float probePrevP23 = 0.0f;
+			float probeInvSrcMag = 0.0f;
+			float probePrevSrcMag = 0.0f;
 			// v0.88: max |fixedViewProj - engineViewProj|. Non-zero proves the
 			// rebuilt matrix really carries the translation the engine omits;
 			// -1 means the rebuild was unavailable this frame.

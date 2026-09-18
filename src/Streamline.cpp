@@ -685,6 +685,10 @@ namespace FrameGen
 		static Matrix s_prevCamProj{};
 		static float s_prevCamEye[3] = { 0.0f, 0.0f, 0.0f };
 		static bool s_hasPrevCam = false;
+		// v1.08 PROBE: the previous frame's projection, captured BEFORE the
+		// block below overwrites s_prevCamProj with this frame's value.
+		static Matrix s_probePrevProj{};
+		static bool s_probeHasPrevProj = false;
 
 		// The CURRENT camera, rebuilt. This is what becomes "previous" at the end
 		// of the frame, so the history always carries a position.
@@ -746,6 +750,13 @@ namespace FrameGen
 		// the previous frame goes through exactly the same rebuildViewProj
 		// as the current one and the two cannot diverge by convention.
 		if (camCurOk) {
+			// v1.08 PROBE: snapshot the OLD projection before the line below
+			// replaces it. Reading s_prevCamProj at the reprojection site
+			// returns this frame's value, which would make the probe vacuous.
+			if (s_hasPrevCam) {
+				s_probePrevProj = s_prevCamProj;
+				s_probeHasPrevProj = true;
+			}
 			s_prevCamView = a_fb.CameraView;
 			s_prevCamProj = a_fb.CameraProj;
 			s_prevCamEye[0] = a_fb.CameraPosAdjust[0];
@@ -1200,6 +1211,30 @@ namespace FrameGen
 		// means the inverse and the `prev` matrix were built from different
 		// cameras -- the defect fixed at the invert site above.
 		diag.clipW = c.clipToPrevClip[3].w;
+		// ---- v1.08 PROBE --------------------------------------------------
+		//
+		// Everything below is READ-ONLY. It exists so that one run can decide
+		// between the two surviving explanations of clipToPrevClip[3].w != 1:
+		//
+		//   (a) the inverse side and the prev side carry different
+		//       projections. Then inv(Pc@Vc)@(Pp@Vp) is not affine and [3].w
+		//       is free. Signature: probeCurP00 != probePrevP00 (or the [2][3]
+		//       pair disagreeing), i.e. the two sides are different families.
+		//   (b) both sides share the projection and matrixFullInvert() was
+		//       handed a near-singular matrix. Signature: probeCurP00 ==
+		//       probePrevP00 while probeInvSrcMag is absurd.
+		//
+		// Reading the projection (not ViewProj) is deliberate: (P@V)[0][0]
+		// equals P[0][0]*V[0][0], so a ViewProj-level fingerprint would mix in
+		// the rotation and change every frame the player turns.
+		diag.probeCurP00 = a_fb.CameraProj.data[0][0];
+		diag.probeCurP23 = a_fb.CameraProj.data[2][3];
+		if (s_probeHasPrevProj) {
+			diag.probePrevP00 = s_probePrevProj.data[0][0];
+			diag.probePrevP23 = s_probePrevProj.data[2][3];
+		}
+		diag.probeInvSrcMag = finiteMagOf(invCurrViewProj);
+		diag.probePrevSrcMag = finiteMagOf(prevForReproj);
 		{
 			const float wDev = diag.clipW > 1.0f ? (diag.clipW - 1.0f)
 			                                     : (1.0f - diag.clipW);
@@ -1208,8 +1243,14 @@ namespace FrameGen
 				++wWarned;
 				SKSE::log::warn("[MOTION] clipToPrevClip[3].w={:.6f} (must be 1) - "
 					"the inverse and the previous matrix came from different "
-					"cameras; DLSS-G is reprojecting with a non-affine matrix",
-					diag.clipW);
+					"cameras; DLSS-G is reprojecting with a non-affine matrix. "
+					"v1.08 PROBE: p00 cur={:.4f} prev={:.4f} | p23 cur={:.6f} "
+					"prev={:.6f} | mag invSrc={:.4g} prevSrc={:.4g}",
+					diag.clipW, diag.probeCurP00, diag.probePrevP00,
+					static_cast<double>(diag.probeCurP23),
+					static_cast<double>(diag.probePrevP23),
+					static_cast<double>(diag.probeInvSrcMag),
+					static_cast<double>(diag.probePrevSrcMag));
 			}
 		}
 		if (curOk) ++diag.camValid; else ++diag.camInvalid;
@@ -1362,7 +1403,7 @@ namespace FrameGen
 				SKSE::log::info("[XRAY] serial={} menu={} world={} edges={} resetTrue={} menuOpen={} reset={} | "
 					"consts ok={} fail={} lastR={} | presented all={} world={} menu={} | "
 					"real={:.2f}ms | mvecScale=({:.3f},{:.3f}) flags={:#x} | jitter=({:.4f},{:.4f}) "
-					"clipDev={:.6f} clipW={:.6f} curVP={:.4f} prevVP={:.4f} | pos=({:.1f},{:.1f},{:.1f}) "
+					"clipDev={:.6f} clipW={:.6f} p00(c/p)={:.4f}/{:.4f} curVP={:.4f} prevVP={:.4f} | pos=({:.1f},{:.1f},{:.1f}) "
 					"prevPos=({:.1f},{:.1f},{:.1f}) | dt min/avg/max={:.2f}/{:.2f}/{:.2f}ms n={} "
 					"capUs={} mult(acc/pres)={}/{} longFrames={} cam(ok/inv)={}/{} camPrev(ok/used)={}/{} | "
 					"reproj src={} engPrevEqCur={}/{} engPrevZero={} frozen={} "
@@ -1383,7 +1424,8 @@ namespace FrameGen
 					hist(diag.presentedAll), hist(diag.presentedWorld), hist(diag.presentedMenu),
 					realMs,
 					c.mvecScale.x, c.mvecScale.y, diag.lastFlags,
-					Get().jitterX, Get().jitterY, clipDev, diag.clipW, devOf(curVP), devOf(prevVP),
+					Get().jitterX, Get().jitterY, clipDev, diag.clipW,
+					diag.probeCurP00, diag.probePrevP00, devOf(curVP), devOf(prevVP),
 					a_fb.CameraPosAdjust[0], a_fb.CameraPosAdjust[1], a_fb.CameraPosAdjust[2],
 					a_fb.CameraPreviousPosAdjust[0], a_fb.CameraPreviousPosAdjust[1],
 					a_fb.CameraPreviousPosAdjust[2],
@@ -1618,7 +1660,7 @@ namespace FrameGen
 					::IsProcessDPIAware() ? 1 : 0,
 					(vw == pw && vh == ph) ? "virtual==physical (no DPI scaling)"
 					                       : "virtual!=physical => DPI-virtualized process");
-				SKSE::log::info("[XRAY] diag active v1.07c (compiled " __DATE__ " " __TIME__ ")");
+				SKSE::log::info("[XRAY] diag active v1.08 (probe build, compiled " __DATE__ " " __TIME__ ")");
 				// v0.89: the live fix state is reported on the HEARTBEAT, not here.
 				// v0.88 printed it at this spot, which runs once at boot before any
 				// world camera exists -- it therefore always read reprojSource=0
