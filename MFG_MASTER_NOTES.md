@@ -526,5 +526,136 @@ tag 用 `v<版本>-<日期>`。这样"单独备份"就有两级保障（目录 +
 
 ---
 
+## 第 11 章：19:40–19:50 —— 真凶落网：场上一直有**两个**解锁器
+
+### 11.1 是什么东西在改 `dinput8.dll`
+
+```
+D:\ENB-EJ\Skyrim Special Edition\dinput8.dll
+  5,945,344 B   09-18 18:01   md5 f6fe4caa46e090375803c73257ee038a
+  内部字符串: "RTXMFG" × 8   ← 不是 Transfusion
+```
+
+**`RTXMFG-Universal` 是第二个 MFG 解锁器，此前从未被识别。** 证据是它每局游戏都在
+游戏根目录写一份状态文件 `RTXMFG-Universal.<pid>.status.json`（6,942 B），现存 5 份：
+
+```
+21972  09-18 19:34
+31920  09-18 19:04
+39080  09-18 18:23
+45732  09-18 19:16
+37064  09-11 02:14
+```
+
+### 11.2 ★ 五次运行，RTXMFG 一次都没成功过
+
+逐份提取（字段在五份之间**完全一致**）：
+
+```
+slInitCalls              = 0
+setOptionsCalls          = 0
+actualFramesPresented    = 0
+applied                  = false
+activeWrapperPatched     = false   ← 想 patch sl.dlss_g.dll，没 patch 上
+universalRouteFailure    = 2
+universalRouteFailureReason = "active wrapper unpatched"
+```
+
+而它的 hook **全部安装成功**（`slInitEntryDetourInstalled=true`、`setOptionsEntryDetourInstalled=true`、
+`getState/ngxCreate/ngxEvaluate` 同理，`*EntryDetourCurrent=true`）。
+⇒ **hook 装好了，但入口一次都没被调用** ⇒ 纯占用，零作用，只是每局写 6,942 B 垃圾。
+
+它自报的目标：
+```
+activeWrapperPath = D:\ENB-EJ\Skyrim Special Edition\data\Shaders\Upscaling\Streamline\sl.dlss_g.dll
+```
+**这个目录不存在**（游戏本体 `Data/Shaders/` 为空；MO2 实际用的是
+`E:/EJ/mod/mods/DynamicShaderFrameGen/Shaders/Upscaling/Streamline/sl.dlss_g.dll`）。
+⇒ **路径不一致极可能就是 `unpatched` 的直接原因。**
+
+### 11.3 时间线闭合（每一步都有时间戳）
+
+| 时间 | 事件 | 证据 |
+|---|---|---|
+| 09-11 02:11 | `dinput8.dll` = RTXMFG（5,945,344 B）| 现存 `dinput8.dll.disabled` 同尺寸同 md5 |
+| 09-11 02:14 | RTXMFG 写了状态文件（那时它就已经零作用）| `RTXMFG-Universal.37064.status.json` |
+| 09-17 14:09 | Transfusion 部署为 `version.dll` + `dinput8.dll`（两份**同 md5** `c048b46e`）| 备份 `transfusion_proxy_dup_20260917_182050/` |
+| 09-17 18:23 | 两个 patch worker 互撞 → 崩溃（写 `E9` 进 `sl.interposer.dll+0xB750`）| commit `b463b09` |
+| 09-17 18:23 | 修法：`version.dll` → `version.dll.off`（只留 dinput8）| commit `b463b09` |
+| **09-18 07:29** | **Transfusion 用 dinput8 跑出 4x**（`presentation count: 4x`, `Kernel: Ada`, 39.6 FPS）| `DLSSG-Transfusion.log` |
+| **09-18 18:01** | **`dinput8.dll` 被换成 RTXMFG**（`f6fe4caa`）| 文件时间戳 + 内部字符串 |
+| 09-18 18:23 / 19:04 / 19:16 / 19:34 | 四次运行：RTXMFG 零作用 + 冻结 + 闪退 | 4 份状态文件全部 `applied=false` |
+| 09-18 07:29 之后 | **Transfusion 日志再无新行** ⇒ 它再也没被加载 | `DLSSG-Transfusion.log` mtime = 07:29 |
+
+**⇒ 4x 成功（07:29）发生在 RTXMFG 上场（18:01）之前。18:01 之后 Transfusion 失去注入点。**
+**这就是"昨天做到了 4x，今天全是冻结"的完整机制。**
+
+### 11.4 本轮采取的行动
+
+```
+1. dinput8.dll            -> dinput8.dll.rtxmfg-off     （撤下 RTXMFG）
+2. version.dll.off        -> dinput8.dll                （md5 c048b46e，还原 Transfusion）
+3. version.dll.off 保持 .off                            （避免重演 b463b09 的重复部署）
+4. DLSSG-Transfusion.json 从备份重建（原本不存在）
+```
+
+备份：`/d/workbuddy2/backup/unlocker_decision_20260918_194424/`
+
+### 11.5 ★★ `DLSSG-Transfusion.json` 的正确内容（锁定）
+
+现存的六份备份里，这个文件有**两种互相矛盾**的组合：
+
+| 备份时间 | `patchFlipMetering` | `forceUiRecomposition` |
+|---|---|---|
+| 09-17 16:39 | **true** | **false** |
+| 09-17 19:19 | **false** | **true** |
+
+经 `VERIFY_proxy_dupfix.md:94` 与 `REPAIR_1934.md:8` 两份记录交叉确认，**正确组合是**：
+
+```json
+{
+  "multiplier": 4, "mode": "fixed", "dynamicTargetFrameRate": 0,
+  "dynamicExperimental56": false, "forceOTA": false,
+  "patchFlipMetering": false,      // v1.4.1 官方默认；true 会在 NGX 初始化路径
+                                   // 装递归 NVAPI 解析钩子，而 18:05 卡死的正是 slSetD3DDevice
+  "blackwellTransfusion": true,
+  "qualityValidWarp": true,
+  "disableMenuDetection": true,
+  "disableMvDilation": false,
+  "forceUiRecomposition": false,   // 我 19:31 曾误改 true，REPAIR_1934 已纠正
+                                   // DFG 是 Preset A（日志 uiFmt=0 = DXGI_FORMAT_UNKNOWN）
+  "showOverlay": true, "logPerformance": true
+}
+```
+
+已写入游戏根目录并逐字段断言通过（13/13 `MATCH`）。
+
+### 11.6 ★★ 一次**被自己拦住**的误修（必须记）
+
+我看到部署 INI 里 `MvecScaleOverride=1.00`，一度判定为"v1.03 遗留错误"，
+准备改回 `0.00`。**在读 INI 自带的说明段后撤回。**
+
+INI 原文写得很清楚：
+```
+;   0.00 = legacy 1/renderScale (default, behaviour unchanged)
+;   1.00 = identity, the reference-implementation value
+```
+且 `FIX_FRAMESERIAL_2115.md:148` 记录：
+> 本次已核对两份 INI md5 相同（`f7115e5e`，`MvecScaleOverride=1.00` / `RenderResolutionScale=0.44`），不会回退。
+
+**⇒ `1.00` 是有意选择且有外部证据支持（NVIDIA 指南 + open-shaders：全帧路径应为 identity）。
+`0.00` 的 `1/renderScale`（=2.27 @ renderScale 0.44）才被三方反驳为过估计。未改动。**
+
+**教训（第三次触发）**：**改动前必须先读该配置项自带的说明与被引用文档，不能凭"它和默认值不同"就判为错误。**
+
+### 11.7 本轮**未**做的（别假装做了）
+
+- 冻结是否修好：**未知**（无法运行游戏）
+- Modex 闪退：**未处理**（必须在 MO2 GUI 里手动取消勾选，我无法操作 GUI）
+- 20/30 系路径：**一行未写**
+- DLSS5：**一行未改**
+
+---
+
 **本文件维护规则**：每次改动后追写「本轮改动 / 验证结果 / 新证据 / 新错误」，
 **不覆盖历史章节**，只在第 9 章与末尾追加。
