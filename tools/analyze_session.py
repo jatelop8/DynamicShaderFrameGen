@@ -146,8 +146,13 @@ def main() -> int:
     # log used to be informational only; the 22:02 run was analysed against the
     # wrong assumption more than once, so it is now a hard comparison.
     # The regex has to accept a letter suffix: v1.02c and v1.07b both exist.
-    EXPECTED_BUILD = "v1.07c"
-    m = last_match(dfg, r"\[XRAY\] diag active (v[\d.a-z]+) \(compiled ([^)]+)\)")
+    # v1.08 added a build tag to the banner: "(probe build, compiled ...)". The
+    # literal "\(compiled" stopped matching, and the failure was the worst kind:
+    # the tool printed "no [XRAY] banner at all" and appended it to `problems`,
+    # i.e. a successful load was reported as a failure. Accept an optional
+    # prefix, and keep one capture group so m[1] stays "compiled <when>".
+    EXPECTED_BUILD = "v1.08"
+    m = last_match(dfg, r"\[XRAY\] diag active (v[\d.a-z]+) \((?:[^)]*?)compiled ([^)]+)\)")
     if m:
         print(f"\nbuild            {m[0]}  compiled {m[1]}")
         if m[0] != EXPECTED_BUILD:
@@ -270,15 +275,58 @@ def main() -> int:
         cd = [float(r[0]) for r in hb]
         camprev_ok = int(hb[-1][3])
         print(f"   clipDev: min={min(cd):.6f} max={max(cd):.6f} last={cd[-1]:.6f}")
+        # ---- was the camera actually MOVING while those heartbeats were taken? --
+        # A clipDev of exactly 0 is the CORRECT answer when the camera is still:
+        # the identity is what "player did not move" is supposed to look like.
+        # Without this check the 07:37 run was reported as "identity for the WHOLE
+        # session", which reads exactly like the worst freeze, when in truth all
+        # eight heartbeats were taken AFTER the player stopped walking.
+        # The camera's real travel lives in the [CAM] acc lines, which the
+        # heartbeat does not carry - so the two have to be joined on time.
+        # Use move= (snapAcceptDist: the step from the previously accepted
+        # sample, i.e. INSTANTANEOUS) and NOT path= (snapPathLen: a running sum).
+        # A cumulative counter is monotonically increasing, so "path > 0" stays
+        # true forever and the window swallows the whole rest of the log - the
+        # first version of this check did exactly that and reported 8/8.
+        acc = re.findall(r"\[(\d\d:\d\d:\d\d)(?:\.\d+)?\].*?\[CAM\] acc #\d+ "
+                         r"pos=\([^)]*\) move=([\d.]+) path=([\d.]+)", dfg)
+        hbt = re.findall(r"\[(\d\d:\d\d:\d\d)(?:\.\d+)?\].*?\[XRAY\] serial=\d+"
+                         r".*?clipDev=([-\d.]+)", dfg)
+        t_mov_lo = t_mov_hi = None
+        in_win = []
+        if acc:
+            moving = [(t, float(m)) for t, m, _ in acc if float(m) > 0.001]
+            t_mov_lo = moving[0][0] if moving else None
+            t_mov_hi = moving[-1][0] if moving else None
+            print(f"   camera travel ([CAM] acc): {float(acc[-1][2]):.2f} units total"
+                  + (f", moving between {t_mov_lo} and {t_mov_hi}" if moving
+                     else " - the captured camera never moved"))
+            if moving:
+                in_win = [float(v) for t, v in hbt if t_mov_lo <= t <= t_mov_hi]
+                print(f"   heartbeats inside the moving window: {len(in_win)}"
+                      f" of {len(hbt)}")
         # The metric to judge is the LAST heartbeat, not the maximum. A run can
         # show real translation early and then pin at identity for good - the
         # 21:27 log does exactly that (max=243.96, final three 0.000061), and a
         # max() test calls it healthy. That is the mistake this comment marks.
         if max(cd) <= 1.0e-4:
-            print(f"   {VERDICT_BAD}: clipToPrevClip was the identity for the WHOLE"
-                  f" session - DLSS-G was told the camera never moved, so every"
-                  f" generated frame is a copy of the last real one")
-            problems.append("clipToPrevClip pinned at identity for the whole run")
+            if t_mov_lo is None:
+                print(f"   {VERDICT_UNKNOWN}: clipDev is 0 on every heartbeat AND the"
+                      f" camera never moved - that is the correct answer, not a"
+                      f" finding. This run says nothing about the freeze.")
+                problems.append("camera never moved - run does not test anything")
+            elif not in_win:
+                print(f"   {VERDICT_UNKNOWN}: clipDev is 0 on every heartbeat, but not"
+                      f" one heartbeat falls inside the moving window"
+                      f" ({t_mov_lo}..{t_mov_hi}). A still camera is SUPPOSED to give"
+                      f" identity, so this run cannot tell a freeze from a standstill."
+                      f" Walk first, then keep walking while the heartbeats fire.")
+                problems.append("no heartbeat during camera movement - run does not test the freeze")
+            else:
+                print(f"   {VERDICT_BAD}: clipToPrevClip was the identity for the WHOLE"
+                      f" session - DLSS-G was told the camera never moved, so every"
+                      f" generated frame is a copy of the last real one")
+                problems.append("clipToPrevClip pinned at identity for the whole run")
         elif cd[-1] <= 1.0e-4:
             print(f"   {VERDICT_BAD}: translation was reaching clipToPrevClip early"
                   f" (max={max(cd):.3f}) but the LAST heartbeat is back at identity"
@@ -326,7 +374,13 @@ def main() -> int:
         if pp:
             cur = [float(a) for a, _ in pp]
             prv = [float(b) for _, b in pp]
-            print(f"   p00 (projection [0][0]; world=0.149184, menu=0.8391): "
+            # CAREFUL: this probe reads CameraProj (c8). The family lock reads
+            # ProjUnj (c40), and those are NOT the same matrix - on the 07:37
+            # run c8 read 1.1250 while the lock reported 0.888889, i.e. the two
+            # are exact reciprocals. So a p00 here can only be compared with
+            # another p00 from this same probe; it must never be read against
+            # the 0.149184 / 0.8391 family table.
+            print(f"   p00 (CameraProj c8 [0][0] - NOT the family-lock ProjUnj c40): "
                   f"cur min/max={min(cur):.4f}/{max(cur):.4f}  "
                   f"prev min/max={min(prv):.4f}/{max(prv):.4f}  n={len(pp)}")
             distinct = sorted({round(v, 3) for v in cur})

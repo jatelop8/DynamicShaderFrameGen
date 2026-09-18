@@ -69,6 +69,19 @@ def motion(p00c, p00p, p23c, p23p, inv_mag, prev_mag):
             % (p00c, p00p, p23c, p23p, inv_mag, prev_mag))
 
 
+def acc(t, n, move, path):
+    """One synthetic [CAM] acc line - the ONLY line that carries the captured
+    camera's real travel, and the heartbeat does not repeat it. move= is
+    snapAcceptDist (the step from the previously accepted sample, i.e.
+    instantaneous); path= is snapPathLen (a running sum). A moving window must
+    be built from move: a cumulative counter never returns to zero, so
+    'path > 0' stays true forever and the window swallows the whole log - the
+    first version of that check reported 8/8 heartbeats inside a window that
+    had ended ten seconds earlier."""
+    return ("[%s] [info] [CAM] acc #%d pos=(0.00,0.00,1.00) move=%.4f path=%.2f "
+            "devVP=2.0001 detVP=-2.25023 magVP=2 consecJmp=0" % (t, n, move, path))
+
+
 CASES = {
     # name: (log lines, list of (must_appear, label))
     "A": (
@@ -94,6 +107,26 @@ CASES = {
          for i in range(1, 6)],
         [("SWITCHES during", "family switch detected"),
          ("projection family switches mid-run", "recorded as a problem")],
+    ),
+    # The pair the 07:37 run exposed. clipDev == 0 is the IDENTITY, which is the
+    # correct answer for a still camera and the worst possible answer for a
+    # moving one. The two logs below differ ONLY in when the heartbeat was
+    # taken, so the criterion has to disagree with itself - otherwise it is
+    # calling a successful standstill a freeze (as it did on the real 07:37 log).
+    "F": (
+        [acc("00:00:05", 100, 0.5, 5.0), acc("00:00:06", 200, 0.5, 10.0),
+         hb("0.000000", "1.000000", "1.125", "1.125", 5),
+         hb("0.000000", "1.000000", "1.125", "1.125", 6)],
+        [("pinned at identity for the whole run",
+          "identity WHILE moving is a real problem")],
+    ),
+    "G": (
+        [acc("00:00:05", 100, 0.5, 5.0), acc("00:00:06", 200, 0.5, 10.0),
+         hb("0.000000", "1.000000", "1.125", "1.125", 9),
+         hb("0.000000", "1.000000", "1.125", "1.125", 10)],
+        [("no heartbeat during camera movement",
+          "identity AFTER it stopped is NOT a problem"),
+         ("cannot tell a freeze from a standstill", "and it says why")],
     ),
 }
 

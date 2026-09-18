@@ -98,26 +98,42 @@
   </div>
 
   <h2>2. 你要做的（约 30 秒）</h2>
+  <div class="card" style="border-left:4px solid #b4552d">
+    <p style="margin:0"><b>2026-09-19 07:37 已经跑过一趟 —— 那趟白跑了。</b>
+    相机确实走了（<code>[CAM] acc</code> 的 <code>path=</code> 从 0 涨到 <b>153.78</b>），
+    但 8 条心跳<b>全部落在你停下之后</b>，所以 <code>clipDev</code> 的 8 个 0
+    只是「静止时的正确答案」，<b>什么也没测到</b>。下面的顺序就是按这个教训改的：
+    <b>走动必须发生在心跳已经开始之后。</b></p>
+  </div>
   <div class="card">
     <ol>
-      <li><b>先在 MO2 取消勾选 <code>Modex.dll</code></b>（第三方闪退，今天崩过三次，会掩盖一切结论）。</li>
-      <li>进游戏，等 4x 跑起来（左上角有帧数）。</li>
-      <li><b>站着不动停 5 秒</b>（不要按 W）。这是判据 3 的前提。</li>
-      <li>再随便走 5 秒、转一下视角。</li>
-      <li>退出，跑一条命令：</li>
+      <li><b>先在 MO2 取消勾选 <code>Modex.dll</code></b>（第三方闪退，会掩盖一切结论）。</li>
+      <li>进游戏，<b>等到确认已经在世界里</b>（4x 在跑、画面可操作）。</li>
+      <li><b>先站着不动约 10 秒</b> —— 让心跳先跑起来。心跳只在 <code>world</code> 帧打，
+        而 <code>world</code> 计数要进世界之后才开始。</li>
+      <li><b>然后持续走动 + 转视角 10 秒以上</b>，<b>不要很快就停下</b>。</li>
+      <li>再站住 5 秒，退出，跑一条命令：</li>
     </ol>
-    <pre><code>cd /d/Modding/DynamicShaderFrameGen
+    <pre style="margin-bottom:0"><code>cd /d/Modding/DynamicShaderFrameGen
 "C:/Users/Administrator/.workbuddy/binaries/python/versions/3.13.12/python.exe" tools/analyze_session.py</code></pre>
   </div>
 
-  <h2>3. 五条判据</h2>
+  <h2>3. 判据</h2>
   <table>
-    <tr><th style="width:34px">#</th><th>看什么</th><th style="width:150px">通过</th><th>不通过意味着</th></tr>
+    <tr><th style="width:34px">#</th><th>看什么</th><th style="width:170px">通过</th><th>不通过意味着</th></tr>
+    <tr>
+      <td><b>0</b></td>
+      <td><b>先决条件</b>：第 4 节的
+        <code>heartbeats inside the moving window: N of M</code></td>
+      <td class="ok"><b>N &gt; 0</b></td>
+      <td><b>N = 0 ⇒ 这趟白跑。</b><code>clipDev</code> 的 0 只是「静止」的正确答案，
+        不是结论（07:37 就是这样，被旧判据误报成了最严重的冻结）</td>
+    </tr>
     <tr>
       <td>1</td>
       <td>横幅 <code>diag active v1.08 (probe build …)</code></td>
       <td class="ok">出现</td>
-      <td>加载的不是本次构建，后面四条全部作废</td>
+      <td>加载的不是本次构建，后面几条全部作废</td>
     </tr>
     <tr>
       <td>2</td>
@@ -127,30 +143,34 @@
     </tr>
     <tr>
       <td>3</td>
-      <td>站着不动时的 <code>clipDev</code></td>
-      <td class="ok">&lt; 1e-3</td>
-      <td>相机没动却被告诉 DLSS-G「动了」→ 画面来回</td>
+      <td><b>走动期间的</b> <code>clipDev</code></td>
+      <td class="ok"><b>&gt; 1e-3</b>（≠ 单位阵）</td>
+      <td>相机在动，而 <code>clipToPrevClip</code> 仍是单位阵 ⇒ DLSS-G 被告知「没动」
+        ⇒ 生成帧全是上一帧的拷贝 ⇒ <b>画面冻住 / 来回循环</b></td>
     </tr>
     <tr>
       <td>4</td>
-      <td><code>p00(c/p)</code>：两侧投影 <code>[0][0]</code></td>
-      <td class="ok">世界内<b>单族</b>（≈0.1492）且两侧一致</td>
-      <td>出现两个族（0.1492 / 0.8391）⇒ 菜单相机仍在夺流</td>
+      <td><code>p00(c/p)</code>：两侧投影是否一致</td>
+      <td class="ok">两侧一致、全程不切换</td>
+      <td><b>读数注意</b>：它读的是 <code>CameraProj</code>(c8)，与族锁用的
+        <code>ProjUnj</code>(c40) <b>互为倒数</b>（实测 1.1250 vs 0.888889）。
+        <b>它只能和自己比，不要拿去对 0.1492 / 0.8391 那张族表。</b></td>
     </tr>
     <tr>
       <td>5</td>
       <td><code>[MOTION]</code> 行若出现，看它自带的 <code>p00 cur/prev</code> 与 <code>mag invSrc</code></td>
       <td colspan="2">
-        <b>这一条是本轮的全部意义</b> —— 它把「-195.22 是什么」从「下一轮再猜」变成「看一眼就知道」。
-        对照表见 §4。
+        它把「<code>-195.22</code> 是什么」从「下一轮再猜」变成「看一眼就知道」。对照表见 §4。
       </td>
     </tr>
   </table>
   <div class="card">
     <p style="margin:0">
-      <b>判据 3 是最硬的那条</b>：它不依赖任何新字段，也不受帧率高低影响。
-      注意它<b>不是</b>要求 <code>clipDev</code> 恰好为 0 —— 实测单位矩阵的下限在
-      <code>6e-5</code> 量级（浮点残差），所以门限是 <code>1e-3</code>，不是 0。
+      <b>判据 3 的方向很容易搞反</b>：静止时 <code>clipToPrevClip</code> <b>本来就该</b>是单位阵，
+      所以「静止时 <code>clipDev ≈ 0</code>」是<b>正常</b>，不是通过条件。
+      要看的是<b>走动期间</b>它有没有跟着离开单位阵。<br>
+      另外它不是要求恰好为 0 或恰好非 0 —— 实测单位矩阵的残差下限在 <code>6e-5</code> 量级，
+      所以门限取 <code>1e-3</code>。
     </p>
   </div>
 
