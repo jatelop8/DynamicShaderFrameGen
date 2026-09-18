@@ -22,6 +22,10 @@
 #include <dxgi1_6.h>
 #include <d3dcompiler.h>
 
+// v0.62: watchdog needs its own file handle + the Documents path
+#include <cstdio>
+#include <shlobj.h>
+
 #include <SKSE/SKSE.h>
 
 #include "Streamline.h"
@@ -265,6 +269,10 @@ namespace FrameGen
 
 	void DX12SwapChain::CreateInterop()
 	{
+		// v0.62: start the watchdog as soon as the interop exists - from here on
+		// every Present can be attributed to a stage.
+		StartWatchdog();
+
 		HANDLE sharedFenceHandle;
 		// v0.5：fence 初值 1（首帧 Signal(0)/Wait(0) 无同步——fence 初始即 0 时立即通过）
 		DX::ThrowIfFailed(d3d12Device->CreateFence(1, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&d3d12Fence)));
@@ -541,9 +549,391 @@ namespace FrameGen
 		DX::ThrowIfFailed(a_d3d11Context->QueryInterface(IID_PPV_ARGS(&d3d11Context)));
 	}
 
+	// v0.62: 1 Hz watchdog. Writes with fopen/fflush/fclose rather than through
+	// SKSE::log, deliberately: if the render thread is blocked the SKSE logger may
+	// never flush its tail, and a process that is force-killed loses whatever the
+	// sink still buffers. A plain append + flush per tick is the only write that is
+	// guaranteed to reach the disk before the process dies, which is exactly the
+	// situation this instrument exists for.
+		// v0.71: can this window be presented to at all?
+	// A FLIP_DISCARD swap chain (BufferCount=3) blocks inside Present() until a
+	// queued buffer is released, and DXGI stops releasing buffers for a window that
+	// is occluded or in the background. Test the two cheap states that predict it
+	// instead of waiting to be told: minimised, or no longer the foreground window.
+	// Deliberately conservative -- if the hwnd is unknown we assume focus, because
+	// changing behaviour on a guess is worse than leaving the old path alone.
+	static std::atomic<int> g_lastFocus{ 1 };          // 1 = foreground (watchdog field)
+
+	// v1.03b: the one definition of the DLSS-G in-call flag declared in the header.
+	// Published by the present thread around slDLSSGSetOptions, read by the watchdog
+	// so a stall can be attributed to a call by name instead of to "d3d11 Wait".
+	std::atomic<int> g_inSetOptions{ 0 };
+	// v1.04b: see the header. Stamped immediately before every blocking Present.
+	std::atomic<long long> g_presentEnteredMs{ 0 };
+
+	static bool FocusAllowsPresenting(HWND a_hwnd)
+	{
+		if (!a_hwnd)
+			return true;                 // unknown window: do not change behaviour
+		if (::IsIconic(a_hwnd))
+			return false;
+		const HWND fg = ::GetForegroundWindow();
+		if (!fg)
+			return true;                 // lock screen / mode change: transient, not a hang
+		// v0.71b: compare roots, not handles. If the swap chain window is a child of a
+		// wrapper, GetForegroundWindow() never returns it and a raw == would report
+		// "unfocused" on every frame of the session - i.e. frame generation off.
+		const HWND ourRoot = ::GetAncestor(a_hwnd, GA_ROOT);
+		const HWND fgRoot = ::GetAncestor(fg, GA_ROOT);
+		if (ourRoot && fgRoot)
+			return ourRoot == fgRoot;
+		return fg == a_hwnd;
+	}
+
+	// v0.73: everything the watchdog needs is an atomic it can read without ever
+	// entering the driver, a lock, or the CRT.
+	static bool g_bypassReported = false;                    // one BYPASS line per focus loss
+	static std::atomic<long long> g_lastSilentMs{ -1 };      // published by the watchdog
+	static std::atomic<unsigned long long> g_hangFence11{ ~0ull };
+	static std::atomic<unsigned long long> g_hangFence12{ ~0ull };
+	static std::atomic<unsigned long long> g_samplerTicks{ 0 };
+	// v0.74: unconditional sampler. g_lastSilentMs is still published, but no
+	// longer used as a gate - see StartGpuSampler() for why that gate is what
+	// hid this failure for three rounds.
+	static std::atomic<long long> g_gpuSilentMs{ -1 };       // sampler's own view of lastFrameEndMs
+	static std::atomic<unsigned long long> g_fenceRaw11{ ~0ull };
+	static std::atomic<unsigned long long> g_fenceRaw12{ ~0ull };
+
+	// v0.76: the one question every other field here cannot answer.
+	// All of them are sampled from the render thread or from the display driver.
+	// A window whose message pump has stopped while the render thread keeps
+	// presenting reads as perfectly healthy in this file, yet it is exactly
+	// what the player calls a freeze and what USER32 paints as "Not Responding".
+	// msg=0 -> the window did not answer WM_NULL within 200 ms.
+	// alive=0 -> the window itself is gone (the process is on its way out).
+	static std::atomic<int> g_lastMsgOk{ 1 };
+	static std::atomic<int> g_lastWinAlive{ 0 };
+	// v0.76: the hwnd the watchdog should probe, published once by Present.
+	// Never read a member from the watchdog thread -- it must not touch
+	// anything the render thread may be inside of.
+	static std::atomic<std::uintptr_t> g_probeHwnd{ 0 };
+
+	// v0.73: the watchdog log path, resolved once at plugin load and kept in a plain
+	// char buffer. DllMain needs it during process detach, where calling
+	// SHGetFolderPath or touching the CRT is not worth the risk.
+	static char g_watchdogLogPath[MAX_PATH * 2] = {};
+
+	void InitWatchdogLogPath()
+	{
+		// Same directory SKSE writes its own logs to, so one folder holds the story.
+		std::string p;
+		char buf[MAX_PATH] = {};
+		if (SUCCEEDED(::SHGetFolderPathA(nullptr, CSIDL_PERSONAL, nullptr, 0, buf))) {
+			p = buf;
+			p += "\\My Games\\Skyrim Special Edition\\SKSE\\";
+		}
+		p += "DynamicShaderFrameGen.watchdog.log";
+		std::snprintf(g_watchdogLogPath, sizeof(g_watchdogLogPath), "%s", p.c_str());
+	}
+
+	const char* WatchdogLogPath()
+	{
+		return g_watchdogLogPath;
+	}
+
+	// v0.73: the only thread allowed to touch the fences besides the render thread,
+	// and it does nothing else. It samples ONLY while the render thread has already
+	// been silent for over 1.5 s, so ordinary play never has a non-owning thread
+	// inside the display driver, and a hang still gets the answer the watchdog
+	// cannot produce on its own:
+	//   stim keeps climbing -> the GPU timeline is alive, the render thread is
+	//                          parked in CPU-side code;
+	//   stim frozen while the watchdog keeps writing -> the sampler itself is parked
+	//                          in the driver, which is a GPU/driver wedge.
+	void DX12SwapChain::StartGpuSampler()
+	{
+		static std::atomic<bool> started{ false };
+		bool expected = false;
+		if (!started.compare_exchange_strong(expected, true))
+			return;
+
+		std::thread([this]() {
+			for (;;) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(200));
+				// v0.74: unconditional. v0.73 gated this on silent >= 1500 ms so
+				// the sampler never entered the driver during normal play. That
+				// gate assumed a GPU stall shows up as a silent render thread -
+				// it does not. In the 07:11 run the render thread was finishing a
+				// Present every 20 ms while the D3D12 queue never advanced, so the
+				// gate held the sampler shut for the entire failure and the one
+				// fence sample we have (1/1) is an accident of the first two
+				// seconds. Measure always; the cost is one 200 ms thread.
+				const unsigned long long f11 = d3d11Fence
+					? static_cast<unsigned long long>(d3d11Fence->GetCompletedValue()) : ~0ull;
+				const unsigned long long f12 = d3d12Fence
+					? static_cast<unsigned long long>(d3d12Fence->GetCompletedValue()) : ~0ull;
+				// If this call blocks (device wedged) the sampler stops, and that
+				// is itself the reading: stim freezes while frames keeps moving.
+				g_fenceRaw11.store(f11);
+				g_fenceRaw12.store(f12);
+				g_hangFence11.store(f11);
+				g_hangFence12.store(f12);
+				const long long lastEnd = static_cast<long long>(lastFrameEndMs.load());
+				g_gpuSilentMs.store(lastEnd ? -1 : -1);
+				g_samplerTicks.fetch_add(1);
+			}
+		}).detach();
+	}
+
+	void DX12SwapChain::StartWatchdog()
+	{
+		static std::atomic<bool> started{ false };
+		bool expected = false;
+		if (!started.compare_exchange_strong(expected, true))
+			return;
+
+		StartGpuSampler();
+
+		// v0.73: path comes from InitWatchdogLogPath() so DllMain can reuse it.
+		const std::string path = WatchdogLogPath();
+
+		std::thread([this, path]() {
+			auto& self = *this;
+			SKSE::log::info("[XRAY] WATCHDOG started (1 Hz) - file: {} (stage= names the blocking call)", path);
+			// v0.71: one 200 ms slice per tick (was 5 x 200 ms = 1 Hz). A hang is only
+			// ever localised by the last line the watchdog managed to write, and at 1 Hz
+			// that line can sit a whole second -- about 40 frames -- behind the freeze.
+			// 200 ms puts it within ~8. STALLED stays at 1 Hz so the file stays readable.
+			int tick = 0;
+			for (;;) {
+				if (self.watchdogStop.load())
+					return;
+				std::this_thread::sleep_for(std::chrono::milliseconds(200));
+				++tick;
+				const long long nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+					std::chrono::steady_clock::now().time_since_epoch()).count();
+				const std::uint64_t frames = self.frameCounter.load();
+				const long long lastEnd = self.lastFrameEndMs.load();
+				const long long silent = lastEnd ? (nowMs - lastEnd) : -1;
+				g_lastSilentMs.store(silent);   // v0.73: lets the sampler decide when to look
+				// v0.63：装载期不是卡死。21:54 那次运行在约 20s 装载里 frames 恒为 1、
+				// stage 恒为 "d3d11 Wait"，看门狗连打 19 行 RENDER THREAD STALLED —— 全是
+				// 假警报。判据收紧：渲染线程必须"曾经跑顺过"（frames>=60）才允许报卡死，
+				// 未达标只记 silent（装载期的正常表现）。
+				const bool warm = frames >= 60;
+				if (FILE* f = std::fopen(path.c_str(), "a")) {
+					// v0.73: the fence values now come from the sampler thread, through
+					// atomics. v0.72 read them right here, which put two driver calls in
+					// the one thread whose whole job is to keep writing while everything
+					// else is stuck - a watchdog that can block is not a watchdog. See
+					// StartGpuSampler(): stim=0 means no hang was ever suspected and the
+					// field is empty; stim>0 means a hang was under investigation and the
+					// numbers are live. UINT64_MAX still means device lost / no fence.
+					const unsigned long long fence11 = g_hangFence11.load();
+					const unsigned long long fence12 = g_hangFence12.load();
+					const unsigned long long stim = g_samplerTicks.load();
+					char fenceTxt[48];
+					if (fence11 == ~0ull && fence12 == ~0ull)
+						std::snprintf(fenceTxt, sizeof(fenceTxt), "-/-");
+					else
+						std::snprintf(fenceTxt, sizeof(fenceTxt), "%llu/%llu", fence11, fence12);
+					// v0.73: wall clock beside the monotonic counter. Lining this file up
+					// against the others needed a second log with a matching clock - the
+					// absolute time of a freeze was reconstructed by subtraction. One
+					// extra field removes that whole class of mistake.
+					SYSTEMTIME wtc{};
+					::GetLocalTime(&wtc);
+					// v0.71: focus belongs in the stamp - focus=0 with a stall is a window
+					// that could not present, not a frame loop that died on its own.
+					const bool stalled = lastEnd != 0 && warm && silent > 1500;
+					// v0.74: the fields that catch a stalled GPU queue under a
+					// healthy render thread. queued>3 = CPU ran ahead of the GPU
+					// (Present stopped providing backpressure); dsync=1 = our
+					// frameIndex no longer matches DXGI's; lastPr not climbing =
+					// Present returns success without flipping.
+					const unsigned long long queued = g_queuedDepth.load();
+					const unsigned long long lastPr = g_lastPresentCount.load();
+					const unsigned long long dsync = g_flipDesync.load();
+					// v0.76: ask the window the same question USER32 asks before it
+					// paints "Not Responding". SMTO_ABORTIFHUNG makes the call return
+					// *now* if the target is already hung instead of burning the full
+					// timeout, and the timeout bounds the worst case for a watchdog
+					// that must never park. A dead window answers nothing at all, so
+					// alive= is checked first and msg= is only meaningful when it is 1.
+					int msgOk = g_lastMsgOk.load();
+					int winAlive = g_lastWinAlive.load();
+					if ((tick % 5) == 0) {
+						const HWND probe = reinterpret_cast<HWND>(g_probeHwnd.load());
+						if (probe && ::IsWindow(probe)) {
+							DWORD_PTR res = 0;
+							const LRESULT lr = ::SendMessageTimeoutA(probe, WM_NULL, 0, 0,
+								SMTO_ABORTIFHUNG | SMTO_BLOCK, 200, &res);
+							msgOk = (lr != 0) ? 1 : 0;
+							winAlive = 1;
+						} else {
+							msgOk = 0;
+							winAlive = 0;
+						}
+						g_lastMsgOk.store(msgOk);
+						g_lastWinAlive.store(winAlive);
+					}
+					std::fprintf(f, "[%lld] %02d:%02d:%02d.%03d frames=%llu silent=%lldms "
+						"stage=%s focus=%d fence=%s stim=%llu queued=%llu lastPr=%llu dsync=%llu "
+						"msg=%d alive=%d presentAge=%lldms%s\n",
+						nowMs, wtc.wHour, wtc.wMinute, wtc.wSecond, wtc.wMilliseconds,
+						static_cast<unsigned long long>(frames), silent,
+					g_inSetOptions.load() ? "d3d11 SetDLSSGOptions" : self.lastStage(),
+						g_lastFocus.load(), fenceTxt, stim, queued, lastPr, dsync,
+						msgOk, winAlive,
+						(g_presentEnteredMs.load() > 0)
+							? (nowMs - g_presentEnteredMs.load())
+							: 0LL,
+						(stalled && (tick % 5) == 0) ? "   <== RENDER THREAD STALLED" : "");
+					std::fflush(f);
+					std::fclose(f);
+				}
+			}
+		}).detach();
+	}
+
+	// v1.03b: bounded fence wait. ID3D11DeviceContext4::Wait has NO timeout: it
+	// returns when the D3D12 queue signals a_fenceValue, or never. On the
+	// 2026-09-18 18:23 run it was "or never" for 19.9 s while the watchdog
+	// reported fence=2/2 and queued=1 - the queue was idle by the fence's own
+	// account while the wait refused to return. A wait that cannot time out is a
+	// wait that can turn any hiccup into a freeze, with no log line naming it.
+	//
+	// Polling GetCompletedValue costs one call per millisecond of hitch and zero
+	// extra calls while the fence advances normally, because the loop tests
+	// before sleeping. On timeout the numbers are logged and the frame is
+	// dropped: a dropped frame is recoverable, a permanent stall is what the
+	// user actually saw.
+	bool DX12SwapChain::WaitFenceBounded(UINT64 a_fenceValue, std::uint32_t a_timeoutMs)
+	{
+		if (!d3d12Fence || !d3d11Context)
+			return true;   // nothing to wait on; never invent a stall
+		if (d3d12Fence->GetCompletedValue() >= a_fenceValue)
+			return true;
+		const auto t0 = std::chrono::steady_clock::now();
+		for (;;) {
+			if (d3d12Fence->GetCompletedValue() >= a_fenceValue)
+				return true;
+			const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now() - t0).count();
+			if (elapsed >= static_cast<long long>(a_timeoutMs)) {
+				static std::atomic<int> fenceTimeoutLogged{ 0 };
+				if (fenceTimeoutLogged.fetch_add(1) < 10) {
+					SKSE::log::error("[XRAY] FENCE WAIT TIMED OUT after {} ms: wanted {} completed {} "
+						"(queued={} frameIndex={}) - dropping this frame instead of parking the render "
+						"thread. A queue that never reaches the fence is the freeze this guard exists "
+						"for (v1.03b)", elapsed, a_fenceValue, d3d12Fence->GetCompletedValue(),
+						static_cast<unsigned long long>(g_queuedDepth.load()), frameIndex);
+				}
+				return false;
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+	}
+
+	// v0.81 -- present-thread census.
+	//
+	// Records, per thread id, how many frames that thread actually presented, and
+	// reports the first time a second id shows up - with BOTH counts, because the
+	// counts are the whole point. "Two thread ids" is not a defect; "the thread
+	// that presents every frame differs from the thread that owns the per-frame
+	// state" might be. v0.80 could not tell those apart and refused the wrong one.
+	void DX12SwapChain::CensusPresentThread()
+	{
+		const std::uint32_t tid = static_cast<std::uint32_t>(::GetCurrentThreadId());
+		const long long nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count();
+		++presentCensusFrames;
+
+		// Hot path: the first slot almost always matches, and it needs no lock.
+		const int n = presentThreadCount.load(std::memory_order_acquire);
+		for (int i = 0; i < n; ++i) {
+			if (presentThreads[i].tid == tid) {
+				++presentThreads[i].frames;
+				presentThreads[i].lastMs = nowMs;
+				return;
+			}
+		}
+
+		// A thread id we have not seen. Rare - at most kPresentThreadMax times.
+		if (n >= kPresentThreadMax) {
+			if (presentCensusFrames % 2000 == 1)
+				SKSE::log::warn("[PRESENT] census: more than {} presenter threads seen; "
+					"further ids are not tracked", kPresentThreadMax);
+			return;
+		}
+		auto& slot = presentThreads[n];
+		slot.tid = tid;
+		slot.frames = 1;
+		slot.firstMs = nowMs;
+		slot.lastMs = nowMs;
+		presentThreadCount.store(n + 1, std::memory_order_release);
+
+		if (n == 0) {
+			SKSE::log::info("[PRESENT] census: first presenter tid={} - frames and time span "
+				"for every presenter are reported below as they appear", tid);
+			return;
+		}
+		SKSE::log::warn("[PRESENT] census: NEW presenter tid={} - now {} distinct threads have "
+			"presented this swap chain. Per-thread frames: {}",
+			tid, n + 1, DescribePresentThreads());
+	}
+
+	// v0.81 -- one-line census body, separate so both call sites stay short.
+	std::string DX12SwapChain::DescribePresentThreads()
+	{
+		std::string s;
+		const int n = presentThreadCount.load(std::memory_order_acquire);
+		for (int i = 0; i < n; ++i) {
+			if (!s.empty())
+				s += " | ";
+			s += "tid=" + std::to_string(presentThreads[i].tid) +
+				" frames=" + std::to_string(presentThreads[i].frames) +
+				" span=" + std::to_string(presentThreads[i].lastMs - presentThreads[i].firstMs) + "ms";
+		}
+		if (s.empty())
+			s = "(none)";
+		return s;
+	}
+
 	HRESULT DX12SwapChain::Present(UINT SyncInterval, UINT Flags)
 	{
 		auto& fg = Get();
+
+		// v0.62: stamp every exit path (there are three return S_OK branches). The
+		// watchdog compares this against its own clock: a stamp that stops moving
+		// while the watchdog keeps ticking is a stalled render thread, and m_stage
+		// then says which call it is stalled in.
+		struct FrameStamp
+		{
+			explicit FrameStamp(DX12SwapChain* a_self) : self(a_self) {}
+			DX12SwapChain* self;
+			~FrameStamp()
+			{
+				self->lastFrameEndMs.store(std::chrono::duration_cast<std::chrono::milliseconds>(
+					std::chrono::steady_clock::now().time_since_epoch()).count());
+			}
+		} frameStamp(this);
+		++frameCounter;
+		// v0.74: retire finished frames, so queuedDepth is a live queue depth
+		// rather than a counter that only grows. fenceValue is the *next* value
+		// to signal, so everything <= what the fence has completed is retired;
+		// whatever sits between that and fenceValue-1 is still in flight.
+		if (d3d12Fence) {
+			const unsigned long long done =
+				static_cast<unsigned long long>(d3d12Fence->GetCompletedValue());
+			const unsigned long long inFlight =
+				(fenceValue > done + 1) ? (fenceValue - 1 - done) : 0;
+			g_queuedDepth.store(inFlight);
+		}
+		m_stage = "present entry";
+
+		// v0.81 -- who actually presents? Observation only; this never refuses.
+		CensusPresentThread();
 
 		// v0.7.2：每帧轮询 Home 键（短按切插帧/长按开菜单）——SKSE 输入事件是事件驱动
 		// 不支持长按检测，这里直接读硬件状态
@@ -593,6 +983,83 @@ namespace FrameGen
 
 		// v0.5.5: stage marker - pinpoint which D3D11/D3D12 call throws (E_INVALIDARG black screen debug)
 		m_stage = "enter";
+
+		// v0.71: focus/occlusion sample, once per frame, BEFORE anything consumes it
+		// (lesson 58: a guard whose input is sampled downstream of itself can never be
+		// verified). The 23:40:22 session froze 55 ms after "Game lost focus", so this
+		// value is the first thing the next hang log will be read for.
+		// v0.71c: IDXGISwapChain1::GetHwnd() is the window this swap chain actually
+		// presents to. swapChainDesc is a DESC1 here and has no OutputWindow member
+		// (using it cost one build: C2039). Null is safe - FocusAllowsPresenting
+		// leaves the old behaviour alone when it has no window to judge.
+		// v0.71d: IDXGISwapChain1::GetHwnd() is an out-param call returning HRESULT,
+		// not a property getter (C2660). A failed call leaves winHwnd null, which
+		// FocusAllowsPresenting treats as "nothing to judge, change nothing".
+		HWND winHwnd = nullptr;
+		if (swapChain)
+			swapChain->GetHwnd(&winHwnd);
+		const bool winFocused = FocusAllowsPresenting(winHwnd);
+		g_lastFocus.store(winFocused ? 1 : 0);
+		// v0.76: publish the window so the watchdog can ask it whether it is still
+		// answering messages. Stored every frame because the swap chain can be
+		// recreated (resolution change, alt-enter) and a stale handle would make
+		// the probe report "gone" for a window that is perfectly alive.
+		g_probeHwnd.store(reinterpret_cast<std::uintptr_t>(winHwnd));
+		{
+			static bool focusWasOn = true;
+			if (winFocused != focusWasOn) {
+				focusWasOn = winFocused;
+				g_bypassReported = false;   // v0.73: one BYPASS report per focus loss
+				SKSE::log::warn("[XRAY] FOCUS {} hwnd={} foreground={} iconic={} - frame "
+					"generation is bypassed and Present runs with DO_NOT_WAIT while the window "
+					"cannot be shown", winFocused ? "regained" : "lost",
+					static_cast<const void*>(winHwnd),
+					static_cast<const void*>(::GetForegroundWindow()),
+					winHwnd ? static_cast<int>(::IsIconic(winHwnd)) : -1);
+			}
+		}
+		// v0.72: while the window cannot be shown, touch NOTHING that can block and
+		// NOTHING that needs a present to finish. v0.71 tried to be clever here and it
+		// made things worse (00:03 run: render thread stalled 2.6 s after the window lost
+		// focus, watchdog wrote STALLED for 4.3 s while the process stayed alive):
+		//
+		//  * it fired slDLSSGSetOptions(mode = eOff) from inside Present - an unsupported
+		//    mid-flight mode switch on a pacer that expects one evaluation per frame;
+		//  * and it left a focusBlock that skipped slEvaluateDLSSG while the runtime was
+		//    still eOn.
+		//
+		// The real hazard is the fence ping-pong below: every frame queues
+		// d3d11 Signal -> d3d12 Wait -> d3d12 Signal -> d3d11 Wait. It assumes the D3D12
+		// queue can always finish a frame, which is exactly what a window nobody can
+		// present to breaks. So: no interop, no fences, no frame generation while
+		// unfocused - one present that cannot wait, then out. This removes the deadlock
+		// by construction rather than trying to out-run it.
+		if (!winFocused) {
+			m_stage = "unfocused bypass";
+			// The only place DO_NOT_WAIT is correct: nothing downstream of this present
+			// depends on the flip having happened, because nothing downstream exists.
+			if (swapChain) {
+				const HRESULT hrOff = swapChain->Present(0,
+					Flags | static_cast<UINT>(DXGI_PRESENT_DO_NOT_WAIT));
+				// v0.73: no throw here. This runs inside the engine's own Present call
+				// frame, which has no handler for our exceptions: throwing out of it ends
+				// the process on the spot, with no crash log and no flushed log tail.
+				// The worst case for this path is a frame that was not shown, so report
+				// it once per focus loss and carry on.
+				if (!g_bypassReported) {
+					g_bypassReported = true;
+					SKSE::log::warn("[XRAY] BYPASS present hr={:#x} ({}) flags={:#x}",
+						static_cast<unsigned>(hrOff),
+						hrOff == DXGI_ERROR_WAS_STILL_DRAWING
+							? "buffer still in use, frame not shown" : "no flip pending",
+						Flags);
+				}
+				// A flip may still have happened, so keep the buffer index honest for the
+				// frame that resumes the normal path.
+				frameIndex = swapChain->GetCurrentBackBufferIndex();
+			}
+			return S_OK;   // FrameStamp stamps lastFrameEndMs on the way out
+		}
 
 		// v0.56 probe: does the engine hand DXGI_PRESENT_ALLOW_TEARING to Present?
 		// Present(0, ALLOW_TEARING) permits genuine tearing; the swap chain keeps the
@@ -678,11 +1145,62 @@ namespace FrameGen
 		if (colorOutWrapped && swapChainBufferWrapped)
 			d3d11Context->CopyResource(colorOutWrapped->resource11, swapChainBufferWrapped->resource11);
 
+		// v0.69: NR x frame generation are mutually exclusive again.
+		// v0.42 chained them on purpose and wrote the escape hatch into the same
+		// comment (ImguiMenu.cpp:373): 若叠加闪烁再回退互斥. The 2026-09-17 23:07
+		// run has both live at once -- INI NeuralRenderingEnabled=1 +
+		// FrameGeneration=1, [DLSSNR] frames 179->359->539->719 (~50 full-res
+		// NR evaluations per second), "D3D12 command contexts saturated", and
+		// real fps 53->27 the instant FG engaged. Two temporal processors writing
+		// history for the same frame is a direct flicker source: a static scene
+		// hides it (both histories agree, which is why the main menu looked fine),
+		// anything that moves exposes it (loading-screen model, world camera).
+		// Suppress NR whenever frame generation is actually running. Press the
+		// toggle key (0xC7) to turn FG off and NR comes straight back -- no second
+		// switch, the same NeuralRenderingEnabled flag still governs it.
+		const bool fgGeneratingNow =
+			dlssgMode && fg.settings.frameGeneration && fg.fgActive.load();
+		// ---- v1.01: NR may run IN SERIES with frame generation ----
+		// The mutual exclusion above is now a SETTING (NRAllowWithFrameGen,
+		// default 0 = unchanged). Rationale and evidence: see the header of
+		// tools/patch_v101_nrserial_1.py.
+		//
+		// The v0.69 conclusion ("stacking is a flicker source") came from a run
+		// that also had the v0.63 pacing defect (real fps 53->27 on FG engage)
+		// and full-resolution NR (NRRenderScale=1.00, "D3D12 command contexts
+		// saturated") live at the same time, so it is confounded and does not by
+		// itself justify keeping the feature pair impossible.
+		//
+		// The ORDER is already right for chaining: with dlssgMode on, nrColor is
+		// swapChainBufferWrapped->resource11 (line below), which is exactly the
+		// resource EvaluateDLSSG consumes, and the fence at "d3d11 Signal(fence)"
+		// orders NR's write before DLSS-G's read. NR runs first, DLSS-G
+		// interpolates the neural-rendered frame.
+		const bool nrSuppressed = fgGeneratingNow && !fg.settings.nrAllowWithFrameGen;
+		if (fg.settings.neuralRenderingEnabled && nrSuppressed) {
+			static bool nrStackLogged = false;
+			if (!nrStackLogged) {
+				nrStackLogged = true;
+				SKSE::log::warn("[FrameGen] DLSSNR suppressed: frame generation is active - "
+					"NR and DLSS-G are two temporal processors and stacking them is a "
+					"direct flicker source (v0.42 note: revert to mutual exclusion if "
+					"it flickers). Set NRAllowWithFrameGen=1 to chain them instead "
+					"(v1.01), or press the toggle key to disable FG and NR resumes.");
+			}
+		} else if (fg.settings.neuralRenderingEnabled && fgGeneratingNow) {
+			static bool nrChainLogged = false;
+			if (!nrChainLogged) {
+				nrChainLogged = true;
+				SKSE::log::info("[FrameGen] DLSSNR CHAINED with frame generation (v1.01, "
+					"NRAllowWithFrameGen=1): NR runs first on the real frame, DLSS-G then "
+					"interpolates the neural-rendered result.");
+			}
+		}
 		// v0.46b：回退到 colorOut 输入（DLSS 超分结果，1440p）——上一版 kMAIN subrect
 		// 方案在 DRS 失效时（kMAIN 恒 2560x1440，见 Upscale diag）取到的是画面左上角
 		// 裁剪，DLSS5 错位无效 + 超级性能冻结。DRS 失效是根因（kMAIN 不降到渲染分辨率），
 		// 需单独攻；此处先恢复 colorOut 全分辨率稳定态（DLSS5 有效果）。
-		if (fg.settings.neuralRenderingEnabled) {
+		if (fg.settings.neuralRenderingEnabled && !nrSuppressed) {
 			ID3D11Resource* nrColor = !dlssgMode
 				? (colorOutWrapped ? colorOutWrapped->resource11 : nullptr)
 				: (swapChainBufferWrapped ? swapChainBufferWrapped->resource11 : nullptr);
@@ -744,15 +1262,70 @@ namespace FrameGen
 			FidelityFX::GetSingleton()->Present(fg.fgActive.load());
 		}
 
-		// 等 D3D11 完成
-		m_stage = "d3d11 Signal(fence)";
-		DX::ThrowIfFailed(d3d11Context->Signal(d3d11Fence.get(), fenceValue));
-		m_stage = "d3d12 queue Wait";
-		DX::ThrowIfFailed(commandQueue->Wait(d3d12Fence.get(), fenceValue));
+		// v0.75: the cycle breaker.
+		//
+		// This used to be:
+		//     d3d11Context->Signal(d3d11Fence, v);
+		//     commandQueue->Wait(d3d12Fence, v);        // <-- D3D12 waits on D3D11
+		// while the end of the same frame asks the other direction
+		//     d3d11Context->Wait(d3d11Fence, v);        // <-- D3D11 waits on D3D12
+		//
+		// CORRECTION, and it matters. I first wrote here that doodlum's
+		// ENBFrameGeneration "uses the same fix". It does NOT - checked in
+		// D:/Modding/ENBFrameGeneration-src/src/DX12SwapChain.cpp:127-128 and
+		// 167-168, the reference keeps this exact two-way wait and works fine.
+		// So the crossing shape is NOT inherently deadlocking and no upstream
+		// implementation endorses removing it. Treat the change below as a
+		// hypothesis to be refuted, not as a port from a working reference.
+		//
+		// What is actually known (07:11 run, watchdog segment #10): fence held its
+		// initial value 1 for 50 s while frames reached 1614 and silent stayed at
+		// 5-27 ms. fenceValue 1 is what CreateInterop sets once, so zero Signals
+		// ever completed on the GPU while the CPU kept finishing frames. This
+		// chain is the only place where the two engine queues wait on each other,
+		// which makes it the first suspect - that is the whole argument.
+		//
+		// Set back to true to restore the old behaviour exactly, for comparison.
+		static constexpr bool kD3D12WaitsOnD3D11 = false;
+		if (kD3D12WaitsOnD3D11) {
+			m_stage = "d3d11 Signal(fence)";
+			DX::ThrowIfFailed(d3d11Context->Signal(d3d11Fence.get(), fenceValue));
+			m_stage = "d3d12 queue Wait";
+			DX::ThrowIfFailed(commandQueue->Wait(d3d12Fence.get(), fenceValue));
+		}
+		// fenceValue is still advanced once per frame: the D3D12 side Signals it
+		// after Present, and the D3D11 side waits on it. Only the D3D12->D3D11
+		// wait is withdrawn.
 		fenceValue++;
 
 		// 新帧，重置命令列表
 		m_stage = "allocator Reset";
+		// v0.75: bounded allocator guard. Reset() on an allocator whose work is
+		// still in flight is undefined behaviour, so check instead of assuming -
+		// but bound the wait. An unbounded wait here would be the v0.71 mistake
+		// again (it traded one hang for another); a bounded one can only convert a
+		// silent freeze into a log line and then carry on.
+		{
+			const UINT64 completed = d3d12Fence
+				? static_cast<UINT64>(d3d12Fence->GetCompletedValue()) : 0;
+			// fenceValue N is Signalled at the end of every frame, so the last
+			// value known to be complete is fenceValue-2 (fenceValue-1 is in flight).
+			const UINT64 need = (fenceValue > 2) ? (fenceValue - 2) : 0;
+			if (need > completed && d3d12Fence) {
+				static bool reported = false;
+				HANDLE h = ::CreateEventA(nullptr, FALSE, FALSE, nullptr);
+				if (h && d3d12Fence->SetEventOnCompletion(need, h) == S_OK) {
+					const DWORD w = ::WaitForSingleObject(h, 50);
+					if (w != WAIT_OBJECT_0 && !reported) {
+						reported = true;
+						SKSE::log::warn("[XRAY] GPU behind at allocator Reset: have {} need {} "
+							"(waited 50 ms) - frame {} . If this repeats every frame the D3D12 "
+							"queue is wedged.", completed, need, frameIndex);
+					}
+				}
+				if (h) ::CloseHandle(h);
+			}
+		}
 		DX::ThrowIfFailed(commandAllocators[frameIndex]->Reset());
 		m_stage = "cmdlist Reset";
 		DX::ThrowIfFailed(commandLists[frameIndex]->Reset(commandAllocators[frameIndex].get(), nullptr));
@@ -762,6 +1335,10 @@ namespace FrameGen
 			// v0.37（对齐 open-shaders EnsureFrameToken）：帧开头统一获取本帧 token——
 			// ReflexSleep/PCL marker/EvaluateDLSSG 全部用同一 token（之前 ReflexSleep
 			// 用旧 token、EvaluateDLSSG 才取新 → 同帧 marker 跨 token → RSYNC 错位）。
+			// v0.58: the single per-frame advance point. Drives both the
+			// new-frame test in EnsureFrameToken and the frame index handed to
+			// slGetNewFrameToken. Must run before any SL call of this frame.
+			++fg.streamline.frameSerial;
 			fg.streamline.EnsureFrameToken();
 			// v0.32（对齐 open-shaders Streamline.cpp:890-924）：Reflex sleep 先于
 			// PCL marker——RSYNC（vblank 同步 pacing）建立的必需输入。slReflexSleep
@@ -775,11 +1352,69 @@ namespace FrameGen
 			fg.streamline.PresentMarkerSimulationEnd();
 			fg.streamline.PresentMarkerRenderStart();
 
+			// v0.70: sample the menu state ONCE PER FRAME, here, BEFORE the guard
+			// below consumes it. The guard skips EvaluateDLSSG, and the sample used
+			// to be taken inside EvaluateDLSSG - so on every frame the guard engaged,
+			// menuFrames / menuEdges / the reset edge stayed frozen and the guard was
+			// unverifiable (menu=0 in the heartbeat could not be told apart from
+			// "the guard never ran").
+			fg.streamline.PollMenuState();
 			const bool fgOn = fg.fgActive.load();  // Home 键开关
 			bool dlssgOk = false;
-			// 防刷屏：连续失败计数（static，Present 渲染线程单线程）
-			static int dlssgFailCount = 0;
-			if (fgOn && fg.streamline.featureDLSSG && fg.GetFrameBuffer()) {
+			// 防刷屏：连续失败计数。v0.66：Transfusion 侧实测两个 tid 都在调
+			// slSetConstants，「Present 渲染线程单线程」的旧假设不成立
+			// ⇒ 改原子，消除多线程 ++ 的数据竞争。
+			static std::atomic<int> dlssgFailCount{ 0 };
+			// v0.63：菜单期间不插帧 —— DLSSGFlags::eEnableFullScreenMenuDetection 的
+			// 插件侧替代实现（那个 flag 到不了运行时，见 Streamline::MenuOpenNow）。
+			// 菜单是 2D UI，被当 3D 内容插值就是"主菜单画面持续闪"的直接来源。
+			// 走下面已有的直通拷回路径（backbuffer = 真实帧），用户 Home 开关意图不变。
+			const bool menuBlock =
+				fgOn && fg.settings.menuDisableFrameGen && fg.streamline.MenuIsOpen();
+			// v0.72: no focus term here any more. An unfocused window never reaches this
+			// point - it returns from the dependency-free bypass near the top of Present,
+			// before any fence traffic.
+			// v0.79 -- ladder runs BEFORE the menu guard.
+			// It used to live inside SetDLSSGOptions, which only runs in the else-if
+			// below, so a REJECTED multiplier could never step down while a menu was up
+			// and the ladder stayed pinned for the whole menu (08:59 run: 18.08 s of
+			// menu, generation 0, accept finally logged only at 08:59:49.097 - after the
+			// menu). The probe needs the menu time to calibrate: on the frame the world
+			// is entered it is already latched at the accepted multiplier.
+			if (fgOn && fg.streamline.featureDLSSG) {
+				menuBlockedFrames += menuBlock ? 1u : 0u;
+				menuUnblockedFrames += menuBlock ? 0u : 1u;
+				// v1.03: the governor gates the probe, so a stalled runtime stops
+				// being re-armed. It reads the interval of the frame that just
+				// elapsed (capUs is already maintained per real frame for Reflex).
+				// v1.03: the governor gates the probe, so a stalled runtime stops
+				// being re-armed. It measures the interval between successive
+				// entries into this function - wall clock, one sample per real
+				// frame, which is exactly what "the frame took 19945 ms" means in
+				// the XRAY line and what the watchdog's silent= field measures.
+				// (diag.reflexCapUs is the limiter's TARGET, not the elapsed time,
+				// so it cannot answer this question - and reading a target as a
+				// measurement is how a diagnostic starts lying.)
+				static std::atomic<long long> lastProbeEntryMs{ 0 };
+				const long long nowProbeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+					std::chrono::steady_clock::now().time_since_epoch()).count();
+				const long long prevProbeMs = lastProbeEntryMs.exchange(nowProbeMs);
+				const std::uint32_t probeFrameUs = (prevProbeMs > 0 && nowProbeMs > prevProbeMs)
+					? static_cast<std::uint32_t>(std::min<long long>((nowProbeMs - prevProbeMs) * 1000, 0xFFFFFFFF))
+					: 0u;
+				if (fg.streamline.MfgStallGovAllow(probeFrameUs)) {
+					fg.streamline.ProbeMfgLadder();
+				}
+				fg.streamline.ProbeMfgLadderNote(menuBlock);
+			} else if (fgOn && menuBlock && (++mfgWarned % 600u) == 1u) {
+				SKSE::log::warn("[MFG] menu guard is blocking frame gen ({} frames) but featureDLSSG is "
+					"false - the ladder cannot be calibrated (feature not loaded this session)", menuBlockedFrames);
+			}
+			if (menuBlock) {
+				// 这是**主动直通**，不是失败。必须清零计数器，否则在菜单里待满 ~2s
+				// 就会撞上 dlssgFailCount>120 把插帧整个自动关掉（Home 也救不回）。
+				dlssgFailCount = 0;
+			} else if (fgOn && fg.streamline.featureDLSSG && fg.GetFrameBuffer()) {
 				auto* cmdList = commandLists[frameIndex].get();
 				m_stage = "dlssg SetDLSSGOptions";
 				fg.streamline.SetDLSSGOptions(swapChainDesc.Width, swapChainDesc.Height,
@@ -791,6 +1426,18 @@ namespace FrameGen
 					depthWrapped ? depthWrapped->resource.get() : nullptr,
 					mvecWrapped ? mvecWrapped->resource.get() : nullptr,
 					*fg.GetFrameBuffer());
+			}
+			// v0.79 -- same pass/fail predicate the auto-disable block uses below,
+			// so the number cannot drift from it: a menu frame deliberately skips
+			// SetDLSSGOptions/EvaluateDLSSG and resets the failure counter.
+			const bool debugOk = dlssgOk || menuBlock;
+			if (!debugOk && fgOn && fg.streamline.featureDLSSG) {
+				if ((++mfgWarned % 600u) == 1u) {
+					SKSE::log::warn("[MFG] debug CHECK: Present skips SetDLSSGOptions even though the menu "
+						"guard is not engaged (menuBlock=0 frames={} blocked={} unblocked={}) - the ladder "
+						"cannot be calibrated while this lasts",
+						debugOk ? 1u : 0u, menuBlockedFrames, menuUnblockedFrames);
+				}
 			}
 			if (dlssgOk) {
 				dlssgFailCount = 0;
@@ -826,15 +1473,17 @@ namespace FrameGen
 			// dlssgOk 是否稳定、失败计数。不依赖 SL_LogLevel（SL SDK 日志常被关闭）。
 			// 帧号停滞 → token 不变/每 120 帧相同；插帧交替 → dlssgOk 振荡。
 			{
-				static int dlssgDiag = 0;
+				static std::atomic<int> dlssgDiag{ 0 };
 				if (++dlssgDiag % 120 == 0) {
 					SKSE::log::info("[FrameGen] DLSSG diag: fgOn={} dlssgOk={} token={:p} fail={}",
-						fgOn, dlssgOk, static_cast<const void*>(fg.streamline.frameToken), dlssgFailCount);
+						fgOn, dlssgOk, static_cast<const void*>(fg.streamline.frameToken),
+						dlssgFailCount.load());  // v0.66: atomic - fmt 不能直接格式化
 				}
 			}
 			DX::ThrowIfFailed(commandLists[frameIndex]->Close());
 			ID3D12CommandList* dlssgLists[] = { commandLists[frameIndex].get() };
 			commandQueue->ExecuteCommandLists(1, dlssgLists);
+			g_queuedDepth.fetch_add(1);   // v0.74: submitted, not yet fence-complete
 			m_stage = "d3d12 Present(dlssg)";
 			// v0.5.22：DLSSG 强制 VSync（SyncInterval=1）——dlss_g 的 RSYNC（vblank 同步器）
 			// 强依赖 VSync 建立（日志 "VSync with FG: supported"）；VSync 关 → RSYNC 未初始化
@@ -851,12 +1500,55 @@ namespace FrameGen
 			// active"；RSYNC 在内部处理 vblank 同步），宿主不再等 vblank 双重节流。
 			fg.streamline.PresentMarkerRenderEnd();
 			Get().streamline.PresentMarkerStart();
-			DX::ThrowIfFailed(swapChain->Present(0, Flags));
+			// v0.71: never block in Present. SwapEffect=FLIP_DISCARD with BufferCount=3
+			// makes Present wait for a queued buffer to be released, and DXGI stops
+			// releasing buffers for a window that is occluded or in the background.
+			// DO_NOT_WAIT turns that wait into DXGI_ERROR_WAS_STILL_DRAWING, which is the
+			// honest outcome for a frame nobody can see - and the difference between one
+			// dropped frame and a frozen game.
+			// v0.72: plain blocking Present again. With FLIP_DISCARD + 3 buffers this call
+			// is what bounds how far the CPU may run ahead of the GPU - and the next thing
+			// this function does is reset a command allocator. DO_NOT_WAIT (v0.71) removed
+			// that bound; the unfocused case never reaches here any more.
+			// v1.04b: stamp the entry so a watchdog tick that lands inside this call
+			// can say so. This is the only call between "d3d11 Wait" being written
+			// and the next frame's "present entry", so before this change it was
+			// invisible: the 19:04 run blamed the fence wait for 19.7 s of stall
+			// that belonged here.
+			g_presentEnteredMs.store(static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now().time_since_epoch()).count()));
+			const HRESULT hrPresent = swapChain->Present(0, Flags);
+			if (hrPresent != DXGI_ERROR_WAS_STILL_DRAWING)
+				DX::ThrowIfFailed(hrPresent);
+			// v0.74: Present returning S_OK does not mean the screen changed.
+			// Under FLIP_DISCARD with no new content DXGI returns success and
+			// shows the same buffer, which is exactly how a stalled GPU queue
+			// stays invisible: the frame still "presented". Record the counter
+			// DXGI keeps for us and whether our index still agrees with its own.
+			{
+				UINT pc = 0;
+				if (SUCCEEDED(swapChain->GetLastPresentCount(&pc)))
+					g_lastPresentCount.store(pc);
+				// v0.76 FIX: the comparison below was inverted. Present() advances
+				// the DXGI back-buffer index by construction on a successful flip,
+				// so comparing the post-Present index against the pre-Present
+				// frameIndex reported 1 for every *healthy* frame -- the 07:23 run
+				// (291/291) read as a total desync while it was in fact flipping
+				// perfectly. The state worth reporting is the opposite one: the
+				// index did not move, i.e. Present returned success without a flip.
+				const UINT real = swapChain->GetCurrentBackBufferIndex();
+				g_flipDesync.store(real == frameIndex ? 1ull : 0ull);
+			}
 			Get().streamline.PresentMarkerEnd();
 			m_stage = "d3d12 queue Signal";
 			DX::ThrowIfFailed(commandQueue->Signal(d3d12Fence.get(), fenceValue));
 			m_stage = "d3d11 Wait";
-			DX::ThrowIfFailed(d3d11Context->Wait(d3d11Fence.get(), fenceValue));
+			// v1.03b: bounded (was ID3D11DeviceContext4::Wait, which cannot time
+			// out). The watchdog only ever saw this stage name; on 2026-09-18
+			// 18:23 that line sat unchanged for 19681 ms on the FIRST real frame
+			// (frames=1), which is the freeze.
+			if (!WaitFenceBounded(fenceValue, kFenceWaitTimeoutMs))
+				m_stage = "d3d11 Wait TIMEOUT";
 			fenceValue++;
 			frameIndex = swapChain->GetCurrentBackBufferIndex();
 			return S_OK;
@@ -894,20 +1586,33 @@ namespace FrameGen
 
 		ID3D12CommandList* commandListsToExecute[] = { commandLists[frameIndex].get() };
 		commandQueue->ExecuteCommandLists(1, commandListsToExecute);
+		g_queuedDepth.fetch_add(1);   // v0.74: submitted, not yet fence-complete
 
 		// 呈现
 		m_stage = "d3d12 Present";
 		// v0.5.22：DLSSG 强制 VSync（同 dlssg 分支，RSYNC 依赖）
 		// v0.5.23：PCL marker
 		Get().streamline.PresentMarkerStart();
-		DX::ThrowIfFailed(swapChain->Present(1, Flags));
+		// v0.71: same guard as the DLSSG branch - an unfocused window must not be able
+		// to block the render thread inside Present.
+		// v0.72: same as the DLSSG branch - the unfocused path returns above, so this
+		// stays a plain blocking present.
+		g_presentEnteredMs.store(static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count()));
+		const HRESULT hrPresentFsr = swapChain->Present(1, Flags);
+		if (hrPresentFsr != DXGI_ERROR_WAS_STILL_DRAWING)
+			DX::ThrowIfFailed(hrPresentFsr);
 		Get().streamline.PresentMarkerEnd();
 
 		// 等 D3D12 完成
 		m_stage = "d3d12 queue Signal";
 		DX::ThrowIfFailed(commandQueue->Signal(d3d12Fence.get(), fenceValue));
 		m_stage = "d3d11 Wait";
-		DX::ThrowIfFailed(d3d11Context->Wait(d3d11Fence.get(), fenceValue));
+		// v1.03b: bounded, same as the menu-block path above. Both sites wrote
+		// the "d3d11 Wait" the watchdog reported for 19.7 s while the process
+		// had presented exactly one frame.
+		if (!WaitFenceBounded(fenceValue, kFenceWaitTimeoutMs))
+			m_stage = "d3d11 Wait TIMEOUT";
 		fenceValue++;
 
 		frameIndex = swapChain->GetCurrentBackBufferIndex();

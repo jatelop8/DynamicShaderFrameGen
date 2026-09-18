@@ -106,6 +106,11 @@ namespace FrameGen
 		// neural rendering（UI 前）。与帧生成互斥（跟 CS 一致：关 FG 才激活，避免
 		// 两套 temporal 叠加闪烁）。
 		bool neuralRenderingEnabled = false;  // INI NeuralRenderingEnabled
+		// v1.01: allow DLSS5 NR to run in series with frame generation.
+		// 0 = mutually exclusive (v0.69 behaviour, default).
+		// 1 = NR runs first on the real frame, then DLSS-G interpolates it.
+		// Read from INI (NRAllowWithFrameGen) and exposed in the GUI.
+		bool nrAllowWithFrameGen = false;
 		int  provider = 0;             // 0=FSR3（AMD 插帧，默认） 1=DLSSG（NVIDIA 插帧）
 		int  qualityMode = 1;          // DLSS 模式：0=DLAA 1=Quality 2=Balanced 3=Performance 4=UltraPerformance
 		// v0.41：渲染分辨率缩放（自定义 DRS）——引擎渲染分辨率 = 输出 × 该比例，DLSS
@@ -133,6 +138,10 @@ namespace FrameGen
 		// + 4x + 写死 60fps 渲染 = 229.6 present fps，超发 43%）。非 0 时直接作为
 		// 渲染帧率上限（fps），覆盖自动计算。
 		int  reflexFpsLimit = 0;       // INI ReflexFpsLimit
+		// v0.63：菜单期间不插帧（DLSSGFlags::eEnableFullScreenMenuDetection 的插件侧
+		// 替代实现 —— Transfusion 会把那个 flag 从 DLSS-G options 里剥掉）。菜单是 2D
+		// UI，被当 3D 内容插值 = 主菜单画面持续闪。0 = 旧行为（菜单也插帧）。
+		bool menuDisableFrameGen = true;  // INI MenuDisableFrameGen
 		int  presetDLSS = 0;           // DLSS 模型预设：0=Auto 1=J 2=K 3=L 4=M
 		float sharpness = 0.5f;        // v0.6.3：DLSS 超分锐化（0-1，0=关闭）；v0.7.21 默认 0.3→0.5（4K 重建需更明显锐化）
 		// v0.25：DLSS-NR（NGX 直调）已移除——NR 改由外部 ReShade 方案（dlss5-dx11-bridge +
@@ -229,6 +238,102 @@ namespace FrameGen
 
 		// Map hook 写入缓存（ID3D11DeviceContext_Map::thunk 调用）
 		void SetMappedFrameBuffer(FrameBuffer* a_fb) { mappedFrameBuffer = a_fb; }
+
+		// v0.67: camera snapshot continuity gate
+		// 实测 22:42 运行：det(inv(cur) x prev) 只取 -0.025248（77 帧）与 1.000000
+		// 两个值。行列式恒等式要求「同一套相机数据」时恰好为 1，出现**固定**的非 1
+		// 值只有一个解释：同一个 perFrame 缓冲每帧被写入**两组不同的相机数据**
+		// （菜单 3D 背景相机 vs 世界相机），frameBufferCopy 每帧被后写的那组覆盖。
+		// 于是 cur/prev 永远跨来源 -> det 非法 -> 钳成单位矩阵 -> DLSS-G 收到的
+		// 相机运动**恒为 0**（Transfusion 侧 4/4 次 clipToPrev=identity 佐证）。
+		// 闸门：相机世界位置必须与上一次接受的快照连续（一帧内跳跃 > 400 单位
+		// 不可能是真实运动）。连续拒绝 12 次判定为真实传送/场景切换，重新锁定。
+		bool AcceptCameraSnapshot(const FrameBuffer& a_src);
+		std::uint64_t snapAccept = 0;
+		std::uint64_t snapRejectJump = 0;
+		std::uint64_t snapRejectZero = 0;
+		std::uint64_t snapRelock = 0;
+		std::uint64_t snapArrivals = 0;   // 到达的快照总数（含被丢弃的）
+		float snapLastDist = 0.0f;        // 本次到达与上次接受的距离（sqrt 后）
+		float snapAcceptDist = 0.0f;      // 上一次被接受的到达距离
+		// v0.68: accepted-snapshot cumulative travel. Stays ~0 while the player walks
+		// => the captured camera is not tracking the view camera (capture-layer defect).
+		float snapPathLen = 0.0f;
+		bool  snapHaveLast = false;
+		float snapLastPos[3] = { 0.0f, 0.0f, 0.0f };
+		std::uint32_t snapConsecReject = 0;
+
+		// ---- v0.78: frozen-matrix detection (the real capture-layer defect) ----
+		// The 08:59 run proved a snapshot can be byte-identical across 2.3 s and
+		// 4196 accepts while the player walks: the position is stable (so the JUMP
+		// gate never fires) and the magnitude is healthy (so `usable` passes), yet
+		// the matrix never changes -> clipToPrev = I -> DLSS-G is told the camera
+		// is still -> clipDevMax == 0.0000 while moving.
+		//
+		// A still camera produces an identical matrix too, and that is legitimate,
+		// so identity alone is not the test. The test is: an identical matrix that
+		// arrives AFTER we have seen a different one in between. Two identical
+		// matrices separated by a different camera cannot both be “the scene is
+		// still“ - that is a stale perFrame slot being re-read.
+		bool  snapHaveLastMat = false;
+		float snapLastMat[4][4] = {};
+		std::uint64_t snapFrozenRepeats = 0;   // identical-after-different count
+		std::uint64_t snapFrozenReject = 0;    // rejected because of the above
+		bool  snapSawDifferentSinceRepeat = false;
+		// ---- v0.94: source locking (replaces the distance gate) --------------
+		// The 16:04 CTD proved one perFrame buffer carries SEVERAL cameras that
+		// take turns: two CONSTANT slots (-50,600,80) and (-160,160,128), plus a
+		// smoothly moving one (-50, 900->894, 96). Publishing all of them hands
+		// DLSS-G a camera hundreds of units from the last one every frame.
+		//
+		// v0.67 tried to pick one by distance (<400 units = same camera) and
+		// locked onto a CONSTANT slot while rejecting the moving one. The test
+		// asks the wrong question: not "is it far" but "does it CONTINUE the
+		// stream I am already publishing".
+		//
+		// An arrival continues the stream when it is a SMALL STEP from the last
+		// published position. A constant slot is recognisable because it repeats
+		// an exactly identical value, which a moving camera never does.
+		std::uint64_t snapLockPublish = 0;    // arrivals published onto the stream
+		std::uint64_t snapLockHold = 0;       // arrivals withheld (other source)
+		std::uint64_t snapLockRelock = 0;     // times the stream was re-acquired
+		std::uint32_t snapLockStill = 0;      // consecutive non-continuing arrivals
+		bool  snapLockHave = false;           // a stream is locked
+	// ---- v1.00: world-camera fingerprint lock ----
+	// The arrival stream carries two projection families that the distance
+	// test cannot separate (see tools/patch_v100_camfingerprint_1.py header):
+	//
+	//   WORLD  ProjUnj[0][0] = 0.149184   (player camera, view translation 0)
+	//   MENU   ProjUnj[0][0] = 0.8391     (3D menu / UI scene camera)
+	//
+	// 5.62x apart. The lock keeps the fingerprint of the family it accepted and
+	// refuses to re-acquire onto a different family, which is what let the MENU
+	// camera take over frameBufferCopy and freeze the picture.
+	float snapLockProj00 = 0.0f;      // ProjUnj[0][0] of the locked family
+	bool  snapLockProjValid = false;  // the fingerprint above is meaningful
+	std::uint64_t snapLockFamilyRej = 0;  // arrivals refused for being another family
+	std::uint64_t snapLockRelockJump = 0; // same-family teleports that took the anchor
+	std::uint64_t snapLockAdopted = 0;    // times a position snapshot was adopted
+		// ---- v0.83: instrument the gate so a log can name which branch fires ----
+		// snapFrozenReject / snapFrozenRepeats already existed but were never
+		// printed, so the 13:22 run could not tell whether the v0.78 frozen gate
+		// was the thing rejecting every arrival. These are observation only.
+		std::uint64_t mapPerFrameHits = 0;      // Map() matched the perFrame buffer
+		std::uint64_t unmapPerFrameHits = 0;    // Unmap() had a live tlsMappedFB
+		std::uint64_t snapIdenticalArrivals = 0;  // matrix == snapLastMat
+		std::uint64_t snapDifferentArrivals = 0;  // matrix != snapLastMat
+
+		// v0.86: arrivals dropped because CameraViewProjUnjittered is not a
+		// homogeneous matrix -- its [3][3] is not 1. The 14:20 run accepted a
+		// matrix whose fourth row was (-0.00391655, 0.999991, 0.0015, 0), i.e.
+		// [3][3] == 0: not a camera at all, but a mis-offset read of the
+		// perFrame constant buffer. Legitimate cameras in the same log
+		// (#2, #6301, #12349, #16764) all carry [3][3] == 1.
+		std::uint64_t snapRejectShape = 0;
+		// v0.84: how many times a different matrix reset the consecutive-identical
+		// run. If this stays 0 for a whole run, the gate is still counting without
+		// resetting and the freeze will come back.
+		std::uint64_t snapFrozenResets = 0;
 
 	private:
 		FrameBuffer* mappedFrameBuffer = nullptr;

@@ -18,6 +18,12 @@
 #include <wrl/client.h>
 #include <wrl/wrappers/corewrappers.h>
 
+// v0.62: hang forensics (watchdog thread + atomic frame stamps)
+#include <atomic>
+#include <thread>
+// v0.81: std::string is used as a return type by DescribePresentThreads().
+#include <string>
+
 #include <d3d11_4.h>
 #include <d3d12.h>
 
@@ -86,6 +92,27 @@ namespace FrameGen
 		virtual HRESULT STDMETHODCALLTYPE GetLastPresentCount(_Out_ UINT* pLastPresentCount) override;
 	};
 
+	// v0.73: the watchdog log path, resolved once at plugin load (see
+	// InitWatchdogLogPath in DX12SwapChain.cpp) and reused by DllMain during
+	// process detach.
+	void InitWatchdogLogPath();
+	const char* WatchdogLogPath();
+
+	// v1.03b: DLSS-G in-call state, published by the present thread and read by the
+	// watchdog thread. It lives at namespace scope because two translation units need
+	// it (Streamline.cpp sets it around slDLSSGSetOptions, DX12SwapChain.cpp names it
+	// in the watchdog line). Reading m_stage from the watchdog would be a data race on
+	// a member the render thread writes every frame; this atomic is the safe channel.
+	// The 18:23 freeze was investigated for two days behind a stage= that could only
+	// say "d3d11 Wait" - it named the fence wait, never the call that never returned.
+	extern std::atomic<int> g_inSetOptions;
+
+	// v1.04b: steady_clock millisecond stamp taken the instant a blocking Present is
+	// entered, published for the watchdog. Same reasoning and the same scope as
+	// g_inSetOptions above: the 19:04 run read "stage=d3d11 Wait" for 19.7 s because
+	// that name was the last one m_stage held before Present, not the call that
+	// stalled. Printing this stamp's age names Present() itself, with no inference.
+	extern std::atomic<long long> g_presentEnteredMs;
 	class DX12SwapChain
 	{
 	public:
@@ -126,9 +153,88 @@ namespace FrameGen
 		UINT frameIndex = 0;
 		UINT64 fenceValue = 0;
 
+		// v1.03b: how long a frame may wait for the D3D12 queue before the wait
+		// is abandoned and the frame dropped. 250 ms is ~40 intended frames at
+		// 160 Hz and 25x the rejected-frame cost measured in the 18:23 log
+		// (capUs=6289 => 6.29 ms), so it cannot fire on a merely slow frame -
+		// only on the parked one this guard was written for.
+		static constexpr std::uint32_t kFenceWaitTimeoutMs = 250;
+
 		// v0.5.5: Present stage marker for exception pinpointing (black screen debug)
 		const char* m_stage = "init";
 		const char* lastStage() const { return m_stage; }
+
+		// v1.03b: a bounded replacement for ID3D11DeviceContext4::Wait.
+		//
+		// That call has no timeout, so a D3D12 queue that never reaches the
+		// fence parks the render thread forever - which is precisely the
+		// 2026-09-18 18:23 freeze: silent=19681 ms, stage=d3d11 Wait, frames=1,
+		// and a 19945.3 ms frame in the main log. Polling the D3D12 fence
+		// instead costs one GetCompletedValue per millisecond of hitch and turns
+		// an unbounded stall into a dropped frame plus a log line that names the
+		// fence, its value, the value that was actually reached and how long it
+		// took. Returns true if the fence was reached.
+		bool WaitFenceBounded(UINT64 a_fenceValue, std::uint32_t a_timeoutMs);
+
+		// v0.62: hang forensics. The 21:40 run stopped writing at 21:40:44.4 -
+		// the [XRAY] heartbeat, the 2 s FPS probe and Transfusion's 5 s startup
+		// heartbeat all went silent together - and no line said WHICH call the
+		// render thread was parked in. The watchdog keeps writing from outside the
+		// render thread, and lastStage() names the call it is stuck on.
+		// lastStage() already existed (v0.5.5) but was only ever read by an
+		// exception handler, so a hang produced nothing at all.
+		// v0.74: read by the watchdog, written by the sampler thread and by
+		// Present(). These are the fields that make a GPU-side stall visible
+		// while every CPU-side field still looks healthy: the 07:11 run kept
+		// silent at 5-27 ms for 50 s while the D3D12 queue never advanced.
+		//   g_queuedDepth  frames submitted with ExecuteCommandLists and not
+		//                  yet retired by the fence. > 3 means the CPU ran
+		//                  ahead of the GPU, i.e. Present stopped providing
+		//                  backpressure.
+		//   g_lastPresentCount / g_flipDesync  does the swap chain actually
+		//                  flip, and does frameIndex still agree with the
+		//                  index DXGI reports.
+		std::atomic<unsigned long long> g_queuedDepth{ 0 };
+		std::atomic<unsigned long long> g_lastPresentCount{ 0 };
+		std::atomic<unsigned long long> g_flipDesync{ 0 };
+
+		std::atomic<std::uint64_t> frameCounter{ 0 };
+		std::atomic<long long> lastFrameEndMs{ 0 };
+		std::atomic<bool> watchdogStop{ false };
+
+		// v0.81 -- present-thread census (observation only; v0.80's latch was
+		// reverted). v0.80 refused every thread but the first one to enter
+		// Present(), on the assumption that two ids meant two presenters fighting
+		// over one swap chain. The 09:31 run disproved it: the "owner" had
+		// presented ONCE (it is the init thread) while the refused thread had
+		// presented 300+ times (it is the engine render thread). Refusing it
+		// stopped every real present - the freeze v0.80 was supposed to cure.
+		// So: observe, count, report, and never refuse.
+		struct PresentThreadStat
+		{
+			std::uint32_t tid = 0;
+			std::uint64_t frames = 0;
+			long long firstMs = 0;
+			long long lastMs = 0;
+		};
+		static constexpr int kPresentThreadMax = 8;
+		PresentThreadStat presentThreads[kPresentThreadMax];
+		std::atomic<int> presentThreadCount{ 0 };
+		std::uint64_t presentCensusFrames = 0;
+		void CensusPresentThread();
+		std::string DescribePresentThreads();
+
+		// v0.79 -- menu-guard decoupling.
+		// The MFG multiplier ladder used to live entirely behind Present()'s
+		// else-if branch, which the menu guard short-circuits. Exposed here so
+		// Present() can run the probe on EVERY frame and only then decide.
+		std::uint64_t menuBlockedFrames = 0;
+		std::uint64_t menuUnblockedFrames = 0;
+		std::uint64_t mfgWarned = 0;
+		void StartWatchdog();
+		// v0.73: samples the GPU timeline from its own thread, so the watchdog never
+		// has to enter the driver itself. See the definition for the two readings.
+		void StartGpuSampler();
 
 		DXGISwapChainProxy* swapChainProxy = nullptr;
 

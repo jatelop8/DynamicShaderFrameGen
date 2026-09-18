@@ -265,6 +265,7 @@ namespace FrameGen
 			<< "DLSSGFramesToGenerate=" << s.dlssgFramesToGenerate << "\n"
 			<< "MFGMaxFramesOverride=" << s.mfgMaxFramesOverride << "\n"
 			<< "ReflexFpsLimit=" << s.reflexFpsLimit << "\n"
+			<< "MenuDisableFrameGen=" << (s.menuDisableFrameGen ? 1 : 0) << "\n"
 			<< "Sharpness=" << s.sharpness << "\n"
 			<< "RenderResolutionScale=" << std::fixed << std::setprecision(2) << s.renderResolutionScale << "\n"
 			<< "MvecScaleOverride=" << std::fixed << std::setprecision(2) << s.mvecScaleOverride << "\n"

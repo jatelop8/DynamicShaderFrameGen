@@ -113,14 +113,31 @@ namespace FrameGen
 
 		std::ifstream f("Data/SKSE/Plugins/DynamicShaderFrameGen.ini");
 		if (!f.is_open()) {
+			char cwdMissing[MAX_PATH] = {};
+			::GetCurrentDirectoryA(MAX_PATH, cwdMissing);
 			SKSE::log::warn("[FrameGen] No INI found, using defaults (Enable={})", settings.enableFrameGen);
+			SKSE::log::warn("[XRAY] INI MISSING: cwd={} expected={}\\Data\\SKSE\\Plugins\\DynamicShaderFrameGen.ini",
+				cwdMissing, cwdMissing);
 			return;
+		}
+		// v0.61: name the file that actually won. The path is relative to the process
+		// CWD (the game directory) and a whole debug round was lost to “which copy of
+		// the ini is the game reading“ - resolved path + size is the only proof.
+		{
+			char cwd[MAX_PATH] = {};
+			::GetCurrentDirectoryA(MAX_PATH, cwd);
+			f.seekg(0, std::ios::end);
+			const auto iniSize = static_cast<long long>(f.tellg());
+			f.clear();
+			f.seekg(0, std::ios::beg);
+			SKSE::log::info("[XRAY] INI: cwd={} file={}\\Data\\SKSE\\Plugins\\DynamicShaderFrameGen.ini size={}B",
+				cwd, cwd, iniSize);
 		}
 		std::string line;
 		while (std::getline(f, line)) {
 			if (line.empty() || line[0] == ';' || line[0] == '#')
 				continue;
-			// v0.5：键名精确匹配（"Enable" 子串会误吞 "ForceEnable" 行——Enable 分支在前时
+			// v0.5：键名精确匹配（“Enable” 子串会误吞 “ForceEnable” 行——Enable 分支在前时
 			// ForceEnable 永远不执行且 enableFrameGen 被误置）
 			const auto eq = line.find('=');
 			if (eq == std::string::npos)
@@ -143,6 +160,9 @@ namespace FrameGen
 			// DLSS5 Neural Rendering（内置 NGX Feature 18）——与帧生成互斥
 			else if (key == "NeuralRenderingEnabled")
 				settings.neuralRenderingEnabled = readBool(line, false);
+			// v1.01：允许 DLSS5 NR 与帧生成串联（默认 0 = 保持 v0.69 的互斥）
+			else if (key == "NRAllowWithFrameGen")
+				settings.nrAllowWithFrameGen = readBool(line, false);
 			// DLSSNR 调优（GUI 滑块，INI 持久化；对齐 CS FoveatedRender）
 			else if (key == "NRIntensity")
 				nrTuning.intensity = std::clamp(readFloat(line, 0.8f), 0.0f, 2.0f);
@@ -179,6 +199,9 @@ namespace FrameGen
 			// v0.54：Reflex 渲染帧率上限（0 = 自动按 刷新率/总倍数 计算；见 Streamline::ReflexSleep）
 			else if (key == "ReflexFpsLimit")
 				settings.reflexFpsLimit = std::clamp(readInt(line, 0), 0, 480);
+			// v0.63：菜单期间不插帧（1=开，默认；0=旧行为，菜单也插帧 -> 菜单画面持续闪）
+			else if (key == "MenuDisableFrameGen")
+				settings.menuDisableFrameGen = readBool(line, true);
 			else if (key == "Sharpness") {
 				// v0.6.3：DLSS 超分锐化（0-1，0=关闭）
 				try {
@@ -224,7 +247,7 @@ namespace FrameGen
 		// 40 系解锁 hack（AdaMidpointFix/NgxMfgHook/MFGUnlock 已删除）。
 		// v0.48：DLSS5 Neural Rendering 由 INI/GUI 控制（NeuralRenderingEnabled）。
 		// renderScale 默认保持 1.0（全分辨率，DLSS5 完整效果）——降分辨率虽提帧数，
-		// 但神经网络在低分辨率上分析会导致脸部重光照细节减少（"没效果"）。性能优化
+		// 但神经网络在低分辨率上分析会导致脸部重光照细节减少（“没效果”）。性能优化
 		// 交给 GUI 滑块由用户自行权衡，不再默认降。
 		SKSE::log::info("[FrameGen] Config loaded: Enable={} ForceEnable={} ForceBorderless={} Provider={} FrameGeneration={} EnableUpscale={} QualityMode={} PresetDLSS={} SL_LogLevel={} ToggleKey={:#x} FpsOverlay={}",
 			settings.enableFrameGen, settings.forceEnable, settings.forceBorderless, settings.provider, settings.frameGeneration,
@@ -322,7 +345,7 @@ namespace FrameGen
 	{
 		// v0.7.15：Detours detour（CS detour_thunk 同款）——函数开头安全 detour，
 		// DetourAttach 自动复制原指令到 trampoline。v0.7.13 用 write_branch<5> 是
-		// "重定向现有 jmp/call"的语义（返回值 = 原跳转目标），直接 patch 函数开头
+		// “重定向现有 jmp/call”的语义（返回值 = 原跳转目标），直接 patch 函数开头
 		// 会丢原指令 → 首帧执行野地址 → 崩溃（crash-02-05-52 实锤）
 		MenuManagerDrawInterfaceStartHook::func = REL::RelocationID(79947, 82084).address();
 		DetourTransactionBegin();
@@ -378,6 +401,151 @@ namespace FrameGen
 
 	namespace
 	{
+		// v0.65: 每个线程各自的“当前已映射的 perFrame 指针”。这个钩子实测被
+		// 不止一个线程命中（Transfusion [MOTION] 的 tid 在 40760 / 3508 之间
+		// 交替），共享成员会被交叉覆盖，Unmap 时就会拷到别的线程的内存。
+		thread_local FrameBuffer* tlsMappedFB = nullptr;
+
+		// v0.67: camera snapshot continuity gate
+		// 取证用的小工具。矩阵是引擎的行主序 float[4][4]（FrameGen.h:73）。
+		inline float camDev(const Matrix& m)
+		{
+			float mx = 0.0f;
+			for (int r = 0; r < 4; ++r)
+				for (int c = 0; c < 4; ++c) {
+					float d = m.data[r][c] - (r == c ? 1.0f : 0.0f);
+					if (!(d == d)) return 1.0e30f;   // NaN
+					if (d < 0.0f) d = -d;
+					if (d > mx) mx = d;
+				}
+			return mx;
+		}
+		inline float camMag(const Matrix& m)
+		{
+			float mx = 0.0f;
+			for (int r = 0; r < 4; ++r)
+				for (int c = 0; c < 4; ++c) {
+					float v = m.data[r][c];
+					if (!(v == v)) return 1.0e30f;
+					if (v < 0.0f) v = -v;
+					if (v > mx) mx = v;
+				}
+			return mx;
+		}
+		inline float camDet3(const Matrix& m)
+		{
+			const float a = m.data[0][0], b = m.data[0][1], c = m.data[0][2];
+			const float d = m.data[1][0], e = m.data[1][1], f = m.data[1][2];
+			const float g = m.data[2][0], h = m.data[2][1], i = m.data[2][2];
+			return a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+		}
+		// v0.68：**触发规则本身是缺陷，必须修**（这不是加诊断，是修诊断）。v0.67 写成
+		// 「每 300 个到达打一次」，但到达计数是**整场累计**的：22:42 那次 45 秒主菜单
+		// （~600 到达）之后才进世界 3 秒（~90 到达）⇒ 取样点 1/301/601 全部落在菜单里，
+		// **世界阶段一条原始矩阵都看不到** —— 恰恰是最需要它的那一段。改为：
+		//   · 前 2 个到达必打；
+		//   · 判定翻转（接受 <-> 拒绝）时打，两次之间至少隔 0.5 s；
+		//   · 每 900 个到达兜底一次；
+		//   · 全场最多 80 组。
+		// “两组相机交替”这个事件的签名就是判定翻转，所以它必然被采到，日志量仍有上界。
+		inline void DumpCameraSnapshot(const FrameBuffer& b, std::uint64_t a_n, int a_verdict)
+		{
+			static int lastVerdict = -1;
+			static auto lastDump = std::chrono::steady_clock::now() - std::chrono::seconds(30);
+			static std::uint32_t dumps = 0;
+			const bool flip = (a_verdict != lastVerdict);
+			lastVerdict = a_verdict;
+			if (dumps >= 80u)
+				return;
+			const auto now = std::chrono::steady_clock::now();
+			const bool gapOk = std::chrono::duration<double>(now - lastDump).count() >= 0.5;
+			if (!((a_n <= 2u) || ((a_n % 900u) == 1u) || (flip && gapOk)))
+				return;
+			lastDump = now;
+			++dumps;
+			const Matrix* ms[3] = { &b.CameraViewProjUnjittered, &b.CameraProjUnjittered, &b.CameraViewInverse };
+			const char* nm[3] = { "ViewProjUnj", "ProjUnj", "ViewInv" };
+			for (int k = 0; k < 3; ++k) {
+				const auto& d = ms[k]->data;
+				SKSE::log::info("[CAM] raw #{} {} | {:.6g} {:.6g} {:.6g} {:.6g} | {:.6g} {:.6g} {:.6g} {:.6g} "
+					"| {:.6g} {:.6g} {:.6g} {:.6g} | {:.6g} {:.6g} {:.6g} {:.6g}",
+					a_n, nm[k],
+					d[0][0], d[0][1], d[0][2], d[0][3],
+					d[1][0], d[1][1], d[1][2], d[1][3],
+					d[2][0], d[2][1], d[2][2], d[2][3],
+					d[3][0], d[3][1], d[3][2], d[3][3]);
+			}
+
+			// ---- v0.87b: all ten fields, with a [3][3] verdict per field ----
+			// The three matrices above contradict each other: in block #1 the
+			// ProjUnj fourth row is a textbook perspective projection and ViewInv
+			// is a clean rotation, yet ViewProjUnj's fourth row carries ViewInv
+			// data -- impossible for View x Proj. So we now walk EVERY declared
+			// field and print its fourth row plus [3][3]. That single line says
+			// which offsets the engine actually populates: a real viewProj must
+			// end in (0,0,0,1). If c16 (CameraViewProj) is healthy while c24
+			// (CameraViewProjUnjittered) is not, the field is simply not written
+			// at the offset we assume, and no gate can repair that.
+			{
+				struct { const Matrix* m; const char* n; } all[10] = {
+					{ &b.CameraView,                    "c0  View"        },
+					{ &b.CameraProj,                    "c8  Proj"        },
+					{ &b.CameraViewProj,                "c16 ViewProj"    },
+					{ &b.CameraViewProjUnjittered,      "c24 ViewProjU"   },
+					{ &b.CameraPreviousViewProjUnjittered, "c32 PrevVPU"  },
+					{ &b.CameraProjUnjittered,          "c40 ProjU"       },
+					{ &b.CameraProjUnjitteredInverse,   "c48 ProjUInv"    },
+					{ &b.CameraViewInverse,             "c56 ViewInv"     },
+					{ &b.CameraViewProjInverse,         "c64 ViewProjInv" },
+					{ &b.CameraProjInverse,             "c72 ProjInv"     },
+				};
+				for (int k = 0; k < 10; ++k) {
+					const auto& d = all[k].m->data;
+					const float w = d[3][3];
+					SKSE::log::info("[FLD] #{} {:<14s} row3=({:.6g},{:.6g},{:.6g},{:.6g}) "
+						"[3][3]={:.6g} dev={:.6g} det={:.6g} mag={:.6g} {}",
+						a_n, all[k].n,
+						d[3][0], d[3][1], d[3][2], d[3][3],
+						w, camDev(*all[k].m), camDet3(*all[k].m), camMag(*all[k].m),
+						(std::fabs(w - 1.0f) <= 1.0e-3f) ? "OK" : "BAD");
+				}
+			}
+			SKSE::log::info("[CAM] raw #{} pos=({:.4f},{:.4f},{:.4f},{:.4f}) prevPos=({:.4f},{:.4f},{:.4f},{:.4f}) "
+				"devVP={:.6g} detVP={:.6g} detProj={:.6g} magVP={:.6g}",
+				a_n, b.CameraPosAdjust[0], b.CameraPosAdjust[1], b.CameraPosAdjust[2], b.CameraPosAdjust[3],
+				b.CameraPreviousPosAdjust[0], b.CameraPreviousPosAdjust[1], b.CameraPreviousPosAdjust[2],
+				b.CameraPreviousPosAdjust[3],
+				camDev(b.CameraViewProjUnjittered), camDet3(b.CameraViewProjUnjittered),
+				camDet3(b.CameraProjUnjittered), camMag(b.CameraViewProjUnjittered));
+
+			// ---- v0.87: raw byte dump (diagnostic only) -------------------
+			// Emit the raw float stream from the FrameBuffer base so the true
+			// layout can be measured offline. Rationale in
+			// tools/add_v087_rawdump.py: the dumped matrices contradict each
+			// other. In the 14:20 log, block #1 has a ProjUnj whose fourth row
+			// is (0, 0, -0.0666178, 0.0666667) -- a textbook perspective
+			// projection -- and a ViewInv that is a clean rotation, yet its
+			// ViewProjUnj fourth row is (0, -0.991228, -0.132164, 0), which is
+			// ViewInv data. View x Proj cannot have that fourth row. Either the
+			// field offsets are wrong or the struct stride is wrong; both make
+			// every offset wrong at once, so no gate can fix it.
+			//
+			// Bounds: sizeof(FrameBuffer) is 672 B. Dump exactly that much so the
+			// read can never leave the mapped region (a_src points at the live
+			// D3D11 mapping; a longer read could touch an unmapped page).
+			{
+				constexpr int kFloatCount =
+					static_cast<int>(sizeof(FrameBuffer) / sizeof(float));   // 168
+				const float* raw = reinterpret_cast<const float*>(&b);
+				for (int off = 0; off < kFloatCount; off += 8) {
+					SKSE::log::info("[RAW] +{:#06x} | {:.7g} {:.7g} {:.7g} {:.7g} | {:.7g} {:.7g} {:.7g} {:.7g}",
+						off * 4,
+						raw[off + 0], raw[off + 1], raw[off + 2], raw[off + 3],
+						raw[off + 4], raw[off + 5], raw[off + 6], raw[off + 7]);
+				}
+			}
+		}
+
 		struct ID3D11DeviceContext_Map
 		{
 			static HRESULT thunk(ID3D11DeviceContext* This, ID3D11Resource* pResource, UINT Subresource,
@@ -386,10 +554,15 @@ namespace FrameGen
 				HRESULT hr = func(This, pResource, Subresource, MapType, MapFlags, pMappedResource);
 				// 防御：perFrame 缓冲指针判空（引擎加载早期可能未初始化）；
 				// 只记录指针，内容在 Unmap 时拷贝（Map 时引擎可能还没写完）
+				tlsMappedFB = nullptr;
 				if (SUCCEEDED(hr) && pMappedResource) {
 					auto* perFrame = FrameGen::GetPerFrameBuffer();
-					if (perFrame && *perFrame == pResource && pMappedResource->pData)
-						Get().SetMappedFrameBuffer(static_cast<FrameBuffer*>(pMappedResource->pData));
+					if (perFrame && *perFrame == pResource && pMappedResource->pData) {
+						tlsMappedFB = static_cast<FrameBuffer*>(pMappedResource->pData);
+						// v0.83: does the engine still write this buffer after entering
+						// the world? If this stops rising, the loss is upstream of the gate.
+						++Get().mapPerFrameHits;
+					}
 				}
 				return hr;
 			}
@@ -400,20 +573,404 @@ namespace FrameGen
 		{
 			static void thunk(ID3D11DeviceContext* This, ID3D11Resource* pResource, UINT Subresource)
 			{
-				func(This, pResource, Subresource);
-				// v0.5：Unmap 时内容完整 → 值拷贝到自有缓冲（Present 线程读稳定副本，
-				// 消除跨线程读半写 UB；同时让 Unmap 钩子有意义）
-				auto* perFrame = FrameGen::GetPerFrameBuffer();
-				if (perFrame && *perFrame == pResource) {
+				// v0.65：拷贝必须发生在**原始 Unmap 之前**。旧版在 func() 之后才读
+				// pData —— 那时已经解映射，驱动可以立刻回收/复用这块内存，实测约
+				// 45% 的帧因此读到全零（心跳 prevVP 恰好 = 1.0000 = 零矩阵指纹）。
+				if (tlsMappedFB) {
 					auto& fg = Get();
-					if (fg.GetFrameBuffer()) {
-						fg.frameBufferCopy = *fg.GetFrameBuffer();
+					++fg.unmapPerFrameHits;   // v0.83: arrivals that DO reach the gate
+					// v0.67：只接受「与上一次接受的快照时间连续」的相机数据。
+					// 同一个 perFrame 缓冲每帧写入两组不同相机（菜单 3D 背景 + 世界）
+					// 时，后写的那组会把先写的冲掉 —— 闸门挡住它，frameBufferCopy 与
+					// 自维护 prev 历史才可能是同一来源（det(inv(cur) x prev)=1）。
+					if (fg.AcceptCameraSnapshot(*tlsMappedFB))
 						fg.SetMappedFrameBuffer(&fg.frameBufferCopy);
-					}
+					tlsMappedFB = nullptr;
 				}
+				func(This, pResource, Subresource);
 			}
 			static inline REL::Relocation<decltype(thunk)> func;
 		};
+	}
+
+	// v0.67: camera snapshot continuity gate
+	// 判定量 = CameraPosAdjust（相机世界位置，心跳 pos= 与 Transfusion
+	// [MOTION] cameraPos= 打的是同一个值）。Skyrim 人物高约 100 单位，真实相机
+	// 一帧移动顶多几十单位；实测两组数据相差 1300+ 单位 —— 那不可能是同一个相机。
+	// 被拒绝的快照**不写入** frameBufferCopy，于是 cur/prev 恒定来自同一来源，
+	// det(inv(cur) x prev) 才会是 1。
+	namespace
+	{
+		constexpr float kCamJumpTol = 400.0f;
+		constexpr float kCamJumpTol2 = kCamJumpTol * kCamJumpTol;
+		constexpr std::uint32_t kCamRelockAfter = 12;
+
+		// ---- v0.94: source locking thresholds ---------------------------------
+		// A real camera advances by a SMALL step per arrival. The crash log's
+		// genuine stream moved 900 -> 894 over ~50 arrivals, i.e. well under one
+		// unit per arrival; the interleaved constants differed by hundreds. 50
+		// units is two orders of magnitude above the real step and two orders
+		// below the inter-source gap, so it separates them with no ambiguity.
+		constexpr float kCamStepTol = 50.0f;
+		constexpr float kCamStepTol2 = kCamStepTol * kCamStepTol;
+		// How many consecutive non-continuing arrivals before the locked stream
+		// is declared dead and a new source may be acquired. 90 arrivals is ~1.5 s
+		// at 60 Hz: long enough that an interleaved slot cannot steal the lock
+		// (it never gets 90 in a row while the real camera keeps arriving),
+		// short enough that a genuine scene change re-locks promptly.
+		constexpr std::uint32_t kCamStillTol = 90;
+
+	// v0.78: how many consecutive identical-matrix arrivals (with a different
+	// matrix seen in between) before we call the slot stale. The 08:59 run showed
+	// 4196 repeats in 2.34 s, so 120 trips in well under one frame at that rate
+	// and cannot misfire on a legitimate still period that later resumes moving.
+	//
+	// v0.84: raised 120 -> 600, and the counter is now actually reset when a
+	// different matrix arrives (v0.78 only incremented it). 120 frames is 2 s
+	// at 60 fps, which a legitimate still scene reaches trivially -- a menu, a
+	// forge, reading a book. A false positive froze the picture permanently,
+	// while a late detection costs one stale frame, so the trade is lopsided.
+	constexpr std::uint32_t kCamFrozenTol = 600;
+	}
+
+	bool FrameGen::AcceptCameraSnapshot(const FrameBuffer& a_src)
+	{
+		++snapArrivals;
+
+		const float px = a_src.CameraPosAdjust[0];
+		const float py = a_src.CameraPosAdjust[1];
+		const float pz = a_src.CameraPosAdjust[2];
+		const bool usable = (px == px) && (py == py) && (pz == pz) &&
+		                    camMag(a_src.CameraViewProjUnjittered) > 1.0e-6f &&
+		                    camMag(a_src.CameraView) > 1.0e-6f;
+		if (!usable) {
+			++snapRejectZero;
+			DumpCameraSnapshot(a_src, snapArrivals, 2);
+			SKSE::log::warn("[CAM] #{} rejected: empty/garbage snapshot (magVP={:.6g} devVP={:.6g})",
+				snapArrivals, camMag(a_src.CameraViewProjUnjittered), camDev(a_src.CameraViewProjUnjittered));
+			return false;
+		}
+
+		// ---- v0.89: SHAPE rejection REMOVED (was v0.86) ----------------------
+		// The v0.86 guard threw away every snapshot whose c24[3][3] != 1, on the
+		// theory that a view-projection matrix must be affine. Measured cost:
+		//
+		//     acc=13380  shape(rejected)=8734   -> 80.6% of arrivals discarded
+		//
+		// And the discarded population was NOT garbage. Its positions glide:
+		//
+		//     #6988  pos=(-50.0, 880.7, 94.3)
+		//     #7612  pos=(-49.9, 860.4, 92.6)
+		//     #8238  pos=(-49.7, 840.4, 90.8)
+		//     #8862  pos=(-49.5, 821.6, 89.2)
+		//
+		// while the snapshots that DID pass were frozen at
+		// pos=(-160.00,160.00,128.00) with move=0.0000, path=0.00 for 400+ frames.
+		//
+		// Since AcceptCameraSnapshot() gates SetMappedFrameBuffer(), a rejection
+		// means DLSS-G never sees that snapshot and reprojects with the previous
+		// accepted one. Feeding it a parked camera while discarding the moving one
+		// reproduces the exact symptom: geometry and characters pinned to one
+		// stale view while only engine-native particles (fire) keep animating.
+		//
+		// The premise was never verified -- it was inferred from a single odd dump
+		// and treated as structural. This engine's camera block demonstrably
+		// carries a perspective term, so [3][3] == 0 is legal here.
+		//
+		// The guard is removed. The OBSERVATION is kept, now non-destructive:
+		// count the population and log the full last row plus the 3x3 determinant
+		// for the first few and every 500th, so the next run can show what these
+		// matrices are without costing a run.
+		{
+			const float w = a_src.CameraViewProjUnjittered.data[3][3];
+			const float dw = (w > 1.0f) ? (w - 1.0f) : (1.0f - w);
+			if (!(dw <= 1.0e-3f)) {
+				++snapRejectShape;              // kept as a COUNTER only
+				if (snapRejectShape <= 5u || (snapRejectShape % 500u) == 0u) {
+					const auto& d = a_src.CameraViewProjUnjittered.data;
+					SKSE::log::info("[CAM] #{} non-affine w={:.6g} ACCEPTED (v0.89) "
+						"row3=({:.6g},{:.6g},{:.6g},{:.6g}) det3={:.6g} "
+						"pos=({:.1f},{:.1f},{:.1f})",
+						snapArrivals, w, d[3][0], d[3][1], d[3][2], d[3][3],
+						camDet3(a_src.CameraViewProjUnjittered), px, py, pz);
+				}
+				// NO return false: the snapshot is published as before v0.86.
+			}
+		}
+
+		// ---- v0.78: frozen-matrix gate (must run BEFORE the jump gate) --------
+		// A stale perFrame slot passes `usable` (non-zero, non-NaN) and produces
+		// d2 == 0, so the jump gate below can never see it. Detect it by matrix
+		// identity instead: an identical matrix arriving after a *different* one
+		// cannot be a still scene.
+		{
+			const Matrix& m = a_src.CameraViewProjUnjittered;
+			bool identical = false;
+			if (snapHaveLastMat) {
+				identical = true;
+				for (int r = 0; r < 4 && identical; ++r) {
+					for (int k = 0; k < 4; ++k) {
+						if (snapLastMat[r][k] != m.data[r][k]) { identical = false; break; }
+					}
+				}
+			}
+			// v0.83: split the two populations so the log shows how much of the
+			// stream is byte-identical (a stale slot) vs genuinely changing.
+			if (identical)
+				++snapIdenticalArrivals;
+			else
+				++snapDifferentArrivals;
+
+			if (identical && snapSawDifferentSinceRepeat) {
+				// Same matrix as last time, but we saw a different camera in
+				// between => this is a stale slot being re-read, not a still scene.
+				++snapFrozenRepeats;
+				// v0.84: reject only after kCamFrozenTol *consecutive* identical
+				// arrivals. The counter is reset below as soon as a different matrix
+				// shows up (v0.78 never reset it, so it grew without bound and the
+				// gate latched on permanently -- see add_v084_gate_reset.py header).
+				if (snapFrozenRepeats > kCamFrozenTol) {
+					++snapFrozenReject;
+					// v0.93: gates observe, they do not discard.
+					//
+					// Keeping snapLastMat untouched is still correct (the slot is
+					// still suspected stale, so the next arrival must be compared
+					// against the same reference), but the snapshot is no longer
+					// withheld from DLSS-G.
+					//
+					// Why the old `return false` was fatal: SetMappedFrameBuffer()
+					// runs ONLY on accept (FrameGen.cpp:583), so a rejection left
+					// mappedFrameBuffer null, GetFrameBuffer() null, and Present
+					// skipped SetDLSSGOptions altogether. Log: blocked=483 vs
+					// unblocked=1. v0.89 removed this same return from the shape
+					// gate after proving 80.6% of the discarded population was the
+					// real moving camera; the two other gates were left alone.
+				}
+			} else if (!identical) {
+				snapSawDifferentSinceRepeat = true;
+				// v0.84: a genuinely different matrix proves the stream is alive, so
+				// the stale-slot run is over and the consecutive count restarts.
+				// This reset is the actual fix: without it the count only ever grows,
+				// so past kCamFrozenTol every identical frame is refused forever.
+				snapFrozenRepeats = 0;
+				++snapFrozenResets;
+			}
+			for (int r = 0; r < 4; ++r)
+				for (int k = 0; k < 4; ++k)
+					snapLastMat[r][k] = m.data[r][k];
+			snapHaveLastMat = true;
+		}
+
+		float d2 = 0.0f;
+		if (snapHaveLast) {
+			const float dx = px - snapLastPos[0];
+			const float dy = py - snapLastPos[1];
+			const float dz = pz - snapLastPos[2];
+			d2 = dx * dx + dy * dy + dz * dz;
+		}
+		snapLastDist = snapHaveLast ? std::sqrt(d2) : 0.0f;
+
+		// ---- v0.94: source lock (replaces the distance gate) ------------------
+		//
+		// WHY THE DISTANCE GATE HAD TO GO
+		//
+		// v0.67..v0.93 decided which arrival to publish by distance: "a camera
+		// cannot move 400 units in one frame, so a far arrival is a different
+		// source -- reject it". That test cannot work, because the two things it
+		// tries to separate are NOT separated by distance:
+		//
+		//   - the real camera, moving smoothly, and
+		//   - two CONSTANT slots re-read every frame,
+		//
+		// all coexist in one perFrame buffer, and the distance between them
+		// changes as the player walks. Worse, it never re-asks the question: it
+		// locks onto whichever source it saw first and then rejects the others
+		// forever. The 16:04 log shows exactly that -- it held (-160,160,128),
+		// a CONSTANT, while rejecting the smoothly moving (-50,900->894,96):
+		//
+		//     #9015 JUMP rejected: pos=(-1101.1,880.9,114.0) last=(-160.0,160.0,128.0)
+		//     accepting      pos=(-160.0,160.0,128.0)   <- 806 times, CONSTANT
+		//
+		// WHY RELEASING EVERYTHING (v0.93) WAS WORSE
+		//
+		// v0.93 removed the veto entirely, so all sources took turns owning
+		// frameBufferCopy. Consecutive frames handed DLSS-G cameras hundreds of
+		// units apart, every frame, and the game CTD'd:
+		//
+		//     #7818 RELOCK after 1 consecutive jumps -> pos=(-1101.1,880.9,114.0)
+		//     #7824 RELOCK after 1 consecutive jumps -> pos=( -126.3,211.2,188.9)
+		//     #7837 RELOCK after 1 consecutive jumps -> pos=(    0.0,  0.0,  1.0)
+		//     path=845264.19 -> 864056.62
+		//
+		// THE ACTUAL QUESTION
+		//
+		// Not "is this arrival far", but "does it CONTINUE the stream I am
+		// already publishing?". A real camera advances by a small step between
+		// consecutive arrivals; a stale slot is either constant or unrelated. So:
+		//
+		//   - while locked, publish ONLY arrivals that step <= kCamStepTol from
+		//     the last published position (that is the same source continuing);
+		//   - count the rest; if the locked stream does not continue for
+		//     kCamStillTol arrivals in a row, the stream is gone (scene change,
+		//     loading screen) and the next arrival re-acquires the lock.
+		//
+		// The lock guarantees exactly one source is published at a time, which is
+		// what DLSS-G needs, and it never relies on a teleport heuristic.
+		// ---- v1.00: projection-family fingerprint ----
+		// ProjUnj[0][0] identifies the projection kind. Compare it against the
+		// family currently locked, with a RELATIVE tolerance so the test does
+		// not depend on the resolution / FOV this run happens to use.
+		//
+		// v1.00b: these two live OUTSIDE the block below, because the accept path
+		// (which refreshes snapLockProj00) sits after the block has closed.
+		const float proj00 = a_src.CameraProjUnjittered.data[0][0];
+		const bool projOk = (proj00 == proj00) && (proj00 > 1.0e-6f);
+		// v1.03: one line the first time the magnitude-class escape is used, so
+		// "the escape fired" can be told apart from "the ratio test passed".
+		static bool snapLockAltFamilyLogged = false;
+
+		{
+			bool sameFamily = true;
+			if (projOk && snapLockProjValid) {
+				// v1.03: the ratio test alone cannot classify a UNIT projection.
+				// +-2% separates two world cameras because both sit near 0.15, but
+				// a ratio is meaningless ACROSS magnitudes: the 18:23 log showed
+				// proj00=1 against a locked 0.149184 -> ratio 6.7031 -> rejected
+				// as "another render pass". proj00 == 1.0 is a unit / orthographic
+				// projection - a legal second camera, not a render pass of the
+				// first one. Classify by magnitude class first, ratio second.
+				const bool unitProj = (proj00 > 0.995f) && (proj00 < 1.005f);
+				const bool lockUnit = (snapLockProj00 > 0.995f) && (snapLockProj00 < 1.005f);
+				if (unitProj != lockUnit) {
+					// Different magnitude classes: a DIFFERENT camera, but a legal
+					// one. The lock must be allowed to move to it, otherwise a unit
+					// projection seen once pins the lock for good and every real
+					// frame is rejected forever. Only a 2D render pass would be a
+					// genuine intruder, and none has ever been observed at
+					// |proj00| == 1.0; admitting one costs a lock refresh, while
+					// refusing a legal camera costs the whole feature.
+					sameFamily = true;
+					if (!snapLockAltFamilyLogged) {
+						snapLockAltFamilyLogged = true;
+						SKSE::log::info("[CAM] projection family: magnitude classes differ "
+							"(proj00={:.6g} locked={:.6g}) - treating as a legal second "
+							"camera, not a render pass (v1.03)", proj00, snapLockProj00);
+					}
+				} else {
+					const float ratio = proj00 / snapLockProj00;
+					// +-2%: two cameras of the SAME magnitude class sit far enough
+					// apart to separate cleanly (the two real world families are
+					// 5.62x apart) while tolerating float drift and a
+					// resolution/FOV nudge.
+					sameFamily = (ratio > 0.98f) && (ratio < 1.02f);
+				}
+			}
+
+			const bool continues = snapLockHave && snapHaveLast && (d2 <= kCamStepTol2);
+			if (!snapLockHave) {
+				// First arrival, or the locked stream died: acquire.
+				snapLockHave = true;
+				snapLockStill = 0;
+				if (snapLockRelock > 0u || snapAccept > 0u)
+					++snapLockRelock;
+			} else if (!continues) {
+				// A different source showed up. Hold it; do not publish, and do
+				// not let it move the anchor. If the locked stream keeps failing
+				// to continue, it is genuinely gone and we re-acquire below.
+				++snapLockHold;
+				// ---- v1.00: a different projection family may NEVER re-acquire ----
+				// v0.94 re-acquired unconditionally after kCamStillTol non-continuing
+				// arrivals, so a foreign camera that arrived monotonically for 90
+				// frames was adopted and then "continued" itself forever. That is the
+				// freeze. Only an arrival from the SAME family may take over.
+				if (!sameFamily) {
+					++snapLockFamilyRej;
+					if (snapLockFamilyRej <= 3u || (snapLockFamilyRej % 500u) == 0u) {
+						SKSE::log::info("[CAM] #{} family rejected: proj00={:.6g} locked={:.6g} "
+							"ratio={:.4f} pos=({:.1f},{:.1f},{:.1f}) dist={:.1f} - another render "
+							"pass, never re-acquires",
+							snapArrivals, proj00, snapLockProj00,
+							snapLockProjValid ? (proj00 / snapLockProj00) : 0.0f,
+							px, py, pz, std::sqrt(d2));
+					}
+					if (d2 > kCamJumpTol2) ++snapRejectJump;
+					return false;
+				}
+				// ---- v1.00g: same-family non-continuation re-acquires NOW ----
+				// Reaching this point already proves three things at once:
+				//   1. a lock exists,
+				//   2. the arrival is in the SAME projection family as the lock
+				//      (a different family returned above), and
+				//   3. d2 > kCamStepTol2 -- it did not continue the stream.
+				//
+				// For a same-family stream, (3) has exactly two causes: the player
+				// teleported / the scene changed (measured 250 units going into the
+				// world, 1259 into the frozen run), or the slot stopped updating.
+				// Both mean the old anchor is stale, and holding it only makes
+				// DLSS-G reproject against a parked view -- which IS the freeze.
+				// So take the new anchor immediately.
+				//
+				// v1.00f used kCamJumpTol (400) here and therefore MISSED the 250
+				// unit transition into the world; the offline regression caught it
+				// (adoptions stayed at 38, stream parked on the loading camera).
+				// The boundary is kCamStepTol, which is the very test that put us
+				// in this branch.
+				++snapLockStill;
+				++snapLockRelockJump;
+				if (snapLockRelockJump <= 5u) {
+					SKSE::log::info("[CAM] #{} same-family step break: pos=({:.1f},{:.1f},{:.1f}) "
+						"locked=({:.1f},{:.1f},{:.1f}) dist={:.1f} proj00={:.6g} still={}/{} "
+						"- adopting the new anchor",
+						snapArrivals, px, py, pz,
+						snapLastPos[0], snapLastPos[1], snapLastPos[2],
+						std::sqrt(d2), proj00, snapLockStill, kCamStillTol);
+				}
+				// The anchor is stale. Re-acquire on this arrival and drop the stale
+				// anchor so the next test is made against the new source rather
+				// than the old one.
+				snapLockHave = true;
+				snapLockStill = 0;
+				++snapLockRelock;
+				snapHaveLast = false;
+			} else {
+				snapLockStill = 0;
+			}
+			++snapLockPublish;
+		}
+
+		frameBufferCopy = a_src;
+		++snapAccept;
+		// ---- v1.00: remember which family owns the stream ----
+		if (projOk) {
+			snapLockProj00 = proj00;
+			snapLockProjValid = true;
+		}
+		snapAcceptDist = snapHaveLast ? std::sqrt(d2) : 0.0f;
+		snapPathLen += snapAcceptDist;
+		DumpCameraSnapshot(a_src, snapArrivals, 1);
+		// v0.68：捕获层的**运动轨迹**。这是判定「被捕获的相机到底有没有跟着玩家动」
+		// 的那一行 —— 若玩家在走而这里 move/path 恒为 0.000，则根因在捕获层（读到的
+		// 相机数据不跟踪真实相机），任何重投影侧的修法都救不了。节流 0.25 s，最多 200 行。
+		{
+			static auto lastAccLog = std::chrono::steady_clock::now() - std::chrono::seconds(30);
+			static std::uint32_t accLogs = 0;
+			const auto now = std::chrono::steady_clock::now();
+			if (accLogs < 200u &&
+				(snapAccept == 1u || std::chrono::duration<double>(now - lastAccLog).count() >= 0.25)) {
+				lastAccLog = now;
+				++accLogs;
+				SKSE::log::info("[CAM] acc #{} pos=({:.2f},{:.2f},{:.2f}) move={:.4f} path={:.2f} "
+				"devVP={:.6g} detVP={:.6g} magVP={:.6g} consecJmp={}",
+				snapAccept, px, py, pz, snapAcceptDist, snapPathLen,
+				camDev(a_src.CameraViewProjUnjittered), camDet3(a_src.CameraViewProjUnjittered),
+				camMag(a_src.CameraViewProjUnjittered), snapConsecReject);
+			}
+		}
+		snapLastPos[0] = px;
+		snapLastPos[1] = py;
+		snapLastPos[2] = pz;
+		snapHaveLast = true;
+		return true;
 	}
 
 	void FrameGen::InstallContextHooks(ID3D11DeviceContext* a_context)
@@ -601,7 +1158,7 @@ namespace FrameGen
 
 		// v0.26：ForceBorderless——在激活判定之前强制窗口化 + 无边框铺满屏幕。
 		// 帧生成硬性要求 Windowed swapchain；玩家若设了全屏独占（Windowed=false）
-		// 则 shouldProxy=false → 插帧不生效（用户/发布反馈的常见"打不开"原因）。
+		// 则 shouldProxy=false → 插帧不生效（用户/发布反馈的常见“打不开”原因）。
 		// 强制后：swapchain 为 windowed → 激活判定通过；窗口无边框铺满 → 视觉
 		// 等同全屏。Present 每帧 EnsureBorderless 防游戏/INI 改回。
 		if (fg.settings.forceBorderless && pSwapChainDesc && pSwapChainDesc->OutputWindow) {
@@ -634,7 +1191,7 @@ namespace FrameGen
 		// 游戏/ENB 拿到的链是 ENB 包装的 proxy → ENB 渲染注入与 Present 照常 → ENB 效果保留。
 		// v0.29（DLSSG ENB 兼容修复）：**两模式统一走此路径**——DLSSG 原来直接
 		// D3D11CreateDevice + 自建 D3D12 链，完全绕过 ENB → ENB 不加载 + 画面异常
-		// （用户 20:07 实锤 "改成 DLSS 后 ENB 也不加载了，菜单按不出来，只有 FSR 有用"）。
+		// （用户 20:07 实锤 “改成 DLSS 后 ENB 也不加载了，菜单按不出来，只有 FSR 有用”）。
 		// hk_IDXGIFactory_CreateSwapChain 已按 provider 传 dlssgMode（581 行），
 		// 拦截 ENB 的 CreateSwapChain → 建 DLSSG/FSR3 D3D12 链 + proxy。
 		if (shouldProxy && pAdapter) {
@@ -660,8 +1217,8 @@ namespace FrameGen
 			// 这里只要求 SL 初始化成功即可建 proxy；具体 feature 不支持时 Present 直通兜底。
 			// v0.25：dlssnr 准备已移除（NR 走 ReShade 外挂方案）
 			// v0.27（DLSSG 频闪修复）：provider=1（DLSSG）**不在此提前 slInit**——
-			// SL 错误 "Plugins already initialized but could be using the wrong device,
-			// please call slSetD3DDevice immediately after creating desired device"
+			// SL 错误 “Plugins already initialized but could be using the wrong device,
+			// please call slSetD3DDevice immediately after creating desired device“
 			// （dlss_g 插件 slInit 时 D3D12 设备还不存在 → 用错误上下文初始化 → 插帧
 			// 异常 → 频闪进不去游戏，19:47 SL 日志实锤）。DLSSG 的 slInit 挪到
 			// CreateD3D12Device 内（D3D12 设备创建后、SetD3D12Device 前）。
@@ -670,8 +1227,8 @@ namespace FrameGen
 				fg.streamline.LoadInterposer(fg.settings);
 			// v0.27（DLSSG 延迟 slInit）：provider=1 时这里的 initialized 恒 false 是
 			// **正常状态**（slInit 在 CreateD3D12Device 内、D3D12 设备就绪后才执行）——
-			// 不能当失败走标准路径（否则 DLSSG 永不启动。19:54 实锤："Streamline init
-			// failed - using standard path" + proxy 未激活 + DRS 1.0 无插帧）。
+			// 不能当失败走标准路径（否则 DLSSG 永不启动。19:54 实锤：“Streamline init
+			// failed - using standard path“ + proxy 未激活 + DRS 1.0 无插帧）。
 			// provider=0（FSR3）保持原逻辑：SL 超分初始化失败才走标准路径。
 			if (fg.settings.provider != 1 && !fg.streamline.initialized) {
 				SKSE::log::warn("[FrameGen] Streamline init failed - using standard path");
@@ -761,8 +1318,8 @@ namespace FrameGen
 
 		// v0.5：feature 检测移到设备设置后（SL 要求 device 已设——设备前检测会误判不支持）
 		// v0.27：SetD3D12Device 已在 CreateD3D12Device 内（设备创建后立即）调用——
-		// 此处重复调用会触发 SL "Plugins already initialized but could be using the
-		// wrong device"（19:47 日志 "D3D12 device set" ×2 实锤），已删除。
+		// 此处重复调用会触发 SL “Plugins already initialized but could be using the
+		// wrong device“（19:47 日志 ”D3D12 device set“ ×2 实锤），已删除。
 		streamline.CheckFeatures(a_adapter);
 		streamline.PostDevice();
 
@@ -778,7 +1335,7 @@ namespace FrameGen
 		// v0.25.4（Bug1 修复）：两模式按各自插帧引擎的可用性判断——
 		// provider=0（FSR3）用 **AMD FSR3 模块**（module 加载成功 = FG 可用），
 		// **不再用 featureDLSS（DLSS 超分）判断**——AMD 显卡没有 DLSS → 旧逻辑
-		// featureDLSS=false → FSR3 插帧被误关 → "很多电脑装后打不开"。
+		// featureDLSS=false → FSR3 插帧被误关 → “很多电脑装后打不开”。
 		// provider=1（DLSSG）用 featureDLSSG。
 		const bool featureOk = settings.provider == 1 ?
 			streamline.featureDLSSG :

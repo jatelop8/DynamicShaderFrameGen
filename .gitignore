@@ -22,3 +22,15 @@ vcpkg_installed/
 # Python
 __pycache__/
 *.pyc
+
+# --- 2026-09-18: MFG 调试期的备份/中间产物（不进版本库，避免 321 个未跟踪文件）---
+src/*.bak-*
+src/*.bak-*
+src/*.pre-*
+src/*.keep-*
+src/*.broken-*
+src/backup-*/
+tools/_tmp*
+*.log
+DLSSG-Transfusion.log
+perf.csv

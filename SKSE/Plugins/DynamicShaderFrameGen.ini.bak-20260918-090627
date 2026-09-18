@@ -1,0 +1,190 @@
+[FrameGeneration]
+; DynamicShaderFrameGen - FrameGen (frame interpolation) for Skyrim (works with ENB)
+; Requires NVIDIA RTX 20 series+ GPU with DLSS 3 capable drivers.
+; Enable=1 turns frame generation on; 0 off.
+Enable=1
+
+; Force enable even when display refresh <120Hz (frame gen is best at 120Hz+).
+; On low refresh screens artifacts/tearing are possible; use with care.
+ForceEnable=1
+
+; Force borderless fullscreen (v0.26): frame generation REQUIRES a windowed
+; swapchain - exclusive fullscreen disables it. When on, the game window is
+; forced to borderless + maximized to the monitor (looks identical to
+; fullscreen) so FG always activates regardless of in-game display settings.
+ForceBorderless=1
+
+; FrameGen (frame interpolation) provider:
+; 0 = FSR3 tech - universal, works on ALL GPUs (NVIDIA & AMD) - default, most stable
+; 1 = DLSSG (NVIDIA only) - multi-frame generation. The Streamline runtime
+;     reports numFramesToGenerateMax=1 on Ada (RTX 40) and older, so on a 40
+;     series card 3x/4x only works with an external MFG kernel unlocker
+;     installed - see MFGMaxFramesOverride below. Changing this needs a game
+;     restart (the swapchain path is rebuilt).
+; NOTE (v0.52): changing Provider in the in-game menu has NO effect on the session you
+; are in - the swapchain path is chosen once, at swapchain creation. The menu writes the
+; new value here immediately and logs it, so the next launch applies it. The log line
+; "FPS probe: ... cfgProvider=" shows what the running session uses; if it differs from
+; Provider= above, the game needs a restart (the GUI also shows PENDING RESTART).
+Provider=1
+
+; Frame interpolation on/off inside the D3D12 pipeline:
+; 1 = interpolate (fps doubles, default); 0 = no interpolation.
+FrameGeneration=1
+
+; NOTE (v0.52): EnableUpscale and PresetDLSS are still PARSED but NOT WIRED to anything
+; - DLSS upscaling was removed in v0.48 (upscaling now happens in Main_PostProcessing),
+; so editing them changes nothing. The live render-scale control is RenderResolutionScale
+; (or QualityMode, when RenderResolutionScale=0).
+EnableUpscale=1
+
+; v0.24: FPS overlay (top-right bold white). 1=on 0=off. Toggle in-game via GUI menu (Home key).
+FpsOverlay=1
+
+; DLSS quality mode (upscaling mode):
+; 0=DLAA (native res, best quality, heaviest) 1=Quality (recommended)
+; 2=Balanced 3=Performance 4=UltraPerformance
+QualityMode=1
+
+; Render resolution scale (v0.41): engine renders at output x this ratio, DLSS
+; upscales back to output. 0 = Auto (follow Quality Mode table above);
+; 0.30-1.00 = custom ratio (0.70 recommended: big FPS gain, true upscaling).
+; In-game: hold Home -> menu slider (live adjust, Save to INI).
+RenderResolutionScale=0.44
+
+; DLSS model preset (depends on driver and DLSS version):
+; 0=Auto (recommended) 1=J 2=K 3=L 4=M
+PresetDLSS=0
+Sharpness=0.5
+
+; DLSS-G multi-frame generation (v0.31/v0.50): interpolated frames per real frame.
+; 1=2x, 2=3x, 3=4x, 4=5x, 5=6x - clamped to GPU/driver support.
+; RTX 50 (Blackwell): native up to 5 (6x). RTX 40 (Ada): driver reports max 1 (2x).
+; RTX 30/20: no native frame generation at all.
+DLSSGFramesToGenerate=3
+
+; MFG max-frames override (v0.50) - multi-frame generation on RTX 40/30/20.
+; The Streamline runtime reports numFramesToGenerateMax=1 on Ada and older, which
+; clamps every request down to 2x. This override raises the reported ceiling so
+; higher multipliers are actually submitted.
+;   0 = off, follow the hardware report exactly (default, always safe)
+;   1 = 2x   2 = 3x   3 = 4x   4 = 5x   5 = 6x
+; IMPORTANT: raising the ceiling only changes what is REQUESTED. The frame
+; generation kernels for Ada/Ampere/Turing are not in nvngx_dlssg.dll, so you also
+; need an external kernel unlocker that supplies them, for example:
+;   - DLSSG-Transfusion      (RTX 40, native DLSS-G path, 2x-6x)
+;   - dlssg_for_sm86         (RTX 30, embeds DLSSG 310.1 runtime)
+;   - dlssg_for_sm75         (RTX 20, experimental)
+;   - NVIDIA MFG Bridge      (RTX 20/30, nvngx.dll proxy)
+; Without such an unlocker a high multiplier has no kernel to run and the result
+; is a black screen or a hang. Enable an unlocker first, then raise this value.
+MFGMaxFramesOverride=3
+; ---------------------------------------------------------------------------
+; v0.63 - Frame limiter value handed to Reflex (0 = auto). Unit: fps.
+;
+; NAME CHANGED ON PURPOSE (v0.54 -> v0.63): this value limits the rate at which
+; frames are PRESENTED to the panel (flips), not the rate the engine renders at.
+; v0.54 divided the refresh rate by the multiplier ("39 fps render => 156
+; presented") on the assumption that the limiter sits on the render side. It does
+; not, so the division landed twice and the render side collapsed.
+;
+;   measured 2026-09-17 21:54 run, 3840x2160, multiplier 4:
+;     heartbeat capUs = 25641 for every sample        (25.641 ms = 39.0 fps)
+;     real frame interval = 102.56 ms                 (4.0000 x 25641 us)
+;     65 consecutive perf.csv frames: 102.55/102.56/102.57  (spread 0.02 ms)
+;     DLSSG: "presented per real frame = 4"
+;   => 4 flips per real frame at a 25.641 ms flip budget = 102.56 ms per real
+;      frame = 9.75 real fps. Standing in a menu that is a mild shimmer; the
+;      3 fabricated frames of every 4 have to reproject across up to 102 ms of
+;      motion, so it falls apart as soon as the camera moves.
+;
+; Auto (0) = refresh rate - 1 fps, i.e. the flip schedule sits just under the
+; panel. On a 160Hz panel that is 159 fps => 159/4 = ~39.75 real fps.
+; Because the cap is below the refresh rate, over-submission (the thing v0.54 was
+; trying to fix) still cannot happen.
+; Logged whenever it changes:
+;   [Streamline] Reflex FLIP cap = 159 fps (6289us) - panel 160Hz, 4 flips per
+;   real frame => ~159 presented fps (real = cap/flips)
+;
+; Set an explicit fps here to override the automatic value. 0 = auto.
+; ---------------------------------------------------------------------------
+ReflexFpsLimit=0
+
+; v0.63 - Do not submit frames to DLSS-G while a game menu is open.
+; 1 = menus are not interpolated (default; a menu is 2D UI and interpolating it
+;     shows up as a continuously flickering menu screen).
+; 0 = old behaviour (menus are interpolated too).
+; This is the plugin-side replacement for DLSSGFlags::eEnableFullScreenMenuDetection:
+; the shim strips that flag from the DLSS-G options before the runtime sees it
+; (log line "Option C active: stripped eEnableFullscreenMenuDetection from
+; DLSS-G options (game flags=0x00000010 -> 0x00000010)" - identical before and
+; after), so the flag can never take effect and the plugin does it itself.
+; The Home/toggle key is unaffected.
+MenuDisableFrameGen=1
+; DLSSG-Transfusion (RTX 40) drives the multiplier with ITS OWN hotkeys, live and
+; without a game restart: Ctrl+Alt+2 / Ctrl+Alt+3 / Ctrl+Alt+4 = 2x / 3x / 4x,
+; Page Up / Page Down steps the multiplier, Ctrl+Alt+D toggles fixed/dynamic mode.
+; Its overlay is switched on by "showOverlay" in DLSSG-Transfusion.json. Do not try
+; to drive it from the game's video menu. If Transfusion is active, the value above
+; is only the plugin's request; the log line
+;   "DLSSG presented per real frame = N"
+; is the runtime's own measurement and the only reliable proof of what is actually
+; being generated (1 = no interpolation, 4 = 4x).
+
+; ---------------------------------------------------------------------------
+; v0.57 - mvecScale override: the motion-vector scale handed to DLSS-G every frame.
+;
+; sl::Constants::mvecScale tells DLSS-G how to normalise the motion vectors so the
+; values land in [-1,1]. NVIDIA's guide: "values in {-1,1} range -> scale factor
+; should be {1,1}". The standard full-frame path should therefore be identity;
+; open-shaders agrees ("must keep mvecScale at identity or DLSS massively
+; over-estimates motion").
+;
+; This engine's motion vectors are reported as displacement / screen width, which
+; already reaches 1.0 for a full-screen pan, i.e. already inside [-1,1]. The legacy
+; value used below is 1/renderScale (= 1.5 at QualityMode=1, a 50% motion
+; over-estimate), tuned in-game at v0.49k against a different defect.
+;
+;   0.00 = legacy 1/renderScale (default, behaviour unchanged)
+;   1.00 = identity, the reference-implementation value
+;
+; The effective value is logged once per run:
+;   [Streamline] mvecScale = { 1.5000, 1.5000 } (renderScale=0.6667 override=0.00)
+;
+; NOTE: the build's POST_BUILD step copies THIS file over the one in the mod folder
+; (copy_if_different). Set the value here if it must survive a rebuild; edit the
+; deployed copy only for a one-off A/B, and do not rebuild in between.
+; ---------------------------------------------------------------------------
+MvecScaleOverride=1.00
+
+; ===== DLSS 5 Neural Rendering (NGX Feature 18, built in since v0.48) =====
+; Neural re-lighting / detail synthesis applied to the upscaled frame, before
+; UI composition. Runs in series with frame generation. Requires RTX 20+ and
+; nvngx_dlssnr.dll 310.8.x under Shaders/Upscaling/Streamline/.
+NeuralRenderingEnabled=1
+
+; Tuning (also available as in-game sliders: hold Home -> DLSS5 Neural Rendering)
+; Intensity of the neural render pass (0.0-2.0, 1.0 = neutral).
+NRIntensity=0.80
+; Local contrast / tone shaping strength (0.0-2.0).
+NRLocalTone=0.75
+; Local structure synthesis strength - surface detail (0.0-2.0).
+NRLocalStructure=0.90
+; Skin structure synthesis strength (0.0-2.0).
+NRSkinStructure=0.90
+; Style preset 0-3 (3 = default).
+NRStyle=3
+; Automatic masking - keeps flat / uniform areas untouched (recommended).
+NRAutoMask=1
+; UI correction - compensate for neural pass applied over UI (usually 0).
+NRUICorrection=0
+; DLSSNR input resolution scale (0.25-1.00). 1.0 = full-resolution analysis
+; (best detail); lower = faster (fewer FP8 ops) but less detail. 0.75 rec.
+NRRenderScale=1.00
+
+; Streamline log level: 0=Off 1=Default 2=Verbose (troubleshooting; keep 0 normally)
+StreamlineLogLevel=0
+
+; In-game toggle key (virtual key code, hex):
+; 0x24 = Home (default); press once to enable, again to disable. Immediate effect, no restart needed.
+ToggleKey=0xC7
