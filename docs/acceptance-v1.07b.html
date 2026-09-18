@@ -2,179 +2,112 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DFG v1.07b 验收卡</title>
+<title>DFG 下一次运行：10 秒实验与三条判据</title>
 <style>
   :root{
-    --bg:#f6f5f2; --card:#fff; --ink:#1e1c19; --dim:#6b665e; --line:#ddd8d0;
-    --ok:#1d6f42; --bad:#a33224; --warn:#8a6100; --accent:#3c5a73;
-    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
-  }
-  @media (prefers-color-scheme: dark){
-    :root{
-      --bg:#17181a; --card:#1f2124; --ink:#e8e6e1; --dim:#9d988f; --line:#33363a;
-      --ok:#5fbf86; --bad:#e07b6c; --warn:#d9ac4a; --accent:#7fa8c9;
-    }
+    --bg:#f6f4f0; --card:#ffffff; --ink:#23201c; --dim:#6b645c;
+    --line:#ddd6cc; --a:#2f6f4f; --b:#9c5a1e; --c:#8a2f2f; --hi:#f3ede2;
   }
   *{box-sizing:border-box}
-  body{margin:0;padding:28px 20px 60px;background:var(--bg);color:var(--ink);
-       font:15px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans-serif;}
+  body{margin:0;padding:32px 20px 64px;background:var(--bg);color:var(--ink);
+       font:15px/1.75 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
   .wrap{max-width:880px;margin:0 auto}
-  h1{font-size:22px;margin:0 0 4px;letter-spacing:.3px}
-  .sub{color:var(--dim);font-size:13px;margin-bottom:22px}
+  h1{font-size:23px;margin:0 0 6px;letter-spacing:.2px}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:26px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
-        padding:18px 20px;margin-bottom:16px}
-  h2{font-size:15px;margin:0 0 12px;letter-spacing:.4px;text-transform:none;
-     color:var(--accent);font-weight:600}
-  code,kbd{font-family:var(--mono);font-size:13px;background:rgba(127,168,201,.14);
-       padding:1.5px 6px;border-radius:4px}
-  pre{font-family:var(--mono);font-size:12.5px;line-height:1.6;overflow-x:auto;
-      background:rgba(127,168,201,.09);border-left:3px solid var(--accent);
-      padding:12px 14px;border-radius:0 6px 6px 0;margin:10px 0}
-  .rule{display:flex;gap:14px;align-items:flex-start;padding:12px 0;
-        border-bottom:1px dashed var(--line)}
-  .rule:last-child{border-bottom:0;padding-bottom:0}
-  .n{flex:0 0 26px;height:26px;border-radius:50%;background:var(--accent);color:#fff;
-     display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700}
-  .n.s{background:var(--dim)}
-  table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:6px}
-  th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:top}
-  th{color:var(--dim);font-weight:600;font-size:12.5px}
-  .ok{color:var(--ok);font-weight:700}
-  .bad{color:var(--bad);font-weight:700}
-  .warn{color:var(--warn);font-weight:700}
-  .dim{color:var(--dim)}
-  .tag{display:inline-block;font-size:11.5px;padding:1px 7px;border-radius:20px;
-       border:1px solid var(--line);color:var(--dim);margin-left:6px}
-  .foot{color:var(--dim);font-size:12.5px;text-align:center;margin-top:26px}
+        padding:20px 22px;margin:0 0 18px}
+  h2{font-size:16px;margin:0 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  code,kbd{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace;
+       background:var(--hi);padding:1px 5px;border-radius:4px;font-size:13px}
+  pre{background:#2b2823;color:#e8e2d8;padding:12px 14px;border-radius:8px;
+      overflow-x:auto;font-size:13px;line-height:1.6;margin:10px 0}
+  ol,ul{margin:0;padding-left:22px} li{margin:7px 0}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:9px 11px;text-align:left;vertical-align:top}
+  th{background:var(--hi);font-weight:600}
+  td.k{font-weight:700;text-align:center;width:34px}
+  .a{color:var(--a)} .b{color:var(--b)} .c{color:var(--c)}
+  .why{background:#fbf7ef;border-left:3px solid #cbb98f;padding:12px 14px;
+       border-radius:0 6px 6px 0;margin:12px 0;font-size:14px;color:#4c453b}
+  .no{background:#f7eeee;border-left:3px solid #c08b8b;padding:12px 14px;
+      border-radius:0 6px 6px 0;margin:12px 0;font-size:14px;color:#5a3c3c}
+  .muted{color:var(--dim);font-size:13px}
 </style>
 </head>
 <body>
 <div class="wrap">
 
-  <h1>DynamicShaderFrameGen v1.07b · 验收卡</h1>
-  <div class="sub">
-    构建 <code>01ce63c</code> · tag <code>v1.07b</code> · DLL 1,325,568 B ·
-    md5 <code>ae44a128…6452d</code> · 已部署到 MOD 文件夹（构建 == 部署，逐字节相同）
+  <h1>下一次运行：一个 10 秒的实验，三条判据</h1>
+  <div class="sub">DynamicShaderFrameGen · v1.07b · 2026-09-18</div>
+
+  <div class="card">
+    <h2>为什么需要这一趟</h2>
+    <p>22:02 那份日志里，<strong>被发布给 DLSS-G 的相机原地不动</strong>（逐帧位移 <code>move=0.0000</code>，
+    位置在 1e-2 精度下几十秒不变），于是 <code>clipToPrev = I</code>，生成的帧是当前帧的副本 —— 画面不可能前进。</p>
+    <p>但 <code>move=0.0000</code> <strong>只有在玩家在走的时候才是错误</strong>。那份日志里玩家几乎没动，
+    所以它<strong>没有回答</strong>最关键的问题。缺的是一个数据点，不是又一个猜想。</p>
+    <div class="why">项目里早就埋了这条探针，注释原文就是为这一刻写的：<br>
+      “若玩家在走而这里 move/path 恒为 0.000，则根因在<strong>捕获层</strong>（读到的相机数据不跟踪真实相机），
+      任何重投影侧的修法都救不了。”</div>
   </div>
 
   <div class="card">
-    <h2>进游戏跑一次，然后只跑这一条命令</h2>
-<pre>cd /d/Modding/DynamicShaderFrameGen
-python tools/analyze_session.py</pre>
-    <div class="dim" style="font-size:13px;margin-top:8px">
-      它读 <code>DynamicShaderFrameGen.log</code> 与 <code>.watchdog.log</code>，只取<b>最后一次</b>运行。
-      下面三条同时成立才算修好。
-    </div>
+    <h2>要做的两件事</h2>
+    <ol>
+      <li>进游戏 → 等 4x 跑起来（左上角帧数明显高于实帧）→
+          <strong>按住 <kbd>W</kbd> 往前走约 10 秒，同时转视角</strong> → 退出。</li>
+      <li>在工程目录跑：<pre>python tools/analyze_session.py</pre>
+          <span class="muted">它会先核对横幅是不是 <code>v1.07b</code>。不是的话后面都不作数。</span></li>
+    </ol>
   </div>
 
   <div class="card">
-    <h2>三条判据</h2>
-
-    <div class="rule">
-      <div class="n">1</div>
-      <div>
-        <b>横幅是 <code>v1.07b</code></b><br>
-        <span class="dim">build 行应显示 <code>build  v1.07b  compiled …</code>，
-        且<b>没有</b> <span class="bad">PROBLEM: this log was written by …</span></span><br>
-        <span class="bad">若报版本不符 ⇒ DLL 根本没换上去，下面两条都不作数。</span>
-      </div>
-    </div>
-
-    <div class="rule">
-      <div class="n">2</div>
-      <div>
-        <b>第 6 项 <code>proj00=</code> 是 <code>0.149184</code></b><br>
-        <span class="dim">这是 <b>世界相机那一族</b>的投影指纹。画面冻的第三成因就是它变成了
-        <code>0.8391</code>（3D 菜单族）——一个"给已经不存在的世界"的相机。</span>
-      </div>
-    </div>
-
-    <div class="rule">
-      <div class="n">3</div>
-      <div>
-        <b>第 6 项 <code>release events: N</code> 里 <b>N ≥ 1</b></b><br>
-        <span class="dim">主菜单 → 世界的转换应当触发一次族锁释放。0 次说明边沿没传到。</span>
-      </div>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>三种结果怎么读</h2>
+    <h2>三条判据 —— 看到哪个，根因就是哪个</h2>
     <table>
-      <tr><th style="width:30%">看到的</th><th>含义</th><th style="width:27%">怎么办</th></tr>
+      <tr><th>判据</th><th>日志里看到</th><th>根因</th><th>下一步查哪里</th></tr>
       <tr>
-        <td class="ok">三条全中</td>
-        <td>锁在正确的族上、释放路径通了 —— 画面应当开始跟着动。仍需你在游戏里确认视觉结果。</td>
-        <td>继续验证 4x 的观感与稳定性</td>
+        <td class="k a">A</td>
+        <td><code>move</code> 明显非 0，且心跳 <code>clipDev</code> 明显 &gt; 0</td>
+        <td>相机链是<strong>好的</strong></td>
+        <td>冻结在呈现 / 配速侧（pacer、Present 环绕）。转去查那一条，与相机无关</td>
       </tr>
       <tr>
-        <td class="warn">版本是 v1.07b，但 <code>proj00=0.8391</code></td>
-        <td>落进了<b>已知残留</b>：释放后<b>菜单族先到</b>就又会夺锁（账本 <code>§14.6</code>）。
-            这是故意没修的，需要一条"属性判据"而不是靠顺序。</td>
-        <td>把这一行发我，我按 §14.6 的判据方案改</td>
+        <td class="k b">B</td>
+        <td>在走，但 <code>move</code>≈0、<code>path</code>≈0</td>
+        <td><strong>捕获层</strong>读到的相机不跟玩家</td>
+        <td>perFrame 镜像的偏移 / 布局。线索已经在那儿了：<code>ProjUnj[3][3]=0.0667</code>（真投影应为 0）、
+            <code>ViewProjUnj</code> 的 w 行不是 <code>[0,0,0,1]</code>、<code>detProj=0</code></td>
       </tr>
       <tr>
-        <td class="bad">报版本不符 / 没有横幅</td>
-        <td>DLL 没换上去，或本体里那份把它顶掉了。</td>
-        <td>确认只部署在
-            <code>E:/EJ/mod/mods/DynamicShaderFrameGen/SKSE/Plugins/</code>，
-            本体 <code>data/SKSE/Plugins/</code> 必须为空</td>
+        <td class="k c">C</td>
+        <td><code>move</code> 大，但 <code>clipToPrev</code>≈I</td>
+        <td>重建 / 历史环节把运动丢掉了</td>
+        <td><code>rebuildViewProj</code>（<code>Streamline.cpp:629</code>）与 <code>s_prevVP</code> 推进
+            （<code>1022-1050</code>）</td>
       </tr>
     </table>
+    <p class="muted">三种结果对应三个<strong>不同</strong>的根因，每种都直接指向一个具体例程，不需要再猜。</p>
   </div>
 
   <div class="card">
-    <h2>这一版改了什么（本轮第三成因）</h2>
-    <table>
-      <tr><th style="width:34%">改动</th><th>为什么</th></tr>
-      <tr>
-        <td><b>删除 v1.03 的量级逃逸</b><span class="tag">承重</span></td>
-        <td>22:02 日志的 <code>#1 acquire proj00=0.149184</code> 证明 <b>世界相机抢到了第一把锁</b>，
-            是这条逃逸把它走掉的（<code>0.149184 → 1.0 → 0.149184 → … → 0.8391</code>）。
-            删掉它，锁<b>根本到不了</b> 0.8391。回归 C1：只删逃逸、不带任何释放，
-            结果已经是 <code>proj00=0.149184</code> / 世界相机被拒 <b>0</b> 次。</td>
-      </tr>
-      <tr>
-        <td>新增 reset-edge 族锁释放<span class="tag">补救</span></td>
-        <td>治的是<b>另一条入口</b>：开局第一把锁就被菜单族拿到。那条路上
-            v1.03–v1.06 永远出不来（v1.00 明令异族不得重采）。
-            回归 C2：只删逃逸时 <code>pub=0</code>（一个快照都发不出去），加释放后恢复。</td>
-      </tr>
-      <tr>
-        <td><b>撤回"still 阈值重采"</b><span class="tag">写出来又丢掉</span></td>
-        <td>我第一版加的第三条释放，回归量出它<b>落到 <code>proj00=1</code>（单位正交族）</b>——
-            因为采纳的是"恰好第 90 次非连续的那个到达"，谁第 90 个取决于到达顺序。
-            它只是<b>用错族换错族</b>，还重开了 v1.00 故意关上的门。已撤回，只在回归里留作反证。</td>
-      </tr>
-      <tr>
-        <td>异族分支补 <code>++snapLockStill</code><span class="tag">仪表</span></td>
-        <td>原来这条分支 <code>return false</code> 前完全不计数，所以日志里 <code>still=0</code> 是假象，
-            "锁死了多久"根本读不出来。</td>
-      </tr>
-    </table>
+    <h2>已经排除的（不用再查）</h2>
+    <ul>
+      <li><strong>“4x 没跑起来”</strong> —— 排除了。日志实测 <code>ask=4 accepted=4</code>、
+          DLSS-G 报 <code>presentation count: 4x</code>，39 实帧 / 约 156 呈现。</li>
+      <li><strong>“族锁把相机冻住了”</strong> —— 这份日志不支持。发布通道是<strong>开</strong>的：
+          <code>12130</code> 次到达里 <code>11821</code> 次发布成功；
+          被拒的 309 次全部是对<strong>菜单族</strong>的正确拒绝
+          （锁在世界族 <code>0.149184</code>，拒绝 <code>0.8391</code>，比率 5.62）。</li>
+      <li><strong>闪退</strong> —— 这份日志里没有致命崩溃。那个 <code>Modex.dll</code> 的
+          <code>EXCEPTION_ACCESS_VIOLATION</code> 是第三方，不在本插件栈上，验证冻结前请在 MO2 里取消勾选它。</li>
+    </ul>
+    <div class="no">我<strong>无法运行游戏</strong>。所以 v1.07b 是否止住冻结，<strong>我不知道</strong>，也不会说它一定好了。
+      这一步实验就是为了把“不知道”变成“知道”。</div>
   </div>
 
   <div class="card">
-    <h2>要先排除的干扰项</h2>
-    <div class="dim" style="font-size:13.5px">
-      <b>Modex 闪退</b>：第三方模组 <code>Modex::UIManager::MainWndProc</code> 已三次复现
-      （<code>EXCEPTION_ACCESS_VIOLATION</code>，本插件不在崩溃栈上），会掩盖一切验证结论。
-      <b>验证冻结前请在 MO2 里取消勾选它。</b>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>一秒回到可玩（如果需要）</h2>
-    <div class="dim" style="font-size:13.5px">
-      只改 INI，不动代码：<code>Provider=0</code> + <code>MFGMaxFramesOverride=0</code>。
-      回到 v0.39–v0.50 之间的状态，即"没有 MFG 时是可玩的"那条基线。
-    </div>
-  </div>
-
-  <div class="foot">
-    完整证据链与判据边界见 <code>MFG_MASTER_NOTES.md</code> 第 14 章 · 离线回归
-    <code>tools/regress_v107_lockrelease.py</code>
+    <h2>一秒回退（如果画面比之前更糟）</h2>
+    <p>只改 INI，不动代码：<code>Provider=0</code> + <code>MFGMaxFramesOverride=0</code>。</p>
   </div>
 
 </div>
