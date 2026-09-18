@@ -1,4 +1,4 @@
-// DynamicShaderFrameGen (https://github.com/jatelop8/DynamicShaderFrameGen)
+﻿// DynamicShaderFrameGen (https://github.com/jatelop8/DynamicShaderFrameGen)
 // Licensed under GPL-3.0-or-later WITH Modding Exception AND GPL-3.0 Linking Exception.
 // Derived from open-source projects (all GPL-3.0):
 //   - Skyrim Community Shaders (https://github.com/doodlum/skyrim-community-shaders)
@@ -1070,7 +1070,31 @@ namespace FrameGen
 		static bool s_hasLastGoodClip = false;
 		if (curOk && havePrev) {
 			++diag.prevHistoryHits;
-			sl::matrixFullInvert(invCurrViewProj, curForReproj);
+			// v1.07c: the inverse MUST come from the same camera as `prev`.
+			//
+			// prevForReproj is camPrevVP or s_prevVP; both come out of
+			// rebuildViewProj, which folds the eye in as -R@eye. curForReproj is
+			// the engine's own ViewProj and -- per the note further up -- carries
+			// NO translation. Inverting one and multiplying by the other cannot
+			// cancel:
+			//
+			//   inv(Proj @ [R|0]) @ (Proj @ [R|-R@eye])
+			//     = [R^T|0] @ Proj^-1 @ Proj @ [R|-R@eye]
+			//     = [R^T R | -R^T R @ eye] = [I | -eye]
+			//
+			// Rotation-correct (det3() reads only the 3x3, so it still reports
+			// 1.000000 and every guard below passes) and translation-absurd.
+			//
+			// 23:10 run, Transfusion [MOTION] dump, frame 578:
+			//   clipToPrev rows=[...][...][...]
+			//                   [-243.962387 2.7390945 -77.6724777 -195.222366]
+			//   cameraPos=(-243.049301,-415.311523,118.558205)
+			// row3[3] is -195, not 1: not even affine. The heartbeat alternated
+			// between that and clipDev=0.000023 because camCurOk flips, so DLSS-G
+			// was told "still" then "moved 244 units", frame by frame. That is
+			// the back-and-forth the picture shows.
+			const sl::float4x4& reprojInvSrc = camCurOk ? camCurVP : curForReproj;
+			sl::matrixFullInvert(invCurrViewProj, reprojInvSrc);
 			sl::matrixMul(c.clipToPrevClip, invCurrViewProj, prevForReproj);
 			// v0.66 (det guard)：det(inv(cur) x prev) **恒等于 1 当且仅当** cur/prev
 			// 是同一套相机数据（两帧投影相同则投影项互相抵消）。实测只出现
@@ -1167,6 +1191,26 @@ namespace FrameGen
 				}
 			}
 			if (d > diag.clipDevMax) diag.clipDevMax = d;
+		}
+		// v1.07c: a reprojection matrix that maps clip space to clip space is
+		// affine, so its last row is (tx,ty,tz,1) and [3].w is exactly 1. This
+		// is the one criterion here that does NOT grow with frame time, which
+		// matters: clipDev legitimately rises with both camera speed and frame
+		// interval, so a large clipDev alone proves nothing. A w away from 1
+		// means the inverse and the `prev` matrix were built from different
+		// cameras -- the defect fixed at the invert site above.
+		diag.clipW = c.clipToPrevClip[3].w;
+		{
+			const float wDev = diag.clipW > 1.0f ? (diag.clipW - 1.0f)
+			                                     : (1.0f - diag.clipW);
+			static std::uint32_t wWarned = 0;
+			if (wDev > 0.01f && wWarned < 20u) {
+				++wWarned;
+				SKSE::log::warn("[MOTION] clipToPrevClip[3].w={:.6f} (must be 1) - "
+					"the inverse and the previous matrix came from different "
+					"cameras; DLSS-G is reprojecting with a non-affine matrix",
+					diag.clipW);
+			}
 		}
 		if (curOk) ++diag.camValid; else ++diag.camInvalid;
 		const bool camValid = curOk;   // 下游的 reset 边沿语义保持不变
@@ -1318,7 +1362,7 @@ namespace FrameGen
 				SKSE::log::info("[XRAY] serial={} menu={} world={} edges={} resetTrue={} menuOpen={} reset={} | "
 					"consts ok={} fail={} lastR={} | presented all={} world={} menu={} | "
 					"real={:.2f}ms | mvecScale=({:.3f},{:.3f}) flags={:#x} | jitter=({:.4f},{:.4f}) "
-					"clipDev={:.6f} curVP={:.4f} prevVP={:.4f} | pos=({:.1f},{:.1f},{:.1f}) "
+					"clipDev={:.6f} clipW={:.6f} curVP={:.4f} prevVP={:.4f} | pos=({:.1f},{:.1f},{:.1f}) "
 					"prevPos=({:.1f},{:.1f},{:.1f}) | dt min/avg/max={:.2f}/{:.2f}/{:.2f}ms n={} "
 					"capUs={} mult(acc/pres)={}/{} longFrames={} cam(ok/inv)={}/{} camPrev(ok/used)={}/{} | "
 					"reproj src={} engPrevEqCur={}/{} engPrevZero={} frozen={} "
@@ -1339,7 +1383,7 @@ namespace FrameGen
 					hist(diag.presentedAll), hist(diag.presentedWorld), hist(diag.presentedMenu),
 					realMs,
 					c.mvecScale.x, c.mvecScale.y, diag.lastFlags,
-					Get().jitterX, Get().jitterY, clipDev, devOf(curVP), devOf(prevVP),
+					Get().jitterX, Get().jitterY, clipDev, diag.clipW, devOf(curVP), devOf(prevVP),
 					a_fb.CameraPosAdjust[0], a_fb.CameraPosAdjust[1], a_fb.CameraPosAdjust[2],
 					a_fb.CameraPreviousPosAdjust[0], a_fb.CameraPreviousPosAdjust[1],
 					a_fb.CameraPreviousPosAdjust[2],
@@ -1574,7 +1618,7 @@ namespace FrameGen
 					::IsProcessDPIAware() ? 1 : 0,
 					(vw == pw && vh == ph) ? "virtual==physical (no DPI scaling)"
 					                       : "virtual!=physical => DPI-virtualized process");
-				SKSE::log::info("[XRAY] diag active v1.07b (compiled " __DATE__ " " __TIME__ ")");
+				SKSE::log::info("[XRAY] diag active v1.07c (compiled " __DATE__ " " __TIME__ ")");
 				// v0.89: the live fix state is reported on the HEARTBEAT, not here.
 				// v0.88 printed it at this spot, which runs once at boot before any
 				// world camera exists -- it therefore always read reprojSource=0

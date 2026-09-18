@@ -1,4 +1,4 @@
-// DynamicShaderFrameGen (https://github.com/jatelop8/DynamicShaderFrameGen)
+﻿// DynamicShaderFrameGen (https://github.com/jatelop8/DynamicShaderFrameGen)
 // Licensed under GPL-3.0-or-later WITH Modding Exception AND GPL-3.0 Linking Exception.
 // Derived from open-source projects (all GPL-3.0):
 //   - Skyrim Community Shaders (https://github.com/doodlum/skyrim-community-shaders)
@@ -162,6 +162,11 @@ namespace FrameGen
 			float engPrevMagLast = 0.0f;
 			float derivedMatchErr = 0.0f;
 			float clipDevMax = 0.0f;
+			// v1.07c: clipToPrevClip[3].w of the last frame. Must be 1.000000 for
+			// an affine reprojection matrix; anything else means the inverse and
+			// the previous matrix did not come from the same camera. Unlike
+			// clipDevMax this one is absolute -- it does not grow with frame time.
+			float clipW = 1.0f;
 			// v0.88: max |fixedViewProj - engineViewProj|. Non-zero proves the
 			// rebuilt matrix really carries the translation the engine omits;
 			// -1 means the rebuild was unavailable this frame.

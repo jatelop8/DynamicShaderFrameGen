@@ -34,6 +34,23 @@ Checks, in the order a freeze is actually built:
                     copy of the last real one.
                     camPrev(ok/used) must also be non-zero once v1.06's
                     history writer has run.
+                    READ THIS WITH clipW, NOT ALONE. clipDev grows with camera
+                    speed AND with frame interval, so on a slow run a large
+                    clipDev is expected and a small one is not proof of health.
+                    The 23:10 run alternated between 0.000023 and 28.77 on
+                    consecutive heartbeats; that alternation is the signature
+                    of the v1.07c defect, not of a fast camera.
+
+  4b. clipW         clipToPrevClip[3].w. A clip-to-clip reprojection matrix is
+                    affine, so its last row is (tx,ty,tz,1) and this must read
+                    1.000000. Unlike clipDev it does NOT grow with frame time,
+                    which makes it the only absolute camera-side criterion
+                    here. A w away from 1 means the inverse of `cur` and the
+                    `prev` matrix were built from different cameras -- one
+                    folding the eye translation in, one not. That was v1.07b
+                    and earlier: Streamline.cpp inverted curForReproj (the
+                    engine's translation-free ViewProj) while multiplying by
+                    camPrevVP (rebuilt, translation included).
 
   5. MULTIPLIER     mult(acc/pres) is (dlssgAcceptedFrames+1)/presented. The
                     two must agree; the pacer is told to expect `pres` flips
@@ -100,7 +117,7 @@ def main() -> int:
     # log used to be informational only; the 22:02 run was analysed against the
     # wrong assumption more than once, so it is now a hard comparison.
     # The regex has to accept a letter suffix: v1.02c and v1.07b both exist.
-    EXPECTED_BUILD = "v1.07b"
+    EXPECTED_BUILD = "v1.07c"
     m = last_match(dfg, r"\[XRAY\] diag active (v[\d.a-z]+) \(compiled ([^)]+)\)")
     if m:
         print(f"\nbuild            {m[0]}  compiled {m[1]}")
@@ -250,6 +267,36 @@ def main() -> int:
             problems.append("camPrev history never populated")
         else:
             print(f"   {VERDICT_OK}: camPrev history is live (ok={camprev_ok})")
+
+        # ---- 4b. clipW ---------------------------------------------------
+        # The one camera-side criterion that does not grow with frame time.
+        cw = re.findall(r"clipW=([-\d.]+)", dfg)
+        if cw:
+            w = float(cw[-1])
+            print(f"   clipW (clipToPrevClip[3].w, must be 1.000000): "
+                  f"last={w:.6f}  n={len(cw)}")
+            if abs(w - 1.0) > 0.01:
+                print(f"   {VERDICT_BAD}: w={w:.6f}. The inverse of `cur` and the"
+                      f" `prev` matrix came from DIFFERENT cameras - one picks up"
+                      f" the eye translation, one does not - so DLSS-G is"
+                      f" reprojecting with a non-affine matrix. Fixed in v1.07c"
+                      f" (Streamline.cpp, the matrixFullInvert call): it now"
+                      f" inverts camCurVP when the rebuild succeeded.")
+                problems.append("clipToPrevClip[3].w is not 1 - non-affine reprojection")
+            else:
+                print(f"   {VERDICT_OK}: affine, [3].w == 1")
+
+        # The v1.07c fingerprint: clipDev alternating between ~0 and absurd.
+        if len(cd) >= 4:
+            lo = [v for v in cd if v <= 1.0e-4]
+            hi = [v for v in cd if v > 10.0]
+            if lo and hi:
+                print(f"   {VERDICT_BAD}: clipDev alternates between identity"
+                      f" ({len(lo)} samples <=1e-4) and absurd ({len(hi)} samples"
+                      f" >10) in the SAME run. DLSS-G is being told 'still' then"
+                      f" 'moved hundreds of units', frame by frame - the picture"
+                      f" cycles back and forth. This is the v1.07c defect.")
+                problems.append("clipDev alternates identity <-> absurd")
     else:
         print(f"   {VERDICT_UNKNOWN}: no [XRAY] heartbeat lines")
 
@@ -327,7 +374,7 @@ def main() -> int:
                 and menu_frames > 0 and world_frames > 60):
             print(f"   {VERDICT_BAD}: {famrej} refusals and a menu->world transition"
                   f" (menu={menu_frames} world={world_frames}) but 0 releases."
-                  f" v1.07b raises the release at that edge - is {EXPECTED_BUILD}"
+                  f" v1.07b+ raises the release at that edge - is {EXPECTED_BUILD}"
                   f" the build actually loaded?")
             problems.append("reset-edge release never fired across a menu->world transition")
     else:
