@@ -722,6 +722,31 @@ namespace FrameGen
 			            finiteMagOf(camPrevVP) > 1.0e-6f;
 		}
 
+		// v1.06: THE WRITER THIS HISTORY NEVER HAD.
+		//
+		// v1.02c wrote the reader above and stopped there. The four statics
+		// declared a few lines up are read once each and written nowhere:
+		// s_prevCamView, s_prevCamProj and s_prevCamEye are never assigned,
+		// and s_hasPrevCam is initialised to false and never set true. So
+		// camPrevOk was false on every frame of every run, and the heartbeat
+		// proves it rather than inferring it:
+		//
+		//     21:27:27.912  cam(ok/inv)=121/0  camPrev(ok/used)=0/0
+		//
+		// cam() is healthy and camPrev() is flat zero - the rebuild existed
+		// and could never be reached. A rebuild is only as good as its
+		// history; this is that history. Stored as RAW engine matrices, so
+		// the previous frame goes through exactly the same rebuildViewProj
+		// as the current one and the two cannot diverge by convention.
+		if (camCurOk) {
+			s_prevCamView = a_fb.CameraView;
+			s_prevCamProj = a_fb.CameraProj;
+			s_prevCamEye[0] = a_fb.CameraPosAdjust[0];
+			s_prevCamEye[1] = a_fb.CameraPosAdjust[1];
+			s_prevCamEye[2] = a_fb.CameraPosAdjust[2];
+			s_hasPrevCam = true;
+		}
+
 		auto finiteMag = [](const sl::float4x4& m) -> float {
 			float mx = 0.0f;
 			for (int r = 0; r < 4; ++r) {
@@ -1536,7 +1561,7 @@ namespace FrameGen
 					::IsProcessDPIAware() ? 1 : 0,
 					(vw == pw && vh == ph) ? "virtual==physical (no DPI scaling)"
 					                       : "virtual!=physical => DPI-virtualized process");
-				SKSE::log::info("[XRAY] diag active v1.05 (compiled " __DATE__ " " __TIME__ ")");
+				SKSE::log::info("[XRAY] diag active v1.06 (compiled " __DATE__ " " __TIME__ ")");
 				// v0.89: the live fix state is reported on the HEARTBEAT, not here.
 				// v0.88 printed it at this spot, which runs once at boot before any
 				// world camera exists -- it therefore always read reprojSource=0
@@ -2065,8 +2090,27 @@ namespace FrameGen
 					}
 				}
 				capMult = std::max<std::uint32_t>(1u, mfg + 1u);
-				const double want = Get().refreshRate - 1.0;
+				// v1.06: the divisor is the whole point of this line, and it was
+				// lost. v0.54 (79a0ea4) derived the formula from the over-submit
+				// it was fixing and stated the invariant in its own comment:
+				//
+				//     "160Hz / 4x -> 39fps render -> 156 present fps,
+				//      just under the panel"
+				//
+				// Every commit up to 2a2b592 carries /capMult. The v1.00 source
+				// backup (09-18 17:56) does not, and neither did any run since.
+				// With capFps = refreshRate - 1 = 159 on this 160Hz panel, 4x
+				// presents 636 fps, the present queue backs up, the SL pacer
+				// loses cadence, and the picture stops advancing while the frame
+				// counter keeps climbing - the 21:27 freeze.
+				const double want = Get().refreshRate / static_cast<double>(capMult) - 1.0;
 				capFps = static_cast<std::uint32_t>(want < 15.0 ? 15.0 : want);
+				// v1.06: state the invariant as an assertion, so a future edit to
+				// either term cannot silently re-introduce the over-submit.
+				if (capFps * capMult > Get().refreshRate)
+					SKSE::log::warn("[Streamline] Reflex cap OVER-SUBMIT: {}fps render x{} = "
+						"{} present fps vs a {}Hz panel - the cap formula is wrong (v1.06)",
+						capFps, capMult, capFps * capMult, Get().refreshRate);
 			} else {
 				// 刷新率读不到时不能再默默写死一个值（旧 60fps 就是这么来的 bug）——
 				// 留 0 = 不限帧，并明确告警。

@@ -25,12 +25,35 @@ __pycache__/
 
 # --- 2026-09-18: MFG 调试期的备份/中间产物（不进版本库，避免 321 个未跟踪文件）---
 src/*.bak-*
-src/*.bak-*
 src/*.pre-*
 src/*.keep-*
 src/*.broken-*
 src/backup-*/
+# 2026-09-18: dated .bak-* snapshots of files that are themselves tracked
+# (read_xray_log.py x10 in tools/, DynamicShaderFrameGen.ini x2 in
+# SKSE/Plugins/). Together ~2MB of duplicates. They are pre-edit snapshots,
+# i.e. git already stores the same information. The live files stay tracked.
+*.bak
+*.bak-*
 tools/_tmp*
+# 2026-09-18: 111 one-off diagnostic scripts accumulated during the MFG hunt.
+# They were written to answer a single question each and are not maintained.
+# The regression tools that ARE meant to be kept do not start with an
+# underscore (tools/regress_v100_family.py, tools/regress_v102_camprev.py,
+# tools/analyze_session.py, tools/snapshot.sh, tools/patch_*.py).
+tools/_*
 *.log
 DLSSG-Transfusion.log
 perf.csv
+
+# 2026-09-18: regenerable outputs and pulled-out binaries.
+#   reports/verdict_*.txt  - point-in-time verdicts from tools/read_xray_log.py.
+#                            Once the build moves on they read as fact while
+#                            describing a build that no longer exists, so they
+#                            are regenerated rather than stored. read_log.bat
+#                            (the wrapper that produces them) IS tracked.
+#   _removed_*/            - third-party dlls pulled out of the game dir during
+#                            triage; binaries, and copies of files that live
+#                            outside this repo anyway.
+reports/
+_removed_*/

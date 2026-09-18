@@ -657,5 +657,182 @@ INI 原文写得很清楚：
 
 ---
 
+## 第 12 章：v1.06 —— "4x 一开始就冻结"的两个真凶
+
+**用户原话**：「能进游戏，但是进入游戏一旦开始 4 倍帧生成就出现冻结，
+左上角有帧数显示」。
+
+**这三个字是全部线索**：**有帧数显示 ⇒ 主循环没死**。所以这不是 hang，
+是"帧在跑、画面不走"。watchdog 完全证实：`presentAge max=557ms`、
+`fence 1/1 -> 3214/3214`、`alive=1`、`silent max(聚焦后)=555ms`。
+
+### 12.1 真凶一：Reflex 帧率上限丢了除数（这是"冻结"的直接机制）
+
+**v0.54 的原始公式（79a0ea4），以及一直到 2a2b592 的每一个提交：**
+
+```cpp
+const double want = Get().refreshRate / static_cast<double>(capMult) - 1.0;
+```
+
+**v0.54 自己的注释写着这条公式的来历：**
+
+```
+// 帧生成只有在"渲染帧率 x 倍数 <= 刷新率"时才成立，故改为按刷新率反推：
+//   自动 = 刷新率 / 总倍数 - 1fps（留余量避免顶到刷新率边缘）
+//   160Hz / 4x -> 39fps 渲染 -> 156 present fps，刚好在面板之下。
+```
+
+**而 v1.00 的源码备份（09-18 17:56）开始，公式是：**
+
+```cpp
+const double want = Get().refreshRate - 1.0;        // 除数没了
+```
+
+**逐提交核对（`git show <c>:src/Streamline.cpp | grep "const double want"`）：**
+
+| 提交 | 时间 | 公式 |
+|---|---|---|
+| `79a0ea4` v0.54 | 09-17 16:32 | `/ capMult - 1.0` ✅ |
+| `d781672` v0.55 | 09-17 16:46 | `/ capMult - 1.0` ✅ |
+| `135c4e4` v0.56 | 09-17 17:01 | `/ capMult - 1.0` ✅ |
+| `4770fae` v0.57 | 09-17 17:14 | `/ capMult - 1.0` ✅ |
+| `2a2b592` | 09-17 17:18 | `/ capMult - 1.0` ✅ |
+| **`backup-v100-20260918-175628`** | **09-18 17:56** | **`- 1.0`** ❌ |
+| `62505c5` v1.05 | 09-18 19:31 | `- 1.0` ❌ |
+
+⇒ **回归发生在一个未提交的改动里（v0.58–v1.00 之间），v1.05 把它一并继承了。**
+
+**实测后果（21:27 会话，面板 160Hz，日志原文）：**
+
+```
+Reflex FLIP cap = 159 fps (6289us) - panel 160Hz, 4 flips per real frame => ~636 presented fps
+```
+
+**159 × 4 = 636 present fps 对着 160Hz 面板 ⇒ 超发 298%。**
+present 队列积压 ⇒ SL pacer 节奏崩 ⇒ **画面不再推进，而帧计数照涨**。
+这正是"4x 一开始就冻结 + 左上角有帧数"。
+
+**为什么 2x 是"闪烁"、4x 是"冻结"**：2x 超发 98%，4x 超发 298%。
+同一个 bug，倍率放大它。**也解释了 v1.04 的"修了 capMult 却照旧冻结" —— v1.04 改的是 capMult 的
+来源，而 capFps 里根本没有 capMult。**
+
+### 12.2 真凶二：v1.02c 的相机历史有读端、没有写端
+
+```cpp
+// 声明（Streamline.cpp，紧邻读端）
+static Matrix s_prevCamView{};
+static Matrix s_prevCamProj{};
+static float  s_prevCamEye[3] = { 0.0f, 0.0f, 0.0f };
+static bool   s_hasPrevCam = false;
+
+// 读端
+if (camCurOk && s_hasPrevCam) {
+    camPrevOk = rebuildViewProj(s_prevCamView, s_prevCamEye, s_prevCamProj, camPrevVP) && ...;
+}
+```
+
+**全文只有这两处。`s_prevCamView` / `s_prevCamProj` / `s_prevCamEye` 从未被赋值，
+`s_hasPrevCam` 从未被设为 true。**
+
+⇒ `camPrevOk` 每一帧、每一次运行都是 false。
+⇒ 日志实证（不是推理）：`cam(ok/inv)=121/0` 健康，而 `camPrev(ok/used)=0/0` 全零。
+
+**修法**：在 `camPrevOk` 计算之后写入历史（读在前、写在后，顺序正确）：
+
+```cpp
+if (camCurOk) {
+    s_prevCamView = a_fb.CameraView;
+    s_prevCamProj = a_fb.CameraProj;
+    s_prevCamEye[0] = a_fb.CameraPosAdjust[0];
+    s_prevCamEye[1] = a_fb.CameraPosAdjust[1];
+    s_prevCamEye[2] = a_fb.CameraPosAdjust[2];
+    s_hasPrevCam = true;
+}
+```
+
+### 12.3 附带修正：仓库 INI 模板还是 v1.03 的"让权"契约
+
+`SKSE/Plugins/DynamicShaderFrameGen.ini`（仓库模板）停在 v1.03，
+而部署副本是 v1.05 的正确契约。**CMakeLists:105-121 每次链接后
+`copy_if_different` 会把模板推回部署目录** ⇒ 下一次构建就会把正确说明覆盖成
+"unlocker 在场时本插件停止写入"的错误指导。
+
+**已核对：两者【值行差异 = 0】（48 行值完全相同，只差注释），
+所以同步不改变任何实际配置。** 模板已同步为 v1.05 文案（md5 `ed9655ad`）。
+
+### 12.4 v1.06 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `Streamline.cpp` | 公式恢复 `/ static_cast<double>(capMult)` + 新增超发自检 warn |
+| `Streamline.cpp` | 新增相机历史写入端（6 行）+ 逐字说明注释 |
+| `Streamline.cpp` | banner `v1.05` → `v1.06` |
+| `SKSE/Plugins/*.ini` | 仓库模板同步为 v1.05 契约（值行不变）|
+| `tools/patch_v106_capfps.py` | 新增，带断言 + 幂等守卫 + post-condition |
+| `tools/analyze_session.py` | 新增，一键日志三诊 |
+
+**产物**：`Streamline.cpp` 115,550 → 117,845 B（2241 CRLF / 0 bare）
+**DLL**：1,326,080 B，md5 `54cdc904abaef3fabd4a18bf23a2afb8`（**build == MO2 部署一致**）
+**DLL 内校验**：`diag active v1.06`=1、`diag active v1.05`=**0**、
+`Reflex cap OVER-SUBMIT`=1（自检断言）；`handed to the external unlocker`=0
+
+### 12.5 ★ 修复的预期效果（可对照验证）
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| `Reflex FLIP cap` 日志行 | `159 fps (6289us)` | **`39 fps (25641us)`** |
+| present fps | 636 | **156** |
+| 对 160Hz 面板 | 超发 298% | **余量 4 fps ✅** |
+
+**⇒ 用户下次开游戏，只看这一行就知道修复有没有生效：**
+```
+[Streamline] Reflex FLIP cap = 39 fps (25641us) - panel 160Hz, 4 flips per real frame => ~156 presented fps
+```
+**如果这一行还是 159 ⇒ DLL 没换上去。**
+
+### 12.6 一条命令看懂日志（新增工具）
+
+```
+python tools/analyze_session.py
+```
+
+五项检查，全部取日志原文数字：
+
+1. **REFLEX CAP** —— `capFps × mult` 是否超过面板刷新率
+2. **PRESENT** —— `presentAge` / 聚焦后的 `silent`（自动排除聚焦前的等待）
+3. **GPU PROGRESS** —— `fence` 是否推进
+4. **CAMERA MOTION** —— `clipDev`（**看最后一个心跳，不看最大值**）+
+   `camPrev(ok/used)`
+5. **MULTIPLIER** —— `mult(acc/pres)` 是否自洽
+
+**跑在 21:27 那份日志上，它自己就报出了三个问题**（超发 298% / 后期 clipDev 回落
+到 identity / camPrev 未填充）—— 也就是说这份日志本身已经说了全部答案，
+只是没有人用对的判据去读。
+
+### 12.7 两个"差点又犯"的判据错误（记下来）
+
+1. **用 `max(clipDev)` 判断相机是否在动是错的。** 21:27 的 `max=243.96`，
+   但**最后三个心跳全是 0.000061** —— 用 max 会判"健康"，实际是"后期冻结"。
+   **判据必须取最后一次采样。**
+2. **用整个 watchdog 判断 stall 是错的。** 它是追加式的，跨所有启动；
+   `presentAge=19400ms` 属于 19:16 那次。**必须先切出最后一次运行**
+   （最后一个 `frames=1` 之后）。
+3. **`silent` 在获得焦点那一刻必然很大**（累积了聚焦前的等待），
+   21:27 那条是 `stage=enter frames=2 silent=21031ms`。
+   **必须要求"前一条也是 focus=1"。**
+
+### 12.8 仍未解决 / 未验证（不假装）
+
+- **修复是否真的止住冻结：未验证**（我无法运行游戏）。判据是 12.5 那一行。
+- **`famRej=418`（source-lock 族指纹的永久拒绝）**：2.1% 的到达被拒，
+  `lock(pub/hold/re/still)=19445/4338/3920/0`（`still=0` ⇒ 从未触发"流断了"）。
+  它是否会锁死错误族，需要一次"玩家确实在移动"的运行才能判定。
+  **未改动** —— v1.00 写它是为了修 v0.93 的 CTD，动它有风险。
+- **Modex 闪退**：必须在 MO2 GUI 手动取消勾选，我无法操作。
+- **RTX 20/30 系**：一行未写。
+- **DLSS5**：一行未改。
+
+---
+
 **本文件维护规则**：每次改动后追写「本轮改动 / 验证结果 / 新证据 / 新错误」，
 **不覆盖历史章节**，只在第 9 章与末尾追加。

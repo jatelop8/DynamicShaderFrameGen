@@ -1,0 +1,3 @@
+,
+					frameSerial, diag.menuFrames, diag.worldFrames, diag.menuEdges, diag.resetTrue,
+					isMenuOpen ? 1 : 0, static_cast<int>(c.reset)
