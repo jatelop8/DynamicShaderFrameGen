@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DFG v1.08 验收卡（探针构建）</title>
+<style>
+  :root{
+    --bg:#f6f5f2; --panel:#fffdf9; --ink:#23201c; --dim:#6b645c;
+    --line:#ddd7cc; --ok:#1f7a45; --bad:#b3261e; --warn:#9a6a00;
+    --accent:#8a5a2b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:28px 22px 60px;background:var(--bg);color:var(--ink);
+    font:15px/1.72 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;}
+  .wrap{max-width:880px;margin:0 auto}
+  h1{font-size:23px;margin:0 0 4px;letter-spacing:.2px}
+  .sub{color:var(--dim);font-size:13.5px;margin-bottom:22px}
+  h2{font-size:16.5px;margin:30px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:9px;
+    padding:16px 18px;margin:12px 0}
+  code,kbd{font-family:ui-monospace,Consolas,monospace;font-size:13px;
+    background:#efece5;border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+  pre{background:#2a2723;color:#f2ede4;padding:13px 15px;border-radius:7px;
+    overflow-x:auto;font-size:12.5px;line-height:1.6;margin:10px 0}
+  pre code{background:none;border:none;color:inherit;padding:0}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12.5px;letter-spacing:.3px}
+  .ok{color:var(--ok);font-weight:600}
+  .bad{color:var(--bad);font-weight:600}
+  .warn{color:var(--warn);font-weight:600}
+  .big{font-size:19px;font-weight:700}
+  ol,ul{padding-left:22px;margin:8px 0}
+  li{margin:5px 0}
+  .kv{display:grid;grid-template-columns:150px 1fr;gap:4px 14px;font-size:13.5px}
+  .kv div:nth-child(odd){color:var(--dim)}
+  .foot{margin-top:34px;padding-top:14px;border-top:1px solid var(--line);
+    color:var(--dim);font-size:12.5px}
+  .tag{display:inline-block;font-size:11.5px;padding:2px 8px;border-radius:20px;
+    background:#eae4d9;color:var(--accent);margin-left:8px;vertical-align:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>DynamicShaderFrameGen v1.08 — 验收卡<span class="tag">探针构建</span></h1>
+  <div class="sub">
+    2026-09-19 00:30 · DLL md5 <code>0a10b4b6…b613</code> · tag <code>v1.08-probe</code>
+    · 已部署到 MOD 文件夹 · <b>开跑前核对见 §7</b>
+    · 替代作废的 <code>acceptance-v1.07c.html</code>
+  </div>
+
+  <div class="card" style="border-color:#8a5a2b;background:#fdf8ef">
+    <div class="big">本轮「什么都没修」——这是刻意的</div>
+    <p style="margin:10px 0 0">
+      上一轮你问「能不能从代码层面确定不会再犯」，结果机器判定出：<b>v1.07c 唯一的功能改动是空操作</b>
+      （<code>tools/verify_v107c_is_inert.py</code>，退出码 0；取逆用的两个候选矩阵归一化后
+      <b>sha1 完全相同</b>，且那次运行走的正是这条路径）。原本计划的「验收运行」，
+      实际上只是在<b>再测一遍 v1.07b</b>。
+    </p>
+    <p style="margin:8px 0 0">
+      你选了 (b)：<b>跳过那趟无意义的运行，先把缺的那一行诊断补上，一次跑到位。</b>
+      所以 v1.08 <b>不改变任何行为</b>，只增加读数。在一个「读数本身不可信」的状态下，
+      再加一层猜测式修复只会增加下一轮必须撤销的东西。
+    </p>
+  </div>
+
+  <h2>1. 这一趟要回答的问题</h2>
+  <div class="card">
+    <p style="margin:0">
+      23:10 那次运行的 Transfusion dump 里有一个<b>至今无法解释的数</b>：
+      <code>clipToPrevClip</code> 第 4 行第 4 列 = <b class="bad">-195.222366</b>。
+      一个把裁剪空间映射到裁剪空间的矩阵是仿射的，本行本该是 <code>(tx,ty,tz,1)</code>。
+    </p>
+    <p style="margin:10px 0 0">
+      已经排除掉的解释：<b>「两侧用了不同族的投影」的简单标量形式</b> —— 两侧共用同一个 P 时结果恰为 1；
+      另一侧乘 k 时结果精确等于 k。已知世界/菜单族比是 <b>5.62x</b>，那应该得到
+      <code>5.62</code> 或 <code>0.178</code>，<b>不是 -195.22</b>。
+    </p>
+    <table>
+      <tr><th style="width:34px">#</th><th>剩下的候选</th><th>机制</th><th style="width:230px">它的签名（本卡要测的）</th></tr>
+      <tr>
+        <td><b>a</b></td>
+        <td>两侧投影<b>不同</b></td>
+        <td><code>inv(Pc@Vc) @ (Pp@Vp)</code> 不是仿射，<code>[3].w</code> 可取任意有限值</td>
+        <td>两侧的<b>投影</b>读数不一致</td>
+      </tr>
+      <tr>
+        <td><b>b</b></td>
+        <td>投影相同、<b>逆近奇异</b></td>
+        <td><code>matrixFullInvert</code> 收到 det≈0.001 的矩阵，元素被放大千倍</td>
+        <td>投影读数<b>一致</b>，而 <code>mag(inv)</code> 巨大</td>
+      </tr>
+    </table>
+    <p style="margin:10px 0 0">
+      <b>这两个候选只在一个数上分歧：两侧投影是否相同。</b>所以本轮只加这一个读数，不加第二个猜测。
+    </p>
+  </div>
+
+  <h2>2. 你要做的（约 30 秒）</h2>
+  <div class="card">
+    <ol>
+      <li><b>先在 MO2 取消勾选 <code>Modex.dll</code></b>（第三方闪退，今天崩过三次，会掩盖一切结论）。</li>
+      <li>进游戏，等 4x 跑起来（左上角有帧数）。</li>
+      <li><b>站着不动停 5 秒</b>（不要按 W）。这是判据 3 的前提。</li>
+      <li>再随便走 5 秒、转一下视角。</li>
+      <li>退出，跑一条命令：</li>
+    </ol>
+    <pre><code>cd /d/Modding/DynamicShaderFrameGen
+"C:/Users/Administrator/.workbuddy/binaries/python/versions/3.13.12/python.exe" tools/analyze_session.py</code></pre>
+  </div>
+
+  <h2>3. 五条判据</h2>
+  <table>
+    <tr><th style="width:34px">#</th><th>看什么</th><th style="width:150px">通过</th><th>不通过意味着</th></tr>
+    <tr>
+      <td>1</td>
+      <td>横幅 <code>diag active v1.08 (probe build …)</code></td>
+      <td class="ok">出现</td>
+      <td>加载的不是本次构建，后面四条全部作废</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td><code>clipW</code>（即 <code>[3].w</code>）</td>
+      <td class="ok">1.000000</td>
+      <td>两侧不是一致的相机对；<b>本轮就是来查这个的</b></td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>站着不动时的 <code>clipDev</code></td>
+      <td class="ok">&lt; 1e-3</td>
+      <td>相机没动却被告诉 DLSS-G「动了」→ 画面来回</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td><code>p00(c/p)</code>：两侧投影 <code>[0][0]</code></td>
+      <td class="ok">世界内<b>单族</b>（≈0.1492）且两侧一致</td>
+      <td>出现两个族（0.1492 / 0.8391）⇒ 菜单相机仍在夺流</td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td><code>[MOTION]</code> 行若出现，看它自带的 <code>p00 cur/prev</code> 与 <code>mag invSrc</code></td>
+      <td colspan="2">
+        <b>这一条是本轮的全部意义</b> —— 它把「-195.22 是什么」从「下一轮再猜」变成「看一眼就知道」。
+        对照表见 §4。
+      </td>
+    </tr>
+  </table>
+  <div class="card">
+    <p style="margin:0">
+      <b>判据 3 是最硬的那条</b>：它不依赖任何新字段，也不受帧率高低影响。
+      注意它<b>不是</b>要求 <code>clipDev</code> 恰好为 0 —— 实测单位矩阵的下限在
+      <code>6e-5</code> 量级（浮点残差），所以门限是 <code>1e-3</code>，不是 0。
+    </p>
+  </div>
+
+  <h2>4. 判据 5 怎么读（探针的判读表）</h2>
+  <table>
+    <tr><th style="width:300px">你看到的</th><th>结论</th></tr>
+    <tr>
+      <td><code>[MOTION]</code> 行里<br><code>p00 cur=0.8391 prev=0.1492</code></td>
+      <td>两侧投影<b>不同族</b> ⇒ <b class="bad">候选 (a) 成立</b>：<code>[3].w</code> 是<b>投影比</b>，
+        不是平移量。那么修法就不该在取逆那一处，而要在<b>进入重投影之前把两侧约束到同一族</b>。</td>
+    </tr>
+    <tr>
+      <td><code>[MOTION]</code> 行里<br><code>p00 cur=0.1492 prev=0.1492</code> 且 <code>mag invSrc=4.2e+05</code></td>
+      <td>投影<b>一致</b>、逆<b>爆了</b> ⇒ <b class="bad">候选 (b) 成立</b>：问题在
+        <code>matrixFullInvert</code> 的输入近奇异（<code>det(min)=0.001</code> 已经在日志里），
+        修法是在取逆前做条件数检查并回退到上一帧合法值。</td>
+    </tr>
+    <tr>
+      <td>完全没有 <code>[MOTION]</code> 行，<code>clipW</code> 全程 1.000000</td>
+      <td>这一趟<b>没复现</b>。那 <code>-195.22</code> 是偶发（可能只在菜单/加载切换的瞬间出现），
+        需要换一个<b>主动触发</b>的复现步骤再测 —— 那会是下一轮的起点，而不是「已修好」。</td>
+    </tr>
+    <tr>
+      <td>心跳里 <code>p00(c/p)</code> 在 0.1492 与 0.8391 之间来回跳</td>
+      <td>投影族<b>在运行中切换</b> ⇒ 仍然有两个相机在轮流占用这条流。
+        这是 v1.00 族指纹那套机制的适用范围之外的情形，单独成一个问题。</td>
+    </tr>
+  </table>
+
+  <h2>5. 本轮改了什么（机器判定：纯增量）</h2>
+  <div class="card">
+    <div class="kv">
+      <div>改的是</div><div><code>Streamline.cpp</code> 120866 → <b>123094 B</b>；
+        <code>Streamline.h</code> 20686 → <b>21676 B</b>（<b>只增不减</b>）</div>
+      <div>新增读数</div><div><code>probeCurP00 / probePrevP00</code>（两侧<b>投影</b>的 <code>[0][0]</code>）、
+        <code>probeCurP23 / probePrevP23</code>（透视/正交判别）、
+        <code>probeInvSrcMag / probePrevSrcMag</code></div>
+      <div>离线证明 A</div><div><code>tools/verify_v108_probe_inert.py</code>：把补丁<b>反向撤掉后与 v1.07c
+        逐字节相同</b>（120866 B / 20686 B）</div>
+      <div>离线证明 B</div><div>新增的 <b>67 行</b>逐条分类：注释 35 / 日志 12 / 声明 9 /
+        <code>diag.probe*</code> 写入 6 / 括号 2 / 快照 1 / 空 2 ——
+        <b>无一条写 <code>c.*</code>、<code>cam*</code>、<code>prev*</code></b></div>
+      <div>判据离线回归</div><div><code>tools/regress_v108_p00.py</code>：五个合成样本，
+        (a) 会报、(b) 会报、健康时安静、族切换会报、<b>字段缺失报 NO DATA 而绝不当作通过</b></div>
+    </div>
+    <p style="margin:12px 0 0">
+      <b>为什么读「投影」而不是「ViewProj」：</b>
+      <code>(P@V)[0][0] = P[0][0] × V[0][0]</code>，而 <code>V[0][0]</code> 是旋转元素 ——
+      用 ViewProj 当指纹，玩家每转一次视角它都变。
+      投影矩阵的 <code>[0][0]</code> 只随投影族变（0.149184 / 0.8391），<b>与朝向无关</b>。
+    </p>
+  </div>
+
+  <h2>6. 顺手抓出的一个真 bug（在分析脚本里）</h2>
+  <div class="card">
+    <p style="margin:0">
+      <code>analyze_session.py</code> 原本用 <code>clipDev=([\d.]+)</code> 解析心跳 ——
+      <b class="bad">不含负号</b>。而 <code>clipDev</code> 一旦为负，<b>整行心跳匹配失败</b>，
+      第 4 节直接打印 <code>NO DATA</code>：<b>一个「异常读数」被静默翻译成「没有数据」</b>。
+      已修为 <code>([-\d.]+)</code>，并把负值单独报「指标本身坏了」，
+      同时排除出「identity 样本」桶（否则一个 <code>-195</code> 会被算成「相机没动」，
+      凭空造出一次假交替）。
+    </p>
+    <p style="margin:10px 0 0">
+      这是<b>第三次</b>同一类错误（前两次：<code>move=0.0000</code>、<code>jitter=(0,0)</code>）。
+      它同时暴露了另一件事：<b>回归脚本的价值不只是验证判据，它也是判读代码的对抗测试</b> ——
+      正是那个「必须报 (b)」的合成样本，才逼出了这个 bug。
+    </p>
+  </div>
+
+  <h2>7. 开跑前核对（已跑，全绿）</h2>
+  <table>
+    <tr><th>项</th><th>结果</th></tr>
+    <tr><td>构建 == 备份 == MO2 部署</td><td class="ok">三份 md5 均为 <code>0a10b4b6…b613</code>（1,329,664 B）</td></tr>
+    <tr><td>游戏本体 <code>data/SKSE/Plugins/</code></td><td class="ok">无旧副本（有的话 MO2 会优先它）</td></tr>
+    <tr><td>DLL 内字符串</td><td class="ok"><code>diag active v1.08</code>=1、<code>v1.07c</code>=<b>0</b>、<code>p00(c/p)</code>=1</td></tr>
+    <tr><td>INI</td><td class="ok"><code>Provider=1</code> <code>Enable=1</code> <code>MFGMaxFramesOverride=3</code>（走 SL 那条路）</td></tr>
+    <tr><td>既有回归</td><td class="ok"><code>v107c_reprojsrc</code> OK、<code>v107_lockrelease</code> OK、<code>v100_family</code> PASS、<code>v102_camprev</code> PASS</td></tr>
+    <tr><td>Modex.dll 第三方闪退</td><td class="warn">不在本插件栈上。<b>验证前请在 MO2 取消勾选它</b>。</td></tr>
+  </table>
+
+  <h2>8. 一秒回到可玩（如果需要）</h2>
+  <div class="card">
+    只改 INI，不动代码：
+    <pre style="margin-bottom:0"><code>[DynamicShaderFrameGen]
+Provider=0
+MFGMaxFramesOverride=0</code></pre>
+  </div>
+
+  <div class="foot">
+    <b>诚实说明：我无法运行游戏。</b>v1.08 里没有修复，只有读数 ——
+    所以这一趟的产出是<b>一个判决</b>（(a) 还是 (b)），不是「修好了」。
+    真正的修复要等这一趟回来之后才能写，而且必须只针对被证据指向的那一个候选。<br>
+    账本同步到 <code>MFG_MASTER_NOTES.md</code> 第 18 章；推理全过程见第 16–18 章。
+    v1.07c 的验收卡（<code>acceptance-v1.07c.html</code>）已被本卡取代。
+  </div>
+
+</div>
+</body>
+</html>
