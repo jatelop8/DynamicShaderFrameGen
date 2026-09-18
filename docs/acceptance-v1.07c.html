@@ -49,11 +49,33 @@
     · 已部署到 MOD 文件夹 · <b>开跑前四项核对全绿（见 §7）</b>
   </div>
 
+  <div class="card" style="border-color:#b3261e;background:#fff6f5">
+    <div class="big bad">★ 23:55 更正：v1.07c 的功能改动经证明是「空操作」</div>
+    <p style="margin:10px 0 0">
+      <code>tools/verify_v107c_is_inert.py</code>（纯 Python、只读、退出码 0）机器判定了这件事：
+      取逆用的那两个候选矩阵 —— <code>curForReproj</code>（即 <code>fixedViewProj</code>）与
+      <code>camCurVP</code> —— <b>归一化后 sha1 完全相同（<code>7fe156da9b20</code>），输入也相同</b>，
+      是同一个矩阵。而那次运行的日志写的是 <code>reproj src=fixed</code> ⇒ 走的正是这条路径。
+      代数上也一致：<code>inv(P@A)@(P@B) = inv(A)@B</code>，两侧共用同一个 P 时，
+      取哪个 P 矩阵的逆<b>根本无所谓</b>（200 组随机样本偏差 <code>2.9e-13</code>）。
+    </p>
+    <p style="margin:8px 0 0">
+      ⇒ <b>v1.07c 与 v1.07b 在实跑路径上功能完全相同。</b>v1.07c 只加了一个仪表
+      （<code>clipW</code>）、换了个横幅，外加一条只在"重建失败"的退化路径上才生效的改动。
+    </p>
+    <p style="margin:8px 0 0">
+      <b>三个判据仍然有效，但你要知道：这一趟测的是 v1.07b 的行为。</b>
+      它是<b>收集数据</b>的一趟，不是<b>验证修复</b>的一趟。
+      完整推理（含我错在哪）见账本第 17 章。
+    </p>
+  </div>
+
   <div class="card">
-    <div class="big">这次改的是「画面为什么来回循环」，不是「帧生成有没有跑」。</div>
+    <div class="big">一开始我以为这次改的是「画面为什么来回循环」。<b class="bad">不是 —— 见上面那条更正。</b></div>
     <p style="margin:10px 0 0">
       上一轮你的那句话把方向定住了：<b>「画面是来回循环得，帧数低了看得清楚，帧数高就觉得这个循环比较快，看着像卡了」</b>。
       「来回循环」和「静止不动」是两种不同的故障 —— 我之前几轮都按「静止」解释，所以一直没打到点上。
+      <b>方向是对的，我走的那条具体路径是错的（第 17 章）。</b>
     </p>
   </div>
 
@@ -123,6 +145,13 @@ and absurd (5 samples &gt;10) in the SAME run.</code></pre>
       <code>camCurOk ? camCurVP : curForReproj</code>。
       相机静止时两边同源，结果<b>精确等于单位矩阵</b>。
     </p>
+    <p style="margin:10px 0 0;padding-top:10px;border-top:1px solid #ddd7cc">
+      <b class="bad">★ 更正（第 17 章）：这个式子本身是对的，但它需要「无平移的输入」才会触发，
+      而实测走的那条路径上两侧<b>都带平移</b>。</b>
+      <code>curForReproj</code> 在 <code>src=fixed</code> 时就是 <code>fixedViewProj</code>，
+      它与 <code>camCurVP</code> 由<b>同一段构造</b>产出 ⇒ 改前改后是同一个矩阵 ⇒
+      <b>上面这个"修法"什么都没改</b>。
+    </p>
   </div>
 
   <h2>4. 证据（都不是推断）</h2>
@@ -165,6 +194,15 @@ and absurd (5 samples &gt;10) in the SAME run.</code></pre>
     <tr>
       <td>Modex.dll 第三方闪退</td>
       <td>不在本插件栈上。<b>验证冻结前请在 MO2 取消勾选它</b>，否则结论不可信。</td>
+    </tr>
+    <tr>
+      <td>Transfusion 打出的 <code>[3][3] = -195.22</code></td>
+      <td><b class="bad">仍未解释。</b>已证明 <code>[3][3]</code> 是<b>两侧投影的比例</b>：
+        共用同一投影时恰为 1，把另一侧投影乘 k 就精确等于 k。
+        但已知的世界/菜单族投影比是 <b>5.62x</b>，应给 <code>5.62</code> 或 <code>0.178</code> ——
+        <b>不是 -195.22</b>。所以连"族混用"这个解释也不够。
+        要定案需要下一个读数：每帧同时打 <code>curProj[0][0]</code>、
+        <code>prevProj[0][0]</code>、<code>clipToPrevClip[3][3]</code>（第 17.6 节）。</td>
     </tr>
   </table>
 
@@ -228,11 +266,12 @@ MFGMaxFramesOverride=0</code></pre>
   </div>
 
   <div class="foot">
-    <b>诚实说明：我无法运行游戏。</b>v1.07c 是否真的止住了「来回循环」，只有你这一趟运行知道。
-    三条判据里第 3 条（站着不动时 <code>clipDev &lt; 1e-3</code>）是最硬的 ——
-    它不依赖任何新字段，也不受帧率高低影响。<br>
-    2026-09-18 23:45 更新：补 §7「开跑前四项核对」（已跑，全绿）与 §8「两个假读数」。
-    账本同步到 <code>MFG_MASTER_NOTES.md</code> 第 16.12–16.17 节。
+    <b>诚实说明：我无法运行游戏。</b>v1.07c 是否真的止住了「来回循环」，只有你这一趟运行知道。<br>
+    <b class="bad">而且现在必须补一句：v1.07c 的功能改动已证明是空操作，所以它<b>不可能</b>止住任何东西。</b>
+    这一趟仍然值得跑（拿 <code>clipW</code> 基线与交替 <code>clipDev</code> 的第二份样本），
+    但请把它当成<b>数据收集</b>，不要指望画面变化。<br>
+    2026-09-18 23:45 补 §7/§8；23:55 加顶部更正条、§3 更正、§5 新增 <code>-195.22</code> 未解释项。
+    账本同步到 <code>MFG_MASTER_NOTES.md</code> 第 16.12–16.17 节与<b>第 17 章</b>。
   </div>
 
 </div>
