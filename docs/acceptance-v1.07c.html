@@ -46,7 +46,7 @@
   <h1>DynamicShaderFrameGen v1.07c — 验收卡</h1>
   <div class="sub">
     2026-09-18 23:22 · DLL md5 <code>c58c8720…8015</code> · tag <code>v1.07c</code>
-    · 已部署到 MOD 文件夹
+    · 已部署到 MOD 文件夹 · <b>开跑前四项核对全绿（见 §7）</b>
   </div>
 
   <div class="card">
@@ -88,8 +88,11 @@
     <tr>
       <td>3</td>
       <td><code>clipDev</code><br><span style="color:#6b645c;font-size:12.5px">第 4 项，站着不动时</span></td>
-      <td class="ok">≈ 0</td>
-      <td>相机没动，却被告诉 DLSS-G「动了」→ 画面仍会来回</td>
+      <td class="ok">&lt; 1e-3</td>
+      <td>相机没动，却被告诉 DLSS-G「动了」→ 画面仍会来回。<br>
+        <span style="color:#6b645c;font-size:12.5px">阈值写 <code>1e-3</code> 而不是 0：
+        实测 identity 帧的下限是 <code>0.000061</code>（7 次）与 <code>0.000023</code>（2 次），
+        Transfusion 打印的合法 identity 帧 <code>rows=[0.99999994 …]</code> 与 1 的偏差就是 6e-8 量级。</span></td>
     </tr>
   </table>
   <div class="card" style="margin-top:6px">
@@ -173,10 +176,63 @@ Provider=0
 MFGMaxFramesOverride=0</code></pre>
   </div>
 
+  <h2>7. 开跑前的四项核对（已跑过，全绿）</h2>
+  <table>
+    <tr><th style="width:250px">项</th><th>结果</th></tr>
+    <tr><td>构建产物 md5</td>
+      <td><code>build/NINJA/DynamicShaderFrameGen.dll</code> = <code>c58c8720…8015</code>，1,326,592 B</td></tr>
+    <tr><td>备份 vs 部署 md5</td>
+      <td><code>built_DLL.bin</code> == <code>deployed_DLL.bin</code> == 构建产物 —— <span class="ok">三份一致</span></td></tr>
+    <tr><td>MO2 部署处</td>
+      <td><code>E:/EJ/mod/mods/DynamicShaderFrameGen/SKSE/Plugins/</code> 同一 md5 <span class="ok">IDENTICAL</span></td></tr>
+    <tr><td>游戏本体残留</td>
+      <td><code>data/SKSE/Plugins/</code> 下<b>没有</b>本插件的旧副本 <span class="ok">（否则 MO2 会优先本体）</span></td></tr>
+    <tr><td>DLL 内字符串</td>
+      <td><code>diag active v1.07c</code>=1、<code>v1.07b</code>=<b>0</b>、<code>clipW={:.6f}</code>=1</td></tr>
+    <tr><td>INI 关键开关</td>
+      <td><code>Enable=1</code> <code>ForceEnable=1</code> <code>Provider=1</code>
+        <code>FrameGeneration=1</code> <code>MFGMaxFramesOverride=3</code>
+        <span class="ok">—— 走的就是本次修的 SL/DLSSG 那条路</span></td></tr>
+  </table>
+
+  <h2>8. 本轮新增：两个「看起来是真」的假读数</h2>
+  <div class="card">
+    <p style="margin-top:0">
+      <b>不影响这次要看的三个判据</b>，只是记下来 —— 因为我差点把它们当成事实写进结论。
+    </p>
+    <table>
+      <tr><th style="width:180px">读数</th><th>为什么是假的</th></tr>
+      <tr>
+        <td><code>jitter=(0.0000,0.0000)</code></td>
+        <td>全工程源码里 <code>jitterX/jitterY</code> 是
+          <b>1 处声明 + 2 处读取 + 0 处写入</b> —— 唯一写者
+          <code>OnMainUpdateJitter</code> 在 v0.50 被删了。所以这 8 条心跳全 0 是<b>必然</b>，零信息量。
+          <br><span style="color:#6b645c;font-size:12.5px">（上一轮我就是拿同样的坏仪表 <code>move=0.0000</code> 推出「相机原地不动」，写废了一整章。）</span></td>
+      </tr>
+      <tr>
+        <td><code>mvecScale=(1.000,1.000)</code></td>
+        <td>被 INI 的 <code>MvecScaleOverride=1.00</code> 钉死，运动中也恒为 1。</td>
+      </tr>
+    </table>
+    <p style="margin-bottom:0">
+      <b>顺带翻出一个更大的事（<span class="warn">但这次不要动它</span>）：</b>
+      代码注释说「超分已拔掉」，实际 <code>RenderResolutionScale=0.44</code> ——
+      日志 <code>Render scale 0.440 -&gt; 1689x950 render / 3840x2160 output</code>。
+      <b>超分一直是活的</b>，而我们把 <code>jitterOffset</code> 喂成 0。
+      那条注释是 v0.50 写的，此后配置改了、注释没改。<br>
+      <span style="color:#6b645c;font-size:12.5px">
+      ⇒ 这是一个<b>待查</b>方向，不是本次的修复。判断它有没有害，还需要一行新日志
+      （把 <code>CameraProj</code> 与 <code>CameraProjUnjittered</code> 逐元素 diff）。
+      <b>先让 v1.07c 单独跑完 —— 一次只动一个变量。</b></span>
+    </p>
+  </div>
+
   <div class="foot">
     <b>诚实说明：我无法运行游戏。</b>v1.07c 是否真的止住了「来回循环」，只有你这一趟运行知道。
-    三条判据里第 3 条（站着不动时 <code>clipDev ≈ 0</code>）是最硬的 ——
-    它不依赖任何新字段，也不受帧率高低影响。
+    三条判据里第 3 条（站着不动时 <code>clipDev &lt; 1e-3</code>）是最硬的 ——
+    它不依赖任何新字段，也不受帧率高低影响。<br>
+    2026-09-18 23:45 更新：补 §7「开跑前四项核对」（已跑，全绿）与 §8「两个假读数」。
+    账本同步到 <code>MFG_MASTER_NOTES.md</code> 第 16.12–16.17 节。
   </div>
 
 </div>
