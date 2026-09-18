@@ -832,6 +832,105 @@ python tools/analyze_session.py
 - **RTX 20/30 系**：一行未写。
 - **DLSS5**：一行未改。
 
+### 12.9 v1.06 的提交与验证（2026-09-18 21:47）
+
+**提交** `c0f8422`，tag `v1.06`。
+
+| 校验项 | 结果 |
+|---|---|
+| `build/NINJA/DynamicShaderFrameGen.dll` | 1,326,080 B，md5 `54cdc904abaef3fabd4a18bf23a2afb8` |
+| `E:/EJ/mod/mods/.../SKSE/Plugins/…dll` | 1,326,080 B，md5 `54cdc904abaef3fabd4a18bf23a2afb8` |
+| `cmp` 逐字节 | **IDENTICAL**（build == 部署）|
+| DLL 内 `diag active v1.06` / `v1.05` | **1 / 0** |
+| DLL 内 `Reflex cap OVER-SUBMIT` | **1**（自检已进产物）|
+| DLL 内 `handed to the external unlocker` | **0**（v1.03 让权代码确已清除）|
+| INI（仓库模板 vs 部署） | 字节相同，md5 `ed9655ad2bd0d2576d7f7e9d200a3f4c` |
+| 游戏本体 `data/SKSE/Plugins/` | **无任何 DFG 文件**（只部署在 MOD 文件夹）|
+| 工作区未跟踪文件 | **0**（`.bak-*` / `reports/` / `_removed_*/` 已入 `.gitignore`）|
+| v1.06 落盘位置 | `Streamline.cpp:2106`（除数）、`Streamline.cpp:742`（相机写端）|
+
+**备份** `src/backup-v1.06-final-20260918-2147/`（`MANIFEST.txt` 内含上述全部 md5，
+以及两处修复的行号与原文）。
+
+**★ 交付时仍未验证的**：冻结是否真的止住。我无法运行游戏。
+唯一判据是 12.5 的那一行日志 —— `Reflex FLIP cap = 39 fps (25641us)`。
+
+---
+
+## 第 13 章：速查表（2026-09-18 从工作区 MEMORY.md 迁入，原处已超限）
+
+**迁入原因**：工作区 `MEMORY.md` 涨到 16,545 字符（上限 3,000），被系统截断。
+按它自己第 3 行的设计「本 MEMORY.md 只留速查」，**速查内容全部落到这里**，
+MEMORY.md 收缩为索引 + 最高优先级事实。以下内容与 MEMORY.md 原有条目逐条等价。
+
+### 13.1 XRAY 心跳字段速查（`DynamicShaderFrameGen.log` 里的 `[XRAY]` 行）
+
+| 字段 | 含义 | 健康判据 |
+|---|---|---|
+| `lock(pub/hold/re/still)` | source-lock 发布/持有/重采/静默计数 | `still` 上涨 = 流断了；恒 0 = 从未触发该分支 |
+| `proj00=` / `famRej=` | 当前锁定族的投影指纹 / 被拒异族数 | `proj00=0.149184` 是 WORLD 族；`0.8391` 是 MENU 族 |
+| `cam(ok/inv)` | 相机数据有效/无效帧数 | `inv` 上涨 = 数据源问题 |
+| `camPrev(ok/used)` | v1.02c 重建的 prev 可用数 / 实际使用数 | **`0/0` = 写端缺失（v1.06 修）；`used` 应接近 `ok`** |
+| `clipDev` / `clipDevMax` | `max|I - clipToPrevClip|` | **运动中必须明显 >0；恒 0.000061 = 相机项被丢（identity）** |
+| `engPrevEqCur=N/N` + `engPrevDiffers=N` | 引擎 prev 与 cur 的比较计数 | **两值同步增长到同一数字 = 引擎 prev 是僵死常量** |
+| `det(min/max)` | `det3(clipToPrev)` | `0.001` = 菜单族，`→1` = 同族 |
+| `reproj src=` | 重投影来源 | `fixed` = v0.88 重建（正常）/ `derived` / `engine` |
+| `blocked=` / `unblocked=` | `SetDLSSGOptions` 被跳过/执行的帧数 | `blocked` 应 ≈ 0 |
+| `mult(acc/pres)` | 实测接受倍数 / 上报倍数 | 两者应自洽 |
+| `snapArrivals` / `frameSerial` | 到达次数 / 帧序号 | 比率 >1 说明同一 perFrame 缓冲每帧被多相机重复写入（21:27 = 12.3） |
+
+**★ 判据铁律：只有实测字段能当结论。** `mult(pres)` 是"请求"，`mult(acc)` 才是"事实"。
+
+### 13.2 source-lock 的判据边界
+
+| 常量 | 值 | 含义 |
+|---|---|---|
+| `kCamStillTol` | 90 | 判定"相机停住"的阈值 |
+| `kCamStepTol` | 50 | 判定"相机移动"的阈值 —— 即 `!continues` 的边界 |
+| 族指纹比值窗 | ±2% | 同量级时用 `ratio ∈ (0.98, 1.02)`；量级不同直接判异族 |
+
+异族分支**永久拒绝、无夺回机制**（`FrameGen.cpp:886-898`，`return false`）。
+
+### 13.3 历史根因清单（我已犯过、别重复）
+
+| 版本 | 根因 |
+|---|---|
+| v0.83 / v0.84 | `snapFrozenRepeats` 只 `++` 没有 `=0` |
+| v0.88 | 引擎 view 矩阵无平移项 |
+| v0.89 | 误把"shape 拒绝"当拦截器（`// NO return false`，它只是计数器）|
+| v0.91 | C7595 |
+| v0.92 | `det3` 结构性盲区（只读 3×3 = 只看旋转，看不见平移）|
+| v0.93 | 闸门只计数不否决 |
+| v0.94 | source-lock 无条件 re-acquire ⇒ 菜单相机夺流 |
+| v0.95 | world-camera 过滤器失败 |
+| v0.96 | 移除 `Fader Menu` 导致**进不去游戏**（已回退，**别删**）|
+| v1.00 | 族指纹定案（菜单/世界两族）|
+| v1.02c | 重建 prev（但**只写了读端**）|
+| v1.03 | 让权给外部解锁器（零初始化 `max` = 写常量 ⇒ 每帧覆盖 4x）|
+| v1.04 | 修 `capMult` 来源（真修了，但**不是正在追的问题**）|
+| **v1.06** | **Reflex cap 丢除数 + 相机历史无写端** |
+
+### 13.4 两条"名字会骗人"的诊断铁律
+
+1. **`stage=` 是「最后写入的名字」，不是「卡住的位置」。**
+   watchdog 显示 `d3d11 Wait` 达 19.7 秒，实际阻塞在它之后的 `Present(0)` ——
+   `m_stage` 写在阻塞调用**之前**，下一次写要等下一帧入口（永不到来）。
+   ⇒ 用 `g_presentEnteredMs` + watchdog `presentAge=` 按**时间戳年龄**归因，不看名字。
+2. **头文件 `extern` 只能放命名空间级。** 放类内 ⇒ `error C2071: 格式错误的存储类`。
+   全部编译单元一起 FAILED 时**先查头文件**。
+
+### 13.5 备份里可能有"你以为丢了的"配置
+
+`DLSSG-Transfusion.json` 曾在当前部署里不存在，但在 6 个备份目录里都有。
+**⇒ 文件"消失"时先翻 `/d/workbuddy2/backup/`，不要凭空重建。**
+相关：`transfusion_proxy_dup_20260917_182050`（含代理 dll + json）、
+`transfusion_uir_off_20260917_193147`、`transfusion_flipmetering`。
+
+### 13.6 v1.06 终版备份位置
+
+`src/backup-v1.06-final-20260918-2147/`（含 `MANIFEST.txt` + `built_DLL.bin` +
+`deployed_DLL.bin` + `deployed.ini` + 三个源文件 + 补丁脚本 + 分析脚本）。
+
 ---
 
 **本文件维护规则**：每次改动后追写「本轮改动 / 验证结果 / 新证据 / 新错误」，
