@@ -498,6 +498,13 @@ namespace FrameGen
 				diag.constsOk, diag.constsFail);
 			if (isMenuOpen)
 				menuResetPending = true;   // consumed by CheckFrameConstants
+			// v1.07: the camera-family lock has no release path of its own.
+			// This transition is the one place it must move - leaving a menu
+			// means the locked camera describes a world that is gone. Raised on
+			// BOTH edges rather than relying on when menuResetPending is later
+			// consumed, because the consumer (CheckFrameConstants) is skipped
+			// for as long as the menu is open.
+			Get().snapLockReleasePending = true;
 		}
 		menuWasOpen = isMenuOpen;
 		return isMenuOpen;
@@ -1201,8 +1208,14 @@ namespace FrameGen
 		const bool camEdgeDown = !camValid && s_wasCamValid;
 		s_wasCamValid = camValid;
 		c.reset = (menuEdgeUp || camEdgeDown) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
-		if (c.reset == sl::Boolean::eTrue)
+		if (c.reset == sl::Boolean::eTrue) {
 			++diag.resetTrue;
+			// v1.07: hand the same edge to the camera lock. c.reset already
+			// tells DLSS-G to discard its history; the locked camera family is
+			// part of that history. This also covers camEdgeDown, which the
+			// menu transition above does not.
+			Get().snapLockReleasePending = true;
+		}
 
 		// v0.62: mvecScale is computed HERE, above the heartbeat, because the
 		// heartbeat used to print c.mvecScale before the assignment below had run -
@@ -1561,7 +1574,7 @@ namespace FrameGen
 					::IsProcessDPIAware() ? 1 : 0,
 					(vw == pw && vh == ph) ? "virtual==physical (no DPI scaling)"
 					                       : "virtual!=physical => DPI-virtualized process");
-				SKSE::log::info("[XRAY] diag active v1.06 (compiled " __DATE__ " " __TIME__ ")");
+				SKSE::log::info("[XRAY] diag active v1.07b (compiled " __DATE__ " " __TIME__ ")");
 				// v0.89: the live fix state is reported on the HEARTBEAT, not here.
 				// v0.88 printed it at this spot, which runs once at boot before any
 				// world camera exists -- it therefore always read reprojSource=0

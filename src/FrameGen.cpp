@@ -829,41 +829,63 @@ namespace FrameGen
 		// "the escape fired" can be told apart from "the ratio test passed".
 		static bool snapLockAltFamilyLogged = false;
 
+		// ---- v1.07: consume a release raised by the reset / menu edge ---------
+		// The edge is computed in Streamline and already tells DLSS-G to discard
+		// its reprojection history. The locked camera family is part of that
+		// same history, and until v1.07 it had no way to hear about it - which
+		// is why the 22:02 run kept publishing the 3D-menu family after the
+		// main menu had closed and the world had started.
+		if (snapLockReleasePending) {
+			snapLockReleasePending = false;
+			++snapLockReleased;
+			if (snapLockReleased <= 5u) {
+				SKSE::log::info("[CAM] #{} lock RELEASED on the reset edge (was "
+					"proj00={:.6g} famRej={}) - the next arrival re-acquires",
+					snapArrivals, snapLockProjValid ? snapLockProj00 : 0.0f,
+					snapLockFamilyRej);
+			}
+			snapLockHave = false;
+			snapLockProjValid = false;
+			snapHaveLast = false;
+			snapLockStill = 0;
+		}
+
 		{
 			bool sameFamily = true;
 			if (projOk && snapLockProjValid) {
-				// v1.03: the ratio test alone cannot classify a UNIT projection.
-				// +-2% separates two world cameras because both sit near 0.15, but
-				// a ratio is meaningless ACROSS magnitudes: the 18:23 log showed
-				// proj00=1 against a locked 0.149184 -> ratio 6.7031 -> rejected
-				// as "another render pass". proj00 == 1.0 is a unit / orthographic
-				// projection - a legal second camera, not a render pass of the
-				// first one. Classify by magnitude class first, ratio second.
-				const bool unitProj = (proj00 > 0.995f) && (proj00 < 1.005f);
-				const bool lockUnit = (snapLockProj00 > 0.995f) && (snapLockProj00 < 1.005f);
-				if (unitProj != lockUnit) {
-					// Different magnitude classes: a DIFFERENT camera, but a legal
-					// one. The lock must be allowed to move to it, otherwise a unit
-					// projection seen once pins the lock for good and every real
-					// frame is rejected forever. Only a 2D render pass would be a
-					// genuine intruder, and none has ever been observed at
-					// |proj00| == 1.0; admitting one costs a lock refresh, while
-					// refusing a legal camera costs the whole feature.
-					sameFamily = true;
-					if (!snapLockAltFamilyLogged) {
-						snapLockAltFamilyLogged = true;
-						SKSE::log::info("[CAM] projection family: magnitude classes differ "
-							"(proj00={:.6g} locked={:.6g}) - treating as a legal second "
-							"camera, not a render pass (v1.03)", proj00, snapLockProj00);
-					}
-				} else {
-					const float ratio = proj00 / snapLockProj00;
-					// +-2%: two cameras of the SAME magnitude class sit far enough
-					// apart to separate cleanly (the two real world families are
-					// 5.62x apart) while tolerating float drift and a
-					// resolution/FOV nudge.
-					sameFamily = (ratio > 0.98f) && (ratio < 1.02f);
-				}
+				// v1.03 used to put a magnitude-class escape in front of this
+				// test: proj00 == 1.0 is a unit / orthographic projection, so it
+				// was admitted as "a legal second camera" instead of being
+				// refused as another render pass, and +-2% only ran when both
+				// sides were in the same magnitude class. v1.07 removed it.
+				//
+				// v1.07: the v1.03 magnitude-class escape is GONE.
+				//
+				// It admitted any arrival whenever exactly one of the two
+				// projections was a unit projection:
+				//     if (unitProj != lockUnit) sameFamily = true;
+				// and because the accept path then refreshed snapLockProj00 to
+				// the newly accepted arrival, the escape could never settle. The
+				// 22:02 log is that walk, verbatim:
+				//
+				//   #1  acquire  proj00=0.149184                -> lock 0.149184
+				//   #2  esc 1.0      vs locked 0.149184 -> adopt  -> lock 1.0
+				//   #4  esc 0.149184 vs locked 1.0      -> adopt  -> lock 0.149184
+				//   #11 esc 1.0      vs locked 0.149184 -> adopt  -> lock 1.0
+				//   #13 esc 0.149184 vs locked 1.0      -> adopt  -> lock 0.149184
+				//
+				// While the lock reads 1.0 (a unit projection) EVERY non-unit
+				// arrival counts as a legal second camera - including 0.8391,
+				// the 3D-menu family. Once the lock reads 0.8391 the ratio test
+				// refuses the world camera (0.149184/0.8391 = 0.178) and the old
+				// code returned false forever.
+				//
+				// The escape was a workaround for the missing release path, not
+				// a classification. With the release added above it is both
+				// unnecessary and the thing that walks the lock into the wrong
+				// family, so the ratio test stands alone again.
+				const float ratio = proj00 / snapLockProj00;
+				sameFamily = (ratio > 0.98f) && (ratio < 1.02f);
 			}
 
 			const bool continues = snapLockHave && snapHaveLast && (d2 <= kCamStepTol2);
@@ -885,14 +907,42 @@ namespace FrameGen
 				// freeze. Only an arrival from the SAME family may take over.
 				if (!sameFamily) {
 					++snapLockFamilyRej;
+					// v1.07: this branch used to return WITHOUT touching snapLockStill,
+					// so `still` stayed 0 for a whole run and the release below could
+					// never be reached from here. The 22:02 run printed
+					// lock(pub/hold/re/still)=11821/2725/2416/0 with famRej=309 - 309
+					// refusals and not one of them counted.
+					++snapLockStill;
 					if (snapLockFamilyRej <= 3u || (snapLockFamilyRej % 500u) == 0u) {
 						SKSE::log::info("[CAM] #{} family rejected: proj00={:.6g} locked={:.6g} "
-							"ratio={:.4f} pos=({:.1f},{:.1f},{:.1f}) dist={:.1f} - another render "
-							"pass, never re-acquires",
+							"ratio={:.4f} pos=({:.1f},{:.1f},{:.1f}) dist={:.1f} still={}/{}",
 							snapArrivals, proj00, snapLockProj00,
 							snapLockProjValid ? (proj00 / snapLockProj00) : 0.0f,
-							px, py, pz, std::sqrt(d2));
+							px, py, pz, std::sqrt(d2), snapLockStill, kCamStillTol);
 					}
+					// v1.07b: do NOT re-acquire here.
+					//
+					// The first v1.07 draft let this branch re-adopt after
+					// kCamStillTol consecutive family rejections. The offline
+					// regression showed that is not a repair: the branch adopts
+					// whichever arrival happens to BE the 90th non-continuation,
+					// and with two foreign families arriving it lands on the unit
+					// orthographic projection half the time - proj00=1, which is
+					// just a different wrong family, and one whose clipToPrev is
+					// an identity, i.e. exactly the freeze.
+					//
+					// It also re-opened the door v1.00 closed two lines up the
+					// block: v0.94's unconditional kCamStillTol re-acquire IS the
+					// documented freeze, and "only a same-family arrival may take
+					// over" is the invariant that fixed it. So the refusal is
+					// unconditional again.
+					//
+					// The reset-edge release above remains the ONLY release path.
+					// It is deterministic rather than order-dependent: it fires at
+					// a menu transition and hands the lock to the first arrival
+					// after it, which is the world camera whenever the menu has
+					// closed. The counter below is untouched, so still=N/M keeps
+					// reporting how long the locked family has been failing.
 					if (d2 > kCamJumpTol2) ++snapRejectJump;
 					return false;
 				}

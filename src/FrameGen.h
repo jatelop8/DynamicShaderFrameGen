@@ -312,6 +312,29 @@ namespace FrameGen
 	float snapLockProj00 = 0.0f;      // ProjUnj[0][0] of the locked family
 	bool  snapLockProjValid = false;  // the fingerprint above is meaningful
 	std::uint64_t snapLockFamilyRej = 0;  // arrivals refused for being another family
+	// ---- v1.07: the family lock gets a RELEASE PATH ----
+	// v1.00 wrote "a different projection family may NEVER re-acquire" and
+	// stopped there. The result is a state machine with no transition out of
+	// the locked state: snapLockHave / snapLockProjValid / snapLockProj00 are
+	// only ever SET, never cleared. Whichever family got locked held the
+	// stream until the process exited, and the real camera was refused
+	// forever.
+	//
+	// 22:02 run (v1.06): the world camera ProjUnj[0][0]=0.149184 arrived
+	// every frame and was rejected 309 times as "another render pass"; the
+	// lock ended on 0.8391 - pos (-243.0,-415.3,118.6), whose row3
+	// (-0.00391655,0.999991,0.0015,0) is the matrix v0.86 had already
+	// identified as a mis-offset read of the perFrame constant buffer, not a
+	// camera. lock(hold/re)=2725/2416 with still=0: the release threshold
+	// was unreachable. clipToPrev stayed identity, so the picture did not
+	// advance while 4x presented.
+	//
+	// The caller already computes the edge that belongs here - c.reset, the
+	// menu open/close and camera-discontinuity edge - and uses it to tell
+	// DLSS-G to discard its history. The locked camera is part of that same
+	// history. It hears about it now.
+	bool snapLockReleasePending = false;  // raised by the reset/menu edge
+	std::uint64_t snapLockReleased = 0;   // times the family lock was released
 	std::uint64_t snapLockRelockJump = 0; // same-family teleports that took the anchor
 	std::uint64_t snapLockAdopted = 0;    // times a position snapshot was adopted
 		// ---- v0.83: instrument the gate so a log can name which branch fires ----

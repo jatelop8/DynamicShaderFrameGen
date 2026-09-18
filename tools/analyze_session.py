@@ -96,11 +96,25 @@ def main() -> int:
     print("=" * 74)
 
     # ---- which build wrote this ------------------------------------------
-    m = last_match(dfg, r"\[XRAY\] diag active (v[\d.]+) \(compiled ([^)]+)\)")
+    # Every check below assumes the shipped build. Saying WHICH build wrote the
+    # log used to be informational only; the 22:02 run was analysed against the
+    # wrong assumption more than once, so it is now a hard comparison.
+    # The regex has to accept a letter suffix: v1.02c and v1.07b both exist.
+    EXPECTED_BUILD = "v1.07b"
+    m = last_match(dfg, r"\[XRAY\] diag active (v[\d.a-z]+) \(compiled ([^)]+)\)")
     if m:
         print(f"\nbuild            {m[0]}  compiled {m[1]}")
+        if m[0] != EXPECTED_BUILD:
+            print(f"   {VERDICT_BAD}: this log was written by {m[0]}, not "
+                  f"{EXPECTED_BUILD}. Check the DLL actually in "
+                  f"E:/EJ/mod/mods/DynamicShaderFrameGen/SKSE/Plugins/ - the "
+                  f"checks below describe {EXPECTED_BUILD}, not {m[0]}.")
+            problems.append(f"log written by {m[0]}, expected {EXPECTED_BUILD}")
     else:
         print("\nbuild            (no [XRAY] banner found)")
+        print(f"   {VERDICT_BAD}: no banner at all - either the plugin never "
+              f"reached its first log line, or this predates the banner")
+        problems.append("no [XRAY] banner in the log")
 
     # ---- 1. reflex cap ---------------------------------------------------
     print("\n1. REFLEX CAP")
@@ -131,6 +145,18 @@ def main() -> int:
     # ---- 2. present blocking --------------------------------------------
     print("\n2. PRESENT")
     if recent_wd:
+        # The FIRST sample of a run is not a Present measurement. presentAge is
+        # `now - g_presentEnteredMs`, and before the first frame Present has
+        # never been entered, so the field measures "time since the plugin
+        # initialised" - i.e. the loading screen. The 22:02 run's first sample
+        # reads frames=1 silent=19196ms presentAge=19199ms, which is 19.2s of
+        # loading, and the very next sample is frames=4 presentAge=14ms.
+        # Judging it reports "Present blocked for 19199ms - a real hang" on a
+        # run whose render loop never stalled once. Same class of error as the
+        # three fixed in v1.06: a statistic that cannot mean what it is read as.
+        boot = [l for l in recent_wd
+                if not re.search(r"frames=1\b", l)]
+        recent_wd = boot if boot else recent_wd
         recent_txt = "\n".join(recent_wd)
         ages = [int(m) for m in re.findall(r"presentAge=(-?\d+)ms", recent_txt)]
         frames = [int(m) for m in re.findall(r"frames=(\d+)", recent_txt)]
@@ -248,6 +274,65 @@ def main() -> int:
     mv = last_match(dfg, r"mfg\(hwMax/reqMax/rungsSkipped\)=(\d+)/(\d+)/(\d+)")
     if mv:
         print(f"   mfg(hwMax/reqMax/rungsSkipped)={mv[0]}/{mv[1]}/{mv[2]}")
+
+    # ---- 6. camera family lock (v1.07) -----------------------------------
+    # `proj00` in the heartbeat is snapLockProj00 (Streamline.cpp:1371) - the
+    # projection fingerprint of the family that currently OWNS the stream, not
+    # the fingerprint of the arrival being examined. The two known families are
+    # 0.149184 (world) and 0.8391 (3D menu), 5.62x apart. If the world is being
+    # rendered (worldFrames climbing) and the lock still reads 0.8391, DLSS-G is
+    # being handed a camera for a world that is gone - which is a frozen picture
+    # with a live frame counter.
+    print("\n6. CAMERA FAMILY LOCK")
+    lk = re.findall(
+        r"lock\(pub/hold/re/still\)=(\d+)/(\d+)/(\d+)/(\d+) proj00=([\d.eE+-]+) famRej=(\d+)",
+        dfg)
+    if lk:
+        pub, hold, re_, still, proj00, famrej = lk[-1]
+        wm = re.findall(r"menu=(\d+) world=(\d+)", dfg)
+        menu_frames = int(wm[-1][0]) if wm else 0
+        world_frames = int(wm[-1][1]) if wm else 0
+        print(f"   lock(pub/hold/re/still)={pub}/{hold}/{re_}/{still}"
+              f"  proj00={proj00}  famRej={famrej}")
+        print(f"   worldFrames at the end of the run: {world_frames}"
+              f"  (menuFrames={menu_frames})")
+        rel = re.findall(r"\[CAM\] #\d+ lock RELEASED[^\n]*", dfg)
+        print(f"   release events: {len(rel)}")
+        for r in rel[:4]:
+            print(f"     {r}")
+        p = float(proj00)
+        if world_frames > 60 and abs(p - 0.8391) < 0.01:
+            print(f"   {VERDICT_BAD}: the lock is on the MENU family (proj00={proj00})"
+                  f" while the world is being rendered ({world_frames} world frames)."
+                  f" The world camera is arriving and being refused - famRej={famrej}."
+                  f" clipToPrev cannot move, so the picture is frozen.")
+            problems.append("camera lock is on the menu family during world frames")
+        elif world_frames > 60 and abs(p - 0.149184) < 0.01:
+            print(f"   {VERDICT_OK}: the world family owns the lock (proj00={proj00})")
+        else:
+            print(f"   {VERDICT_UNKNOWN}: proj00={proj00} is neither known family,"
+                  f" or the run never reached the world"
+                  f" (worldFrames={world_frames})")
+        # v1.07b: heavy family refusals are HEALTHY while the world family owns
+        # the lock - that is the v1.00 invariant doing its job, and the count is
+        # only how many times the menu/unit passes were turned away. It is a
+        # problem only when the lock sits on a foreign family AND no release ever
+        # fired, because a release fires at every menu open/close edge. The old
+        # form of this check required still==0, which was true only in v1.06
+        # where that counter was never incremented; in v1.07b it counts.
+        if int(famrej) > 50 and abs(p - 0.149184) < 0.01:
+            print(f"   {VERDICT_OK}: {famrej} refusals with the world family holding"
+                  f" the lock - foreign families turned away, as intended")
+        if (int(famrej) > 50 and len(rel) == 0
+                and menu_frames > 0 and world_frames > 60):
+            print(f"   {VERDICT_BAD}: {famrej} refusals and a menu->world transition"
+                  f" (menu={menu_frames} world={world_frames}) but 0 releases."
+                  f" v1.07b raises the release at that edge - is {EXPECTED_BUILD}"
+                  f" the build actually loaded?")
+            problems.append("reset-edge release never fired across a menu->world transition")
+    else:
+        print(f"   {VERDICT_UNKNOWN}: no lock(...) field"
+              f" (build older than v1.00?)")
 
     # ---- summary ---------------------------------------------------------
     print("\n" + "=" * 74)
