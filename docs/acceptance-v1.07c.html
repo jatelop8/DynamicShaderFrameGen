@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DFG v1.07c 验收卡</title>
+<style>
+  :root{
+    --bg:#f6f5f2; --panel:#fffdf9; --ink:#23201c; --dim:#6b645c;
+    --line:#ddd7cc; --ok:#1f7a45; --bad:#b3261e; --warn:#9a6a00;
+    --accent:#8a5a2b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:28px 22px 60px;background:var(--bg);color:var(--ink);
+    font:15px/1.72 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;}
+  .wrap{max-width:880px;margin:0 auto}
+  h1{font-size:23px;margin:0 0 4px;letter-spacing:.2px}
+  .sub{color:var(--dim);font-size:13.5px;margin-bottom:22px}
+  h2{font-size:16.5px;margin:30px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:9px;
+    padding:16px 18px;margin:12px 0}
+  code,kbd{font-family:ui-monospace,Consolas,monospace;font-size:13px;
+    background:#efece5;border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+  pre{background:#2a2723;color:#f2ede4;padding:13px 15px;border-radius:7px;
+    overflow-x:auto;font-size:12.5px;line-height:1.6;margin:10px 0}
+  pre code{background:none;border:none;color:inherit;padding:0}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12.5px;letter-spacing:.3px}
+  .ok{color:var(--ok);font-weight:600}
+  .bad{color:var(--bad);font-weight:600}
+  .warn{color:var(--warn);font-weight:600}
+  .big{font-size:19px;font-weight:700}
+  ol,ul{padding-left:22px;margin:8px 0}
+  li{margin:5px 0}
+  .kv{display:grid;grid-template-columns:150px 1fr;gap:4px 14px;font-size:13.5px}
+  .kv div:nth-child(odd){color:var(--dim)}
+  .foot{margin-top:34px;padding-top:14px;border-top:1px solid var(--line);
+    color:var(--dim);font-size:12.5px}
+  .tag{display:inline-block;font-size:11.5px;padding:2px 8px;border-radius:20px;
+    background:#eae4d9;color:var(--accent);margin-left:8px;vertical-align:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>DynamicShaderFrameGen v1.07c — 验收卡</h1>
+  <div class="sub">
+    2026-09-18 23:22 · DLL md5 <code>c58c8720…8015</code> · tag <code>v1.07c</code>
+    · 已部署到 MOD 文件夹
+  </div>
+
+  <div class="card">
+    <div class="big">这次改的是「画面为什么来回循环」，不是「帧生成有没有跑」。</div>
+    <p style="margin:10px 0 0">
+      上一轮你的那句话把方向定住了：<b>「画面是来回循环得，帧数低了看得清楚，帧数高就觉得这个循环比较快，看着像卡了」</b>。
+      「来回循环」和「静止不动」是两种不同的故障 —— 我之前几轮都按「静止」解释，所以一直没打到点上。
+    </p>
+  </div>
+
+  <h2>1. 你要做的（约 30 秒）</h2>
+  <div class="card">
+    <ol>
+      <li>进游戏，等 4x 跑起来（左上角有帧数）。</li>
+      <li><b>站着不动停 5 秒</b>（不要按 W）。这一步是判据 3 的前提。</li>
+      <li>再随便走 5 秒、转一下视角。</li>
+      <li>退出，跑一条命令：</li>
+    </ol>
+    <pre><code>cd /d/Modding/DynamicShaderFrameGen
+"C:/Users/Administrator/.workbuddy/binaries/python/versions/3.13.12/python.exe" tools/analyze_session.py</code></pre>
+  </div>
+
+  <h2>2. 三条判据</h2>
+  <table>
+    <tr><th style="width:36px">#</th><th style="width:190px">看什么</th><th style="width:120px">合格</th><th>不合格意味着</th></tr>
+    <tr>
+      <td>1</td>
+      <td><code>build</code> 横幅</td>
+      <td class="ok">v1.07c</td>
+      <td>DLL 没换上去，下面两条都不作数。检查
+        <code>E:/EJ/mod/mods/DynamicShaderFrameGen/SKSE/Plugins/</code></td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td><code>clipW</code><br><span style="color:#6b645c;font-size:12.5px">clipToPrevClip[3].w</span></td>
+      <td class="ok">1.000000</td>
+      <td>逆矩阵和「上一帧」仍不是同一台相机（就是这次修的东西）</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td><code>clipDev</code><br><span style="color:#6b645c;font-size:12.5px">第 4 项，站着不动时</span></td>
+      <td class="ok">≈ 0</td>
+      <td>相机没动，却被告诉 DLSS-G「动了」→ 画面仍会来回</td>
+    </tr>
+  </table>
+  <div class="card" style="margin-top:6px">
+    <b>自动检查：</b>工具会自己报 <code>PROBLEM</code>。用 23:10 那份日志回放，它<b>自动报出</b>了
+    「clipDev 在 ≤1e-4 和 &gt;10 两侧交替」—— 那正是 v1.07c 修的那个缺陷的指纹。
+    <pre style="margin-bottom:0"><code>PROBLEM: clipDev alternates between identity (2 samples &lt;=1e-4)
+and absurd (5 samples &gt;10) in the SAME run.</code></pre>
+  </div>
+
+  <h2>3. 这次到底改了什么（一句话 + 一个式子）</h2>
+  <div class="card">
+    <p style="margin-top:0">
+      <code>Streamline.cpp</code> 里计算重投影矩阵时，<b>取逆用的相机和「上一帧」用的相机不是同一台</b>：
+      取逆用的是引擎那份<b>没有平移</b>的 ViewProj，乘的却是我们自己重建的、<b>含相机位置</b>的矩阵。
+      两个不同构的矩阵相乘，平移项无法抵消：
+    </p>
+    <pre><code>inv( P @ [R|0] )  @  ( P @ [R | -R@eye] )
+  = [R^T|0] @ [R | -R@eye]
+  = [ I | -eye ]        ← 旋转精确等于单位阵，平移是整个相机位置
+                           eye = (-243.05, -415.31, 118.56)  ⇒ 平移量级 ~495</code></pre>
+    <p>
+      所以 `det3()`（只读 3×3）一直报 <code>1.000000</code>、
+      <b>看起来完全健康</b>，而 DLSS-G 收到的是一句谎话：
+      「相机没转，但平移了半个世界」。它据此生成插值帧 → 画面来回。
+    </p>
+    <p style="margin-bottom:0">
+      <b>修法（单点）：</b>取逆改用与「上一帧」同源的矩阵 ——
+      <code>camCurOk ? camCurVP : curForReproj</code>。
+      相机静止时两边同源，结果<b>精确等于单位矩阵</b>。
+    </p>
+  </div>
+
+  <h2>4. 证据（都不是推断）</h2>
+  <div class="card">
+    <div class="kv">
+      <div>Transfusion 打印的实际矩阵</div>
+      <div><code>row3 = [-243.962387 2.7390945 -77.6724777 <span class="bad">-195.222366</span>]</code>
+        <br><span style="color:#6b645c;font-size:12.5px">
+        合法仿射阵的 <code>[3][3]</code> 必须是 1；这里是 -195。连仿射都不是。</span></div>
+      <div>心跳里的交替</div>
+      <div><code>0.000023 → 0.000023 → 0.348 → <span class="bad">28.77</span> → 4.55 → <span class="bad">18.57</span></code>
+        <br><span style="color:#6b645c;font-size:12.5px">
+        同一会话里 identity 与「几百单位」交替 —— 不是一台在动的相机。</span></div>
+      <div>离线代数证明</div>
+      <div>200 组随机 R/P/eye，与 <code>[I | -R@eye]</code> 的偏差 <code>2.9e-11</code>；
+        修复后静止相机 = identity（<code>5.6e-14</code>）；
+        相机移 15.3 单位时新码给出 <code>15.24</code> —— <b>真实运动没被拍平</b>。</div>
+      <div>回归 / 构建</div>
+      <div><code>tools/regress_v107c_reprojsrc.py</code> → <b>OK</b>；
+        构建 == 部署（<code>cmp</code> IDENTICAL）</div>
+    </div>
+  </div>
+
+  <h2>5. 这次<b>没有</b>解释的（别把它们算进来）</h2>
+  <table>
+    <tr><th style="width:210px">现象</th><th>状态</th></tr>
+    <tr>
+      <td>帧率单调恶化<br><span style="color:#6b645c;font-size:12.5px">39.7 → 25.4 → 17.3 → 13.4 fps<br>1% Low → 1.1 fps<br>真实帧 571 ms</span></td>
+      <td><b>未解释。</b>可能是本缺陷的后果（每帧喂给 DLSS-G 一个非仿射重投影，遮挡判断失效），
+        也可能是另一个独立缺陷。下次运行的数据判定。</td>
+    </tr>
+    <tr>
+      <td>两个线程 present 同一 swap chain</td>
+      <td>已发现（<code>tid=45300 / 43404</code>），尚未调查。</td>
+    </tr>
+    <tr>
+      <td>族锁仍停在菜单族</td>
+      <td>已证明<b>不是</b>画面静止的原因（发布通道一直是通的），暂不动。</td>
+    </tr>
+    <tr>
+      <td>Modex.dll 第三方闪退</td>
+      <td>不在本插件栈上。<b>验证冻结前请在 MO2 取消勾选它</b>，否则结论不可信。</td>
+    </tr>
+  </table>
+
+  <h2>6. 一秒回到可玩（如果需要）</h2>
+  <div class="card">
+    只改 INI，不动代码：
+    <pre style="margin-bottom:0"><code>[DynamicShaderFrameGen]
+Provider=0
+MFGMaxFramesOverride=0</code></pre>
+  </div>
+
+  <div class="foot">
+    <b>诚实说明：我无法运行游戏。</b>v1.07c 是否真的止住了「来回循环」，只有你这一趟运行知道。
+    三条判据里第 3 条（站着不动时 <code>clipDev ≈ 0</code>）是最硬的 ——
+    它不依赖任何新字段，也不受帧率高低影响。
+  </div>
+
+</div>
+</body>
+</html>
