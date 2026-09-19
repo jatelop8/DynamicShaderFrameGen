@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DFG v1.13 诊断 —— 那个「相机」根本不是相机：同一个 CB 每帧被写 20 多次</title>
+<style>
+  :root{
+    --bg:#f6f3ee; --card:#fffdf9; --ink:#2c2823; --dim:#6b635a;
+    --line:#ded6c9; --warn:#9c4a2f; --ok:#4a6b4a; --accent:#8a6d3b;
+    --mono:"Cascadia Mono","Consolas","SFMono-Regular",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.75 "Microsoft YaHei","PingFang SC",system-ui,sans-serif;}
+  .wrap{max-width:1010px;margin:0 auto;padding:30px 22px 60px;}
+  h1{font-size:23px;margin:0 0 4px;letter-spacing:.3px;}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:24px;}
+  h2{font-size:17px;margin:32px 0 10px;padding-left:10px;
+     border-left:3px solid var(--accent);}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:6px;
+        padding:16px 18px;margin:12px 0;}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13.5px;}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top;}
+  th{background:#efe9df;font-weight:600;}
+  code{font-family:var(--mono);font-size:12.5px;background:#efe9df;
+       padding:1px 5px;border-radius:3px;word-break:break-all;}
+  pre{font-family:var(--mono);font-size:12.5px;background:#2f2b26;color:#e8e2d8;
+      padding:13px 15px;border-radius:5px;overflow-x:auto;line-height:1.6;}
+  .k{color:var(--warn);font-weight:700;}
+  .g{color:var(--ok);font-weight:700;}
+  .badge{display:inline-block;font-size:11.5px;padding:1px 8px;border-radius:10px;
+         border:1px solid var(--line);background:#efe9df;color:var(--dim);
+         margin-right:6px;font-family:var(--mono);}
+  ul{margin:8px 0;padding-left:22px;}
+  li{margin:4px 0;}
+  .q{font-size:16px;font-weight:700;margin:0 0 6px;}
+  .small{font-size:12.5px;color:var(--dim);}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  @media(max-width:720px){.grid2{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>v1.13 —— 那个「相机」根本不是相机</h1>
+<div class="sub">证据来源：<code>DynamicShaderFrameGen.log</code> 2026-09-19 18:20 那局（v1.12，build 14:34:24）
+· 已存档 <code>docs/runlogs/2026-09-19-1820-v1.12-world-impostor.log</code> + <code>.watchdog.log</code>
+· 构建 <code>4b34118e…</code> 1,340,928 B · tag <code>v1.13</code> / <code>9e6ac64</code></div>
+
+<div class="card">
+<p class="q">直答</p>
+<p><span class="g">上一版（v1.12）的限速器修复确认生效</span> ——
+真实帧率从 9.74 跳到 <code>48.3</code>（菜单）/ <code>24.3</code>（世界），<code>capUs</code> 25641→6289。
+<b>这一份收益保住了。</b></p>
+<p>但画面依旧不动。这局把原因<b>量出来了，不是猜的</b>：
+我们一直以为自己在读「相机的矩阵」，其实读的是<b>每帧最后一个写这个缓冲的人</b>。
+世界里那个写者是<b>一个正交全屏投影</b>（UI / 后处理类 pass），
+它的矩阵<b>永远不变</b> ⇒ 我们拿它当相机，<code>clipToPrevClip</code> 就恒等于单位阵
+⇒ DLSS-G 判定「相机没动」⇒ 插帧 = 复制上一帧 ⇒ 看起来就是卡死。
+<b>v1.13 让「不是相机长相的写入」直接不发布。</b></p>
+</div>
+
+<h2>一、这局实测到的四件事</h2>
+<table>
+<tr><th>#</th><th>事实</th><th>日志原文 / 数据</th></tr>
+<tr><td>1</td><td><b>v1.12 的翻倍生效</b>（真实帧率 ×5）</td>
+<td><code>Reflex cap check (v1.12): 159 flip fps on a 160Hz panel = 79.5 rendered fps at 2x</code><br>
+<code>FPS probe: real=48.3 … hwMax=6 ask=4 accepted=4</code>（上一局同一位置是 <code>9.74</code>）</td></tr>
+<tr><td>2</td><td><b>DLSS5 与帧生成同时在线</b>（目标的一半已达成）</td>
+<td><code>DLSSNR CHAINED with frame generation (v1.01, NRAllowWithFrameGen=1)</code></td></tr>
+<tr><td>3</td><td><b>发布流在世界里完全冻住</b></td>
+<td><code>path</code> 卡在 <code>124.92</code> 三十秒；<code>pos</code> 只抖 ±0.6；
+<code>matChanges</code> 422→6171（<b>+40/s = 2×24</b>）；<code>arrivalsPerSec=591</code></td></tr>
+<tr><td>4</td><td><b>进世界 31 ms 内四次抢锁</b></td>
+<td><code>same-family step break</code> ×4，距离 <code>376.6 / 255.2 / 452.7</code></td></tr>
+</table>
+<p class="small">★ 第 3 项那个 <code>+40/s</code> 是关键口味：它正好是 <code>2 × 24</code>。
+两个来源在抢同一个槽 —— 一个是每帧写一次的恒定矩阵，一个是活的相机。</p>
+
+<h2>二、解剖那个假相机：它是一个正交全屏投影</h2>
+<p>世界阶段十个字段<b>全部退化成平凡矩阵</b>：</p>
+<pre>[FLD] #31501 c0  View     row3=(0,0,0,1)          ← 精确的轴交换置换阵 [[0,0,1],[0,1,0],[1,0,0]]
+[FLD] #31501 c8  Proj     det=1.11111
+[FLD] #31501 c32 PrevVPU  全零
+[FLD] #31501 c40 ProjU    det=0.9                 ← 就是上面那个的逆
+[RAW] +0x0060 | 0 0 1.111111 -0.1111111 | 0 0 0 1
+[RAW] +0x0280 | -464.5398 349.1476 101.2857 0 | 0 0 0 0</pre>
+<p>把 <code>c8</code> 按 D3D 投影的格式反解：</p>
+<pre>m22 = zf/(zf-zn)          = 1.111111
+m23 = -zn·zf/(zf-zn)      = -0.1111111
+m32 = 0,  m33 = 1         ← ★ 没有透视除法 ⇒ 这是 ORTHO，不是相机投影</pre>
+<p>令 <code>zf=1, zn=0.1</code>，得到 <code>z' = (z-0.1)/0.9 = 1.1111z - 0.1111</code> ——
+与日志里的两个数字<b>逐位吻合</b>。这是一个把 <code>[0.1, 1]</code> 映射到 <code>[0, 1]</code> 的
+<b>全屏正交投影</b>，典型的 UI / 后处理 / 阴影类 pass。</p>
+<div class="card">
+<p><b>三条独立旁证</b>（都不是同一个证据的重复叙述）：</p>
+<ul>
+<li><code>CameraPreviousPosAdjust</code> 在世界里<b>恒为 (0,0,0,0) 整整三十秒</b>；在菜单里它紧贴 <code>pos</code>。
+一个「上一帧相机位置」不可能是零向量 —— 除非这个结构体根本没被相机写过。</li>
+<li><code>m32=0</code> 是结构性判据：真实相机投影必然 <code>m32=1, m33=0</code>（要有透视除法）。</li>
+<li>到达率 <code>591/s</code> ÷ 真实帧率 <code>~24</code> ≈ <b>22 次</b> —— 一个渲染帧里同一个缓冲被 Map/Unmap 二十几次，
+而我们（和 Community Shaders）的 hook 都只保留<b>最后一个</b>写者。</li>
+</ul>
+</div>
+
+<h2>三、反证：菜单期的字段是好的，所以不是偏移错</h2>
+<p>同一局在主菜单的那七分钟，十个字段<b>全是真相机</b>：</p>
+<table>
+<tr><th>观测量</th><th>菜单期实测</th><th>说明</th></tr>
+<tr><td><code>path</code></td><td><code>0 → 117.60</code> 单调增长</td><td>相机在真的移动</td></tr>
+<tr><td><code>prevPos</code> vs <code>pos</code></td><td>相差 0.1~0.3</td><td>逐帧跟着走，不是冻结常量</td></tr>
+<tr><td><code>Proj row3</code></td><td><code>(0,0,1,0)</code> ⇒ <code>m32=1, m33=0</code></td><td><b>透视除法在</b> ⇒ 真相机</td></tr>
+<tr><td><code>det</code> / <code>mag</code></td><td><code>79.9373</code> / <code>15.011</code></td><td>手算分解出无穷远投影，<code>zn=15.011</code></td></tr>
+</table>
+<p>更关键的是：我用手算验证了 <code>ViewProj = Proj · View</code> <b>精确成立</b>（不是近似）。
+⇒ <b>字段偏移、矩阵约定、转置方向全都是对的</b>。问题不在「读错了字段」，而在「读错了人」。</p>
+
+<h2>四、v1.13 改了什么：唯一一处行为改动</h2>
+<table>
+<tr><th>#</th><th>性质</th><th>改动</th></tr>
+<tr><td>1</td><td><b>行为</b></td><td>在 <code>AcceptCameraSnapshot</code> 的 <code>usable</code> 检查之后插一道
+<b>内容门</b>：<br>
+<code>const bool camShaped = |CameraProj[3][2]| &gt;= 0.05 &amp;&amp; |CameraProj[3][3]| &lt;= 0.05;</code><br>
+不满足 ⇒ <code>++snapNonCamera</code>、<code>return false</code>（<b>不发布</b>），并打最多 5 行
+<code>[CAM] #N NON-CAMERA write dropped (v1.13)</code>。</td></tr>
+<tr><td>2</td><td><b>逃生门</b></td><td><code>kCamCaptureFallbackSkips = 6000</code>：若连续 6000 次都不像相机
+（说明这个判据本身是错的），<b>自动退回旧行为</b>（接受最后一个写者）⇒ <b>最坏情况 = 当前版本，不会更糟</b>。</td></tr>
+<tr><td>3</td><td>日志</td><td><code>[CAM] pub</code> 行尾追加 <code>cap={}/{}</code>
+（左边 = 被丢弃的非相机写次数，右边 = 距上次成功捕获的连续跳过数）。</td></tr>
+</table>
+<div class="card">
+<p><b>为什么判据是 <code>1 vs 0</code> 而不是估值</b>：两群样本在本局的日志里是<b>精确分离</b>的 ——</p>
+<table>
+<tr><th></th><th><code>|Proj[3][2]|</code></th><th><code>|Proj[3][3]|</code></th></tr>
+<tr><td>相机写（菜单，7 分钟）</td><td class="g">1</td><td class="g">0</td></tr>
+<tr><td>假相机写（世界，30 秒）</td><td class="k">0</td><td class="k">1</td></tr>
+</table>
+<p>阈值 <code>0.05</code> 只是给浮点误差留的余量，两群之间差了整整 1.0。<b>不是猜的，是量出来的。</b></p>
+<p><b>锁、族指纹、接管、reset-edge 释放 —— 一行都没改。</b> 这是纪律：根因变了，先让新判据单独上机说话，
+不要在同一版里叠两个未知。</p>
+</div>
+
+<h2>五、L30（本轮新增的通用铁律）</h2>
+<div class="card">
+<p class="q">同一个槽位被多个来源共享时，「谁最后写」不是选源依据。</p>
+<p>选源必须用<b>内容里可判定的特征</b>（这里是 <code>m32/m33</code> 的透视除法），
+而且<b>新判据必须带逃生门</b>（这里是 6000 次不匹配就退回旧行为），
+并且<b>先测出两群样本的分离量再写判据</b> —— 分离量 1.0 和 0.01 是两种完全不同的可信度。</p>
+<p class="small">这一条是 <code>framegen-diagnosis</code> 技能的第 53 节，已登记。</p>
+</div>
+
+<h2>六、L0 两遍自检（逐条列出）</h2>
+<div class="grid2">
+<div class="card">
+<p><b>第一遍 · 手脚</b></p>
+<ul>
+<li>干跑 5/5 锚点 <code>count==1</code> → <code>--apply</code>；重跑被幂等 marker <code>REFUSED</code>（exit=1）</li>
+<li><code>FrameGen.cpp</code> 78,641 → 82,433 B，CRLF 1599 → 1667，<b>裸 LF 0</b></li>
+<li><code>FrameGen.h</code> 22,540 → 23,110 B，CRLF 409 → 419，<b>裸 LF 0</b></li>
+<li><code>BUILD SUCCESS</code>，无 <code>error C*</code> / <code>LNK</code></li>
+<li>DLL 1,340,928 B、md5 <code>4b34118e…</code>（build == 部署一致）</li>
+<li>DLL 内新串各 1 次：<code>NON-CAMERA write dropped (v1.13)</code>、<code>cap={}/{}</code></li>
+<li>仓库 INI == 部署 INI（md5 <code>a19307d4</code>），六键正确</li>
+<li><code>git commit 9e6ac64</code> + <code>tag v1.13</code>；备份
+<code>src/backup-v1.13-20260919-182918/</code></li>
+</ul>
+</div>
+<div class="card">
+<p><b>第二遍 · 脑子</b></p>
+<ul>
+<li><b>反向假设</b>：如果世界里的写者<b>本来就是</b>相机，那 <code>m32=0/m33=1</code> 不可能出现
+（相机投影必须有透视除法）；且正交投影的逆 <code>c40</code> 不会恰好是 <code>c8</code> 的精确逆。
+两条都指向「这不是相机」。</li>
+<li><b>会不会白跑</b>：如果判据错了（世界里全是正交写），6000 次后<b>自动退回</b>旧行为，
+这一趟最坏等于什么都没改 —— <b>不会比现在更糟</b>，这就是逃生门存在的意义。</li>
+<li><b>这条路径真会走到吗</b>：<code>cap=</code> 计数就是为它准备的；
+若左边始终为 0 且右边一路涨到 6000，说明世界里根本没有相机写 ⇒ 必须换 <code>RE::PlayerCamera</code> 源。</li>
+<li><b>本轮我自己踩的三个坑</b>（已修，记下来防复发）：
+① 后置条件断言 <code>kCamCaptureFallbackSkips</code> 出现 2 次，实际 3 次（新注释里正当地点了它）
+⇒ 改为断言<b>声明行</b>；
+② 同类问题在 <code>FrameGen.h</code> 的 <code>snapNonCamera</code> 上又踩一次 ⇒ 同样改为断言成员<b>声明行</b>；
+③ 笔记脚本的 EOL 守卫对纯 LF 文件误报（追加行本来就该增加裸 LF）⇒ 改成按「风格不得翻转」判定。</li>
+</ul>
+</div>
+</div>
+
+<h2>七、下一局只看这几处</h2>
+<table>
+<tr><th>看到什么</th><th>结论</th></tr>
+<tr><td><code>cap=</code> <b>左边 ≈ 帧率</b>（每秒涨 ~24）、右边稳步回落到 0</td>
+<td class="g">判据生效，且世界里<b>确实有</b>相机写 —— 这就是要找的那一群</td></tr>
+<tr><td><code>path</code> 开始增长，走动时 <code>clipDev</code> 明显 &gt; 0（不再恒 <code>0.000061</code>）</td>
+<td class="g">重投影拿到真实运动 ⇒ 插帧第一次有内容</td></tr>
+<tr><td><code>matChanges</code> 不再有 <code>2×fps</code> 的固定倍率</td>
+<td class="g">抢槽的双写者被清掉了</td></tr>
+<tr><td><code>cap=</code> <b>左边恒 0</b>、右边一路涨到 6000，且旧行为自动恢复</td>
+<td class="k">世界内根本没有相机写这个 CB。下一步换 <code>RE::PlayerCamera</code>
+（<code>cameraRoot-&gt;world.translate</code> 取眼位），逃生门已保证这一版不会更糟</td></tr>
+<tr><td>画面仍然不动，但上面几项都正常</td>
+<td class="k">根因不在捕获侧；把日志给我，下一层是 <code>slConstants</code> 的装配</td></tr>
+</table>
+
+<h2>八、诚实边界（未做 / 未证）</h2>
+<div class="card">
+<ul>
+<li><b>世界内到底有没有「相机写」，仍未证。</b>这一趟的全部改动就是为了回答它。
+我用 <code>cap=</code> 把这个问题变成了一个可以一次读数回答的问题。</li>
+<li><b>DLSS5 的输出是否真的上屏，仍未证。</b>代码链确认在跑
+（<code>DLSSNR CHAINED</code>），但没有画面的独立证据。</li>
+<li><b><code>ArchivePreviousLog()</code> 仍不产出文件。</b>调用顺序已核对正确、格式串在 DLL 内存在，
+静态查不出原因。<b>本轮不猜、不改</b>，改用每局前手工 <code>cp</code> 到 <code>docs/runlogs/</code>（本局已存）。</li>
+<li><b>RTX 20/30 系一行代码都没写</b>（<code>grep -i xess</code> = 0）。这是四大目标里唯一完全没动的。</li>
+<li><b>我跑不了游戏。</b>「一次性修干净」这句话只能由你那一趟的日志来裁定，不能由我说了算。</li>
+</ul>
+</div>
+
+<h2>九、出问题怎么一秒回去</h2>
+<div class="card">
+<p>改前存档：<code>src/backup-v1.13-20260919-182918/</code></p>
+<ul>
+<li><b>退回 v1.12 行为</b>（不换 DLL）：把 <code>src/backup-v1.12-20260919-150056/</code> 的 DLL 覆盖到
+<code>E:/EJ/mod/mods/DynamicShaderFrameGen/SKSE/Plugins/</code>（md5 <code>b51ef90b…</code>）</li>
+<li><b>只退回节流</b>：INI 写 <code>ReflexFpsLimit=40</code></li>
+<li><b>退回纯 2x / 可玩</b>（只改 INI）：<code>Provider=0</code> + <code>MFGMaxFramesOverride=0</code></li>
+<li><b>逃生门已内置</b>：即使不换 DLL，判据失败 6000 次后也会自动退回 v1.12 的接受行为</li>
+</ul>
+<p class="small">改 INI 必须改<b>仓库那份</b> <code>SKSE/Plugins/DynamicShaderFrameGen.ini</code>，
+再跑 <code>bash tools/deploy_ini.sh</code> —— 构建会用仓库那份覆盖部署目录（L27）。
+判据永远是 <code>md5(repo) == md5(deployed)</code>。</p>
+</div>
+
+<p class="small" style="margin-top:26px">v1.13 · 2026-09-19 · 一处行为改动（捕获侧内容门 + 逃生门）
+· 账本第 27 章 / 日志 §6.16 已追写 · 新增铁律 L30 · 技能 <code>framegen-diagnosis</code> §53</p>
+
+</div>
+</body>
+</html>
