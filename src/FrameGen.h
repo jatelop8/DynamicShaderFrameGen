@@ -347,6 +347,27 @@ namespace FrameGen
 	bool  snapPubHaveMat = false;
 	float snapPubLastMat[4][4] = {};
 
+	// ---- v1.10: a MOVING family beats a STILL lock ---------------------- 
+	// The 11:30 run is the measurement this exists for. The reset edge at
+	// 11:33:15.482 released the lock and "the next arrival" took it -- and that
+	// arrival was proj00=0.8391 at pos (-243.05,-415.31,118.56), a SCENE-FIXED
+	// position byte-identical to the cameraPos the 23:10 run recorded two days
+	// earlier. The real camera (proj00=1) then walked
+	// (-125.7,210.8,188.4) -> (255.0,804.7,-94.4) and was refused ~90 times a
+	// second, so frameBufferCopy stayed frozen (matChanges 168 for nine seconds,
+	// path 65.41, move 0.0000, still 1570/90) and clipToPrevClip collapsed to I.
+	//
+	// So the refused stream is allowed to take the anchor -- but only after it
+	// has demonstrated travel of its own. kCamStillTol, the threshold v0.94
+	// used unconditionally, is a dead constant (v1.09 finding D2): the lock has
+	// no release path of its own, which is why 1570 consecutive refusals changed
+	// nothing.
+	float snapForeignMove = 0.0f;      // travel of the CURRENTLY refused family
+	bool  snapForeignHave = false;     // the field above has a previous sample
+	float snapForeignPos[3] = { 0.0f, 0.0f, 0.0f };
+	float snapForeignProj00 = 0.0f;    // which family the travel belongs to
+	std::uint64_t snapForeignTakeover = 0;  // times a moving family took the anchor
+
 		// ---- v0.83: instrument the gate so a log can name which branch fires ----
 		// snapFrozenReject / snapFrozenRepeats already existed but were never
 		// printed, so the 13:22 run could not tell whether the v0.78 frozen gate

@@ -164,13 +164,17 @@ extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Load(const SKSE::LoadInterface* a_s
 	// v1.09: SKSE::Init opens the spdlog sink, which truncates the log file. Copy
 	// the previous session's log out of the way first, or the run that reproduced
 	// the bug is destroyed by the run that follows it.
+	// v1.10: the watchdog path must exist BEFORE the copy below, because
+	// ArchivePreviousLog() resolves the directory from it and returns at its
+	// first guard when the buffer is still empty. v1.09 had the two calls in
+	// the other order, and the 11:30 run is the proof: it produced no
+	// DynamicShaderFrameGen.20*.log at all, so the archive never ran.
+	// InitWatchdogLogPath() is SHGetFolderPathA plus a snprintf - safe before
+	// SKSE::Init, idempotent, and it stays cached for the DllMain exit probe.
+	FrameGen::InitWatchdogLogPath();
 	ArchivePreviousLog();
 
 	SKSE::Init(a_skse);
-
-	// v0.73: cache the watchdog log path before anything can go wrong, so the
-	// exit probe in DllMain is a pure Win32 append with no path resolution.
-	FrameGen::InitWatchdogLogPath();
 
 	SKSE::log::info("[FrameGen] DynamicShaderFrameGen loaded (build {} {})", __DATE__, __TIME__);
 

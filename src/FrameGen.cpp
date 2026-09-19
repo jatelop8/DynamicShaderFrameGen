@@ -636,6 +636,18 @@ namespace FrameGen
 		// threshold in this file carries the same 8.2x error.
 		constexpr std::uint32_t kCamStillTol = 90;
 
+		// ---- v1.10: "a moving family beats a still lock" ---------------------
+		// Measured 11:30 run: the refused stream moved 640.8 -> 1334.8 units
+		// between two of its own samples, while the locked stream's own travel
+		// was frozen at 65.41 for nine seconds. 200 units of REFUSED-stream
+		// travel is unambiguous motion, and still far below kCamJumpTol so a
+		// single slot jump cannot reach it on its own.
+		constexpr float kCamForeignMoveTol = 200.0f;
+		// Floor on the refusal count so two jittery arrivals cannot take the
+		// anchor by accident. 30 arrivals is ~0.06 s at the measured 500/s and
+		// ~0.33 s at the 90/s the world phase actually ran at.
+		constexpr std::uint32_t kCamForeignMinRej = 30;
+
 	// v0.78: how many consecutive identical-matrix arrivals (with a different
 	// matrix seen in between) before we call the slot stale. The 08:59 run showed
 	// 4196 repeats in 2.34 s, so 120 trips in well under one frame at that rate
@@ -868,10 +880,16 @@ namespace FrameGen
 			snapLockProjValid = false;
 			snapHaveLast = false;
 			snapLockStill = 0;
+			// v1.10: same reason as the acquire path
+			snapForeignMove = 0.0f;
+			snapForeignHave = false;
 		}
 
 		{
 			bool sameFamily = true;
+			// v1.10: set when a moving foreign family took the anchor, so the
+			// same-family step-break log below does not describe it wrongly.
+			bool foreignTakeover = false;
 			if (projOk && snapLockProjValid) {
 				// v1.03 used to put a magnitude-class escape in front of this
 				// test: proj00 == 1.0 is a unit / orthographic projection, so it
@@ -913,6 +931,10 @@ namespace FrameGen
 				// First arrival, or the locked stream died: acquire.
 				snapLockHave = true;
 				snapLockStill = 0;
+				// v1.10: travel accumulated against the OLD anchor is not
+				// evidence about the new one
+				snapForeignMove = 0.0f;
+				snapForeignHave = false;
 				if (snapLockRelock > 0u || snapAccept > 0u)
 					++snapLockRelock;
 			} else if (!continues) {
@@ -964,7 +986,52 @@ namespace FrameGen
 					// closed. The counter below is untouched, so still=N/M keeps
 					// reporting how long the locked family has been failing.
 					if (d2 > kCamJumpTol2) ++snapRejectJump;
-					return false;
+					// ---- v1.10: a MOVING family beats a STILL lock ----------------
+					// Rationale and the 11:30 numbers: see FrameGen.h, next to
+					// snapForeignMove. The refused family must TRAVEL before it may
+					// take the anchor, so this is not v0.94's order-dependent
+					// re-acquire that v1.07b removed.
+					{
+						if (proj00 != snapForeignProj00) {
+							// a different refused family: this travel is not ours
+							snapForeignProj00 = proj00;
+							snapForeignMove = 0.0f;
+							snapForeignHave = false;
+						}
+						const float fdx = px - snapForeignPos[0];
+						const float fdy = py - snapForeignPos[1];
+						const float fdz = pz - snapForeignPos[2];
+						if (snapForeignHave) {
+							const float fStep = std::sqrt(fdx * fdx + fdy * fdy + fdz * fdz);
+							// a camera step is tens of units, a slot jump hundreds:
+							// cap one step so a jump cannot fake travel on its own
+							if (fStep < kCamJumpTol) snapForeignMove += fStep;
+						}
+						snapForeignPos[0] = px;
+						snapForeignPos[1] = py;
+						snapForeignPos[2] = pz;
+						snapForeignHave = true;
+						if (snapLockStill >= kCamForeignMinRej &&
+						    snapForeignMove >= kCamForeignMoveTol) {
+							++snapForeignTakeover;
+							foreignTakeover = true;
+							if (snapForeignTakeover <= 5u) {
+								SKSE::log::info("[CAM] #{} FOREIGN TAKEOVER (v1.10): locked "
+									"proj00={:.6g} has not moved for {} arrivals while the "
+									"refused family proj00={:.6g} travelled {:.1f} units - "
+									"adopting pos=({:.1f},{:.1f},{:.1f})",
+									snapArrivals,
+									snapLockProjValid ? snapLockProj00 : 0.0f,
+									snapLockStill, proj00, snapForeignMove, px, py, pz);
+							}
+							snapForeignMove = 0.0f;
+							snapForeignHave = false;
+							// fall through to the adopt path below; it refreshes
+							// snapLockProj00 after the publish (v1.00 block)
+						} else {
+							return false;
+						}
+					}
 				}
 				// ---- v1.00g: same-family non-continuation re-acquires NOW ----
 				// Reaching this point already proves three things at once:
@@ -987,7 +1054,7 @@ namespace FrameGen
 				// in this branch.
 				++snapLockStill;
 				++snapLockRelockJump;
-				if (snapLockRelockJump <= 5u) {
+				if (!foreignTakeover && snapLockRelockJump <= 5u) {
 					SKSE::log::info("[CAM] #{} same-family step break: pos=({:.1f},{:.1f},{:.1f}) "
 						"locked=({:.1f},{:.1f},{:.1f}) dist={:.1f} proj00={:.6g} still={}/{} "
 						"- adopting the new anchor",
@@ -1081,11 +1148,13 @@ namespace FrameGen
 					rateLastTick = tickNow;
 					SKSE::log::info("[CAM] pub #{} pos=({:.2f},{:.2f},{:.2f}) move={:.4f} path={:.2f} "
 						"matChanges={} arrivalsPerSec={:.0f} | lock(pub/hold/re/still)={}/{}/{}/{} "
-						"proj00={:.6g} famRej={} frozenRep={} ident/diff={}/{} | {}",
+						"proj00={:.6g} famRej={} frozenRep={} ident/diff={}/{} "
+						"fMove={:.1f} takeover={} | {}",
 						snapAccept, px, py, pz, snapAcceptDist, snapPathLen, snapMatChanges,
 						arrPerSec, snapLockPublish, snapLockHold, snapLockRelock, snapLockStill,
 						snapLockProjValid ? snapLockProj00 : 0.0f, snapLockFamilyRej,
 						snapFrozenRepeats, snapIdenticalArrivals, snapDifferentArrivals,
+						snapForeignMove, snapForeignTakeover,
 						snapMatChanges == 0u
 							? "PROBLEM nothing has ever been published with a changed matrix"
 							: "ok");
