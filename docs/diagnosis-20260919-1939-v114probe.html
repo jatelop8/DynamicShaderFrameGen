@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DFG 19:39 局（v1.13）—— 闸门修对了，问题换成了「恒定的透视相机」</title>
+<style>
+  :root{
+    --bg:#f6f3ee; --card:#fffdf9; --ink:#2c2823; --dim:#6b635a;
+    --line:#ded6c9; --warn:#9c4a2f; --ok:#4a6b4a; --accent:#8a6d3b;
+    --mono:"Cascadia Mono","Consolas","SFMono-Regular",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.75 "Microsoft YaHei","PingFang SC",system-ui,sans-serif;}
+  .wrap{max-width:1010px;margin:0 auto;padding:30px 22px 60px;}
+  h1{font-size:23px;margin:0 0 4px;letter-spacing:.3px;}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:24px;}
+  h2{font-size:17px;margin:32px 0 10px;padding-left:10px;border-left:3px solid var(--accent);}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:16px 18px;margin:12px 0;}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13.5px;}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top;}
+  th{background:#efe9df;font-weight:600;}
+  code{font-family:var(--mono);font-size:12.5px;background:#efe9df;padding:1px 5px;border-radius:3px;word-break:break-all;}
+  pre{font-family:var(--mono);font-size:12.5px;background:#2f2b26;color:#e8e2d8;padding:13px 15px;border-radius:5px;overflow-x:auto;line-height:1.6;}
+  .k{color:var(--warn);font-weight:700;}
+  .g{color:var(--ok);font-weight:700;}
+  ul{margin:8px 0;padding-left:22px;}
+  li{margin:4px 0;}
+  .q{font-size:16px;font-weight:700;margin:0 0 6px;}
+  .small{font-size:12.5px;color:var(--dim);}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>19:39 局（v1.13）—— 闸门修对了，问题换成了「恒定的透视相机」</h1>
+<div class="sub">证据：<code>docs/runlogs/2026-09-19-1939-v1.13-gate-works-static-camera.log</code>
+· build <code>Sep 19 2026 18:29:59</code> = v1.13 · 跑 2 分 41 秒（菜单 1 分 59 秒，<b>世界段只 11.5 秒 / 274 帧</b>）
+· 探针版 DLL 1,344,000 B <code>39a41225…</code> · tag <code>v1.14probe</code> / <code>5244a6f</code></div>
+
+<div class="card">
+<p class="q">直答</p>
+<p><span class="g">v1.13 的靶子打中了。</span>正交写被挡住，发布出去的投影重新变成透视投影，
+<span class="g">非仿射告警从上一局世界段的 41% 变成 0</span>。这一条是实打实修好的。</p>
+<p><span class="k">但画面仍然不动，而且这局的原因不需要推断——是纯测量：</span>
+世界段 11.4 秒里，喂给 DLSS-G 的相机<b>逐字节不变</b>。
+<code>CameraPosAdjust</code> 与 <code>CameraPreviousPosAdjust</code> <b>逐位相同</b>、
+<code>move=0.0000</code>、<code>path</code> 冻在 <code>63.91</code>、<code>clipDev</code> 274 帧都压在地板
+<code>0.000061</code> 上 ⇒ <code>clipToPrevClip = I</code> ⇒ 插帧还是复制上一帧。</p>
+<p><b>下一步不是继续改代码，而是先做一次「写者普查」</b>——因为「玩家站着没动」和「锁在固定相机上」
+这两件事在日志里长得<b>一模一样</b>，而它们要的修法完全相反。</p>
+</div>
+
+<h2>一、v1.13 生效：五条硬证据</h2>
+<table>
+<tr><th>#</th><th>证据</th><th>日志原文</th></tr>
+<tr><td>1</td><td>正交写被丢弃 <b>13,804</b> 次，右边<b>恒 0</b><br>⇒ 真相机一直在到达，<b>逃生门（6000）没有触发</b></td>
+<td><code>cap=13804/0</code></td></tr>
+<tr><td>2</td><td>世界段 <code>c8 Proj</code> 由上一局的<b>正交</b><br>变成<b>透视投影</b></td>
+<td>本局：<code>row3=(0,0,1,0) [3][3]=0 dev=15.0006 det=2.52504</code><br>
+上一局：<code>row3=(0,0,0,1) [3][3]=1 magVP=1.11111</code></td></tr>
+<tr><td>3</td><td><b>非仿射告警消失</b>：世界段 <code>clipW=1.000000</code> 全程；全日志只剩 1 条 <code>[MOTION]</code></td>
+<td>那条在 <code>MENU EDGE open=0</code> 之后 78 ms（首帧 <code>prev</code> 未建立）<br>
+对照上一局世界段反复 <code>w=170.324310</code></td></tr>
+<tr><td>4</td><td>被丢弃的确实是正交族，不是误杀</td>
+<td><code>#2 NON-CAMERA write dropped (v1.13): Proj row3=(0,0,0,1) pos=(-160.0,160.0,128.0) magVP=1.11111</code></td></tr>
+<tr><td>5</td><td>v1.12 的限速器修复仍在；4x 仍在跑</td>
+<td><code>Reflex FLIP cap = 159 fps (6289us)</code> · <code>mult(acc/pres)=4/4</code></td></tr>
+</table>
+
+<h2>二、但画面仍不动：几条互相独立的读数指向同一件事</h2>
+<table>
+<tr><th>字段</th><th>世界段实测（11.4 s / 274 帧）</th></tr>
+<tr><td><code>a_fb.CameraPosAdjust</code></td><td><code>(-243.05,-415.31,118.56)</code> 冻结</td></tr>
+<tr><td><code>a_fb.CameraPreviousPosAdjust</code></td><td><b>与上面逐位相同</b> —— 一个"上一帧位置"等于本帧位置</td></tr>
+<tr><td><code>move</code> / <code>path</code></td><td><code>0.0000</code> / 冻在 <code>63.91</code></td></tr>
+<tr><td><code>curVP</code> vs <code>prevVP</code></td><td>同值（<code>15.0006</code>）</td></tr>
+<tr><td><code>clipDev</code></td><td><code>0.000061</code> —— 地板值，274 帧一动不动</td></tr>
+<tr><td><code>frozen</code></td><td>与世界帧数 <b>1:1</b>（120→270，每帧 +1）</td></tr>
+<tr><td><code>snapIdenticalArrivals / Different</code></td><td><code>54117 / 880</code> ⇒ 整局只有 <b>1.6%</b> 的写入与前一次不同</td></tr>
+</table>
+<p class="small">⇒ 两条链（<code>cameraViewToClip</code> 与 <code>clipToPrevClip</code>）拿到的都是同一份不动的矩阵，
+所以 <code>clipToPrevClip</code> 只能是单位阵。DLSS-G 收到"相机没动"，插帧就退化成复制。</p>
+
+<h2>三、★ 新发现：<code>CameraProj</code> 与 <code>CameraProjUnjittered</code> 不可能是一对「抖动/去抖动」</h2>
+<p>回代码查到，同一个结构体里的两个投影字段被两条不同的链取用：</p>
+<table>
+<tr><th>链</th><th>取的字段</th></tr>
+<tr><td><code>camCurVP</code> → <code>clipToPrevClip</code></td><td><code>a_fb.CameraProj</code></td></tr>
+<tr><td><code>c.cameraViewToClip</code> → 喂给 DLSS-G 的投影</td><td><code>a_fb.CameraProjUnjittered</code></td></tr>
+</table>
+<p>而这两个字段的值：</p>
+<table>
+<tr><th>样本</th><th><code>CameraProj[0][0]</code></th><th><code>CameraProjUnjittered[0][0]</code></th><th>关系</th></tr>
+<tr><td>19:39 世界（本局）</td><td><code>1.1918</code></td><td><code>0.8391</code></td><td><b>1 / 1.1918 = 0.83907</b></td></tr>
+<tr><td>18:20 世界（正交那局）</td><td><code>1</code></td><td><code>1</code></td><td>1 / 1 = 1</td></tr>
+</table>
+<p>而且 18:20 那一份<b>可以整行验证互逆</b>：<code>ProjUnj</code> 把 z 从 <code>[0,1]</code> 映到 <code>[0.1,1]</code>
+（<code>z' = 0.9z + 0.1</code>），而 <code>Proj</code> 是 <code>z' = 1.1111z - 0.1111</code> —— <b>精确互逆</b>。</p>
+<div class="card">
+<p><b>抖动是亚像素级的</b>：它只会改 <code>[0][0]</code> / <code>[1][1]</code> 的千分之几。
+这里是<b>互逆关系、差 42%</b>。⇒ 这两个字段不属于「同一台相机的抖动 / 去抖动」。</p>
+<p class="k">但本局<b>不据此改代码</b>：存储序（行主序 / 列主序）在日志里还有歧义，
+先把它做成<b>可测量的探针</b>，而不是拿推断去改。</p>
+</div>
+
+<h2>四、一处读数更正（回代码才发现）</h2>
+<div class="card">
+<p><code>camPrev(ok/used)=1/270</code> 我曾读成「ok 只 1 次、却用了 270 次」的矛盾。
+回代码：<code>diag.camPrevOk = camPrevOk ? 1 : 0;</code> 是<b>赋值</b>不是自增 ⇒
+它是布尔快照，<code>1/270</code> = 「此刻有效 + 累计用了 270 次」，<b>正常</b>。这条读法作废。</p>
+</div>
+
+<h2>五、已装好探针 v1.14：一次读数分开两个分支</h2>
+<p><code>tools/patch_v114_writercensus.py</code>，4 处改动，<b>只加计数与日志、零行为改动</b>
+（闸门、锁、重投影一行未动）：</p>
+<ul>
+<li><code>AcceptCameraSnapshot</code> 在闸门<b>之前</b>维持一张最多 8 条的 <code>(pos)</code> 签名表；
+遇到新签名就打一行
+<code>[CAM] WRITER #N NEW pos=(...) proj00=... row3_2=... row3_3=... prevPos=(...) arr#...</code>（上限 80 行）</li>
+<li><code>[CAM] pub</code> 行尾增 <code>cen={}/{}</code>（= 新签名数 / 已记签名数）</li>
+</ul>
+<table>
+<tr><th><code>cen=</code> 读数</th><th>结论</th><th>下一步</th></tr>
+<tr><td>左边停在 <b>2~3</b> 一整局</td>
+<td><b>这个世界里没有任何写者的位置在动</b> ⇒ hook 根本看不见相机</td>
+<td class="k"><b>换源</b>：<code>RE::PlayerCamera</code>（<code>GetSingleton()-&gt;cameraRoot-&gt;world.translate</code>）</td></tr>
+<tr><td>左边<b>几百</b>、右边顶到 8</td>
+<td>有<b>在动</b>的写者，只是被接受规则拒掉了</td>
+<td class="k"><b>改接受规则</b>（v1.11 的接管判据当时挑错了族）</td></tr>
+</table>
+
+<h2>六、这一局的唯一盲点，需要你配合</h2>
+<div class="card">
+<p><b>进世界后请真的走动 10 秒以上。</b></p>
+<p>19:39 那局世界段只有 11.5 秒，而 <code>pos</code> 全程不动 ——
+<b>「玩家站着没动」与「锁在一个固定相机上」在日志里是同一种形状</b>，
+我无法从数据里区分。这是这一局唯一无法消歧的点，也正是探针要回答的问题。</p>
+<p class="small">顺带：进世界后切一次 3D 菜单再关掉（可以对照两个投影族），退出前让 watchdog 多跑几秒。</p>
+</div>
+
+<h2>七、出问题怎么一秒回去</h2>
+<div class="card">
+<p>回退件 <code>src/backup-v1.13-pre-v1.14probe-20260919-1950/</code>
+（含 v1.13 源码，<b>82,433 B / 1667 CRLF / 裸 LF 0</b>，与 v1.13 基线逐字节一致；<code>README.txt</code> 里有命令）</p>
+<pre>cd /d/Modding/DynamicShaderFrameGen
+cp src/backup-v1.13-pre-v1.14probe-20260919-1950/FrameGen.cpp src/FrameGen.cpp
+cp src/backup-v1.13-pre-v1.14probe-20260919-1950/FrameGen.h   src/FrameGen.h
+./build_vs.sh        # POST_BUILD 会自动重新部署到 MO2</pre>
+<p class="small">⚠ 教训：这次改 v1.14 之前<b>漏跑了 snapshot</b>，而 <code>backup-v1.13-20260919-182918/</code>
+里装的其实是 <b>v1.12</b> 的 DLL —— 因为 snapshot 是"改前跑"，它的版本标签指的是<b>将要做的版本</b>，
+不是它包含的状态。这一条已写进账本 27.11.5，别再踩。</p>
+</div>
+
+<p class="small" style="margin-top:26px">v1.14probe · 2026-09-19 · 纯增量探针（写者普查，零行为改动）
+· 账本 §27.11 / 日志 §6.18 已追写 · 本局证据已存档 <code>docs/runlogs/2026-09-19-1939-*</code></p>
+
+</div>
+</body>
+</html>
