@@ -165,6 +165,16 @@ PC_MOVING …          ⇒ 正常</pre>
   <p><b>⇒ 这一局如果是 <code>PC_STILL INPUT_NONE</code>，那就是「本局作废」，而不是「还没修好」——
   这是两天来第一次能把这两件事分开。</b></p>
 
+  <div class="card" style="border-color:#6b5a2a">
+    <p style="margin:0"><b class="warn">v1.18b</b>（L0 第二遍抓到，编译器抓不到）：<code>s_plrStep</code> 原本是
+    <b>每次到达赋值</b>（<code>=</code>），而它旁边两个见证都是累计 + 每秒重置（<code>s_inKeys |=</code>、
+    <code>s_inDist +=</code>）。这个函数每秒跑约 400 次 ⇒ <code>plrD</code> 实际是「两次到达之间（约 2.5 ms）的位移」，
+    走动时约 7 毫米 —— 字段名和注释却都写着「每秒」。</p>
+    <p style="margin:8px 0 0"><b>判据 <code>plrD &gt; 0</code> 仍然成立，所以这个错会一直活着</b>：
+    一个量错了区间的数仍然能回答「玩家动了没有」，只会在回答「多快」时出错。
+    但这个项目已经因为「字段量的不是它标签上写的那个东西」丢了两局，所以改的是<b>字段</b>，不是注释。</p>
+  </div>
+
   <h2>六、下一局怎么判</h2>
 
   <table>
@@ -197,8 +207,8 @@ PC_MOVING …          ⇒ 正常</pre>
   </div>
 
   <footer>
-    DLL 1,356,800 B · md5 <code>03b8e540cc9e0e91f9a280afd5db57fa</code>（build == MO2 部署）·
-    <code>FrameGen.cpp</code> 95,713 → 99,492 B（CRLF 2,027 / 裸 LF 0）· commit <code>c940ef9</code> · tag <code>v1.18</code><br>
+    DLL 1,356,800 B · md5 <code>944408598434db4c00ec0aef4c93aa94</code>（build == MO2 部署）·
+    <code>FrameGen.cpp</code> 95,713 → 99,971 B（CRLF 2,034 / 裸 LF 0）· commit <code>81b73ec</code> · tag <code>v1.18b</code><br>
     回退：<code>src/backup-v1.18-20260919-224153/built_DLL.bin</code>（= v1.17）+
     <code>git checkout v1.17 -- src/FrameGen.cpp</code> · 一秒回到可玩：<code>Provider=0</code> + <code>MFGMaxFramesOverride=0</code><br>
     账本 <code>MFG_MASTER_NOTES.md</code> §30 · 当日日志 §6.24
