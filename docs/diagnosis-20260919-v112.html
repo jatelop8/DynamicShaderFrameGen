@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DFG v1.12 诊断 —— 世界内只有 9.74 fps：限速器的量子是 flip</title>
+<style>
+  :root{
+    --bg:#f6f3ee; --card:#fffdf9; --ink:#2c2823; --dim:#6b635a;
+    --line:#ded6c9; --warn:#9c4a2f; --ok:#4a6b4a; --accent:#8a6d3b;
+    --mono:"Cascadia Mono","Consolas","SFMono-Regular",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.75 "Microsoft YaHei","PingFang SC",system-ui,sans-serif;}
+  .wrap{max-width:1010px;margin:0 auto;padding:30px 22px 60px;}
+  h1{font-size:23px;margin:0 0 4px;letter-spacing:.3px;}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:24px;}
+  h2{font-size:17px;margin:32px 0 10px;padding-left:10px;
+     border-left:3px solid var(--accent);}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:6px;
+        padding:16px 18px;margin:12px 0;}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13.5px;}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top;}
+  th{background:#efe9df;font-weight:600;}
+  code{font-family:var(--mono);font-size:12.5px;background:#efe9df;
+       padding:1px 5px;border-radius:3px;word-break:break-all;}
+  pre{font-family:var(--mono);font-size:12.5px;background:#2f2b26;color:#e8e2d8;
+      padding:13px 15px;border-radius:5px;overflow-x:auto;line-height:1.6;}
+  .k{color:var(--warn);font-weight:700;}
+  .g{color:var(--ok);font-weight:700;}
+  .badge{display:inline-block;font-size:11.5px;padding:1px 8px;border-radius:10px;
+         border:1px solid var(--line);background:#efe9df;color:var(--dim);
+         margin-right:6px;font-family:var(--mono);}
+  ul{margin:8px 0;padding-left:22px;}
+  li{margin:4px 0;}
+  .q{font-size:16px;font-weight:700;margin:0 0 6px;}
+  .small{font-size:12.5px;color:var(--dim);}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>v1.12 —— 世界内只有 9.74 fps：限速器的量子是 flip，不是渲染帧</h1>
+<div class="sub">证据来源：<code>DynamicShaderFrameGen.log</code> 2026-09-19 14:55:21 那局（v1.11，build 14:34:24）
+· 已存档 <code>docs/runlogs/2026-09-19-1455-v1.11-freeze.log</code> + <code>.watchdog.log</code>
+· 构建 <code>b51ef90b…</code> 1,338,880 B · tag <code>v1.12</code> / <code>640a938</code></div>
+
+<div class="card">
+<p class="q">直答</p>
+<p><span class="k">画面动不了，不是因为相机冻住，是因为游戏真的只跑 10 帧。</span>
+v1.11 的接管其实成功了 —— 它触发后 <code>clipToPrevClip</code> 就不再是单位阵。
+但真实帧率被限速器压在 <code>9.74 fps</code>，四倍帧生成把 4 个呈现帧摊在 102 ms 上，
+每个插帧要跨越 100 ms 的世界运动去重投影，看起来就是"卡住、动不了"。
+<b>本次修的是这个节流</b>，一行公式。</p>
+</div>
+
+<h2>一、这局实测到的四件事</h2>
+<table>
+<tr><th>#</th><th>事实</th><th>日志原文</th></tr>
+<tr><td>1</td><td><b>v1.11 的接管真的触发了</b>（这是第一次门开了）</td>
+<td><code>#5507 FOREIGN TAKEOVER (v1.11): locked proj00=0.8391 has gone 211 publishes with an unchanged matrix while the refused family proj00=1 travelled 353.9 units - adopting pos=(-865.8,657.2,285.8)</code></td></tr>
+<tr><td>2</td><td><b>接管后重投影有运动了</b>：<code>clipDev</code> 从恒定 <code>0.000061</code> 变成 0.011~0.547 摆动；非仿射告警停止增长</td>
+<td><code>[MOTION] clipToPrevClip[3].w=167.815231</code>（14:56:04.765，最后一次）之后 <code>clipW=1.000000</code></td></tr>
+<tr><td>3</td><td><b>DLSS5 与 4x 同时在线</b>，且运行时自报支持到 6x</td>
+<td><code>DLSSNR CHAINED with frame generation (NRAllowWithFrameGen=1)</code> / <code>hwMax=6 ask=4 accepted=4</code></td></tr>
+<tr><td>4</td><td><b>但世界里真实帧率只有 9.74 fps</b>，而且周期是"平的"</td>
+<td><code>dt min/avg/max=100.95/102.63/104.26ms</code>；watchdog 独立复核 <code>frames 535→583 / 4.926s = 9.74fps</code></td></tr>
+</table>
+
+<h2>二、根因：限速器的量子被作用在 flip 上</h2>
+<p><code>src/Streamline.cpp</code> → <code>ReflexSleep()</code>：</p>
+<pre>const double want = Get().refreshRate / static_cast&lt;double&gt;(capMult) - 1.0;   // ← 就是这个除法
+capFps = ...;                      // 160 / 4 - 1 = 39
+opts.frameLimitUs = 1000000/39;    // = 25641 us</pre>
+<p><code>frameLimitUs</code> 是<b>每个上屏 flip</b> 的量子：39 flip/s。而每真实帧要发 4 个 flip，
+于是渲染侧被压成 <code>39 / 4 = 9.75 fps</code>。这个量子不是 GPU 算得慢，是一道人为的闸。</p>
+
+<h2>三、四项独立印证（同一份日志，全部复现 <code>1e6/(160/capMult−1)</code>）</h2>
+<table>
+<tr><th>观测</th><th>日志值</th><th>反推</th></tr>
+<tr><td><code>capUs</code>（倍数还是 2 时）</td><td><code>12658</code></td><td><code>1e6/(160/2−1) = 1e6/79</code> ✓</td></tr>
+<tr><td><code>capUs</code>（倍数变 4 之后）</td><td><code>25641</code></td><td><code>1e6/(160/4−1) = 1e6/39</code> ✓</td></tr>
+<tr><td>真实帧间隔 <code>dt</code></td><td><code>102.56 ms</code></td><td><code>4 × 25641 us = 102564 us</code> ✓ 五位有效数字</td></tr>
+<tr><td>真实帧率（watchdog 复核）</td><td><code>9.74 fps</code></td><td><code>39/4 = 9.75</code> ✓</td></tr>
+<tr><td>菜单里的 <code>real</code></td><td><code>39.0</code></td><td>菜单 1 flip/帧 ⇒ <code>39/1</code> ✓（GPU 受限不会恰好压在 39.0）</td></tr>
+</table>
+<p class="small">★ 判据「<b>钉死 vs 飘动</b>」：限速器的量子是平的（<code>dt</code> 离散度只有 0.02 ms）；
+GPU 真的算不动时，帧间隔会飘几毫秒。这一局是钉死。</p>
+
+<h2>四、为什么前面几轮没找到：文件里两段注释互相矛盾</h2>
+<div class="card">
+<p><code>Streamline.cpp</code> 的 <b>v0.63 注释</b>把这个根因诊断得完全正确：</p>
+<pre>// v0.54 按"渲染帧率"反推（刷新率 / 总倍数 - 1），等于把 flip 节流到 39/s；
+// 而 DLSS-G 每真实帧要发 4 个 flip ⇒ 渲染侧被压成 39/4 = 9.75fps。
+// 实测 102.56 / 25.641 = 4.0000（5 位有效数字）...
+// 现在：cap = 刷新率 - 1 ... 倍率不再参与上限计算。</pre>
+<p>而紧下面的 <b>v1.06 注释</b>把同一行改了回去，理由是"去掉除数是 636 present fps ⇒ 21:27 冻结"。
+那个推理把 flip 上限当成了渲染上限 —— 而本局的实测（<code>dt</code> 正好是 4 倍量子、<code>real = capFps/4</code>）
+证明它是 <b>flip</b> 上限。<b>执行的是 v1.06 那一版。</b></p>
+<p class="small">⇒ <b>L29：同一个函数里两段互相矛盾的注释，本身就是"这里被改坏过"的信号。
+判据不是哪段更新，而是哪段能被测量证实。</b></p>
+</div>
+
+<h2>五、v1.12 改了什么</h2>
+<table>
+<tr><th>#</th><th>性质</th><th>改动</th></tr>
+<tr><td>1</td><td><b>行为</b></td><td><code>want = Get().refreshRate - 1.0;</code> 去掉 <code>/capMult</code>
+⇒ <code>capFps=159</code>、<code>frameLimitUs=6289</code>（与工程内既有注释 <code>capUs=6289</code> 一致）。
+flip 节流在 159/s &lt; 160 Hz，渲染侧 <code>159/4 ≈ 39.75 fps</code>。</td></tr>
+<tr><td>2</td><td>断言</td><td><code>capFps * capMult &gt; refreshRate</code> 是 v1.06 的误读，改为
+<code>capFps &gt; refreshRate</code>（flip 上限不能超面板），并新增一行
+<code>Reflex cap check (v1.12): … = … rendered fps at …x</code>。</td></tr>
+<tr><td>3</td><td>日志</td><td><code>Reflex FLIP cap</code> 行不再打印 <code>capFps * capMult</code>
+（那会印出 636 假超发），改为 <code>~… presented fps, ~… rendered fps (v1.12: the cap is the FLIP rate)</code>。</td></tr>
+</table>
+<div class="card">
+<p><b>安全性</b>：<code>capMult=1</code>（不用多倍帧生成）时，改动前后都是 <code>159</code> ⇒ <b>行为不变</b>。</p>
+<p><b>逃生门</b>：INI 的 <code>ReflexFpsLimit</code> 优先级高于公式。若这一版反而更糟，
+把 <code>ReflexFpsLimit=40</code> 写进 INI 即可精确退回今天的行为，不用换 DLL。</p>
+<p><b>锁、族指纹、接管逻辑一行未改</b> —— 真实帧率变成 4 倍后接受的节拍整体改变，
+必须先在新节拍下重测，再决定要不要碰锁。这是纪律，不是回避。</p>
+</div>
+
+<h2>六、L0 两遍自检</h2>
+<div class="card">
+<p><b>第一遍·手脚</b></p>
+<ul>
+<li>干跑 3/3 锚点 <code>count==1</code> → <code>--apply</code>；重跑被幂等 marker <code>REFUSED</code>(exit=1)</li>
+<li><code>capFps * capMult</code> 归零、旧算式归零；<code>Streamline.cpp</code> 123094 → 124710 B，
+CRLF 2340 → 2366、<b>裸 LF 0</b></li>
+<li><code>BUILD SUCCESS</code>；DLL 1,338,880 B、md5 <code>b51ef90b…</code>（build == 部署一致）</li>
+<li>DLL 内新串各 1 次、旧串 <code>presented fps (real = cap/flips)</code> 0 次</li>
+<li>仓库 INI == 部署 INI（md5 <code>a19307d4</code>），五键
+<code>Provider=1 / FrameGeneration=1 / NeuralRenderingEnabled=1 / MFGMaxFramesOverride=3 / NRAllowWithFrameGen=1</code></li>
+</ul>
+<p><b>第二遍·脑子</b></p>
+<ul>
+<li>「<code>frameLimitUs</code> 是 flip 上限」<b>不是假设</b>，是本局量出来的（<code>dt</code>=4 倍量子、<code>real</code>=capFps/4）。</li>
+<li>反向假设：如果世界本来就跑不到 39 fps，真实帧率会低于 39 —— 但那时 <code>dt</code> 会<b>飘</b>。
+<b>「钉死 vs 飘动」就是区分"节流"与"GPU 受限"的判据</b>，已写进下面的判据表。</li>
+<li>同一函数既有注释 <code>capUs=6289</code> 与本改动一致 ⇒ 两处独立来源相互印证。</li>
+</ul>
+</div>
+
+<h2>七、下一局只看这几处</h2>
+<table>
+<tr><th>看到什么</th><th>结论</th></tr>
+<tr><td><code>capUs=6289</code>（不再是 25641）</td><td class="g">限速器修对了</td></tr>
+<tr><td><code>dt min/avg/max</code> 落在 ~25 ms 且<b>开始飘</b></td><td class="g">渲染侧回到 ~39 fps；飘 = 真的 GPU 受限</td></tr>
+<tr><td><code>FPS probe: real=</code> 从 9.8 跳到 ~39</td><td class="g">四倍帧生成第一次有可用的呈现节奏</td></tr>
+<tr><td><code>dt</code> 仍钉在 102.56 ms、<code>capUs</code> 仍 25641</td><td class="k">还有第二处在写同一个上限，把日志给我</td></tr>
+<tr><td>走动时 <code>clipDev</code> 明显 &gt; 0（不再恒 <code>0.000061</code>）</td><td class="g">插帧开始有真实内容</td></tr>
+</table>
+
+<h2>八、诚实边界（未做 / 未证）</h2>
+<div class="card">
+<ul>
+<li><b>发布出去的相机族仍可能锁在陈旧的一族上</b>：本局 <code>[CAM] pub</code> 的
+<code>pos</code>（= <code>a_src.CameraPosAdjust</code>，<code>FrameGen.cpp:692</code>）
+冻在 <code>(-952.21,886.25,103.16)</code> 达 12 秒，而 <code>[CAM] raw #8101</code> 读同一字段是活的
+<code>(-126.8871,-190.8163,186.3070)</code>。但同一时段 <code>matChanges</code> 每秒 +80、
+<code>clipDev</code> 非零 ⇒「发布的矩阵在变」与「<code>CameraPosAdjust</code> 不动」是两件事，
+<b>含义未定，必须在新节拍下重测</b>，不能在 10 fps 的节拍下下结论。</li>
+<li><b>自动归档仍不产出文件</b>：<code>ArchivePreviousLog()</code> 调用顺序已对
+（<code>InitWatchdogLogPath()</code> → <code>ArchivePreviousLog()</code> → <code>SKSE::Init()</code>），
+格式串在 DLL 内存在，静态查不出原因。<b>本轮不猜、不改</b>，改用
+<code>docs/runlogs/</code> 手工存档顶住（本局证据已存）。</li>
+<li><b>世界上屏之外的性能</b>：<code>RenderResolutionScale=0.44</code>（渲染 1689×950）配
+<code>NRRenderScale=1.00</code>（每个真实帧做一遍 3840×2160 的 DLSS5）仍是嫌疑，未测。</li>
+<li>我跑不了游戏。「能不能跑通」只能由你那一趟的日志来定。</li>
+</ul>
+</div>
+
+<h2>九、出问题怎么一秒回去</h2>
+<div class="card">
+<p>改前存档：<code>src/backup-v1.12-20260919-150056/</code></p>
+<ul>
+<li><b>只退回节流行为</b>（不换 DLL）：INI 写 <code>ReflexFpsLimit=40</code></li>
+<li><b>退回纯 2x / 可玩</b>（只改 INI）：<code>Provider=0</code> + <code>MFGMaxFramesOverride=0</code></li>
+<li><b>换回上一版 DLL</b>：<code>src/backup-v1.11-20260919-143345/</code>（md5 <code>75e38aa7…</code>）</li>
+</ul>
+<p class="small">改 INI 必须改<b>仓库那份</b> <code>SKSE/Plugins/DynamicShaderFrameGen.ini</code>，
+再跑 <code>bash tools/deploy_ini.sh</code> —— 构建会用仓库那份覆盖部署目录（L27）。
+判据永远是 <code>md5(repo) == md5(deployed)</code>。</p>
+</div>
+
+<p class="small" style="margin-top:26px">v1.12 · 2026-09-19 · 一行行为改动（Reflex 上限去掉 <code>/capMult</code>）
+· 账本第 26 章 / 日志 §6.15 已追写 · 技能 <code>framegen-diagnosis</code> 待补 L29</p>
+
+</div>
+</body>
+</html>
