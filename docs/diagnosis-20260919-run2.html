@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>进游戏不能动 —— 已定位</title>
+<style>
+  :root{
+    --bg:#f5f1e8; --card:#fffdf7; --ink:#3a342c; --dim:#7d7568;
+    --rust:#a8442a; --sand:#c9a227; --slate:#5a6b7a; --line:#e3dccd;
+    --ok:#4f7a52; --okbg:#eef4ec;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:38px 22px 60px;background:var(--bg);color:var(--ink);
+       font:15px/1.72 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:960px;margin:0 auto}
+  h1{font-size:25px;margin:0 0 6px;letter-spacing:.3px}
+  .sub{color:var(--dim);font-size:13.5px;margin-bottom:26px}
+  h2{font-size:17.5px;margin:34px 0 12px;padding-left:11px;border-left:4px solid var(--rust)}
+  h3{font-size:15px;margin:22px 0 8px;color:var(--slate)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;
+        padding:15px 18px;margin:12px 0;box-shadow:0 1px 2px rgba(90,70,40,.05)}
+  .hero{border-left:5px solid var(--ok);background:var(--okbg)}
+  .hero .big{font-size:16.5px;font-weight:700;color:var(--ok);margin-bottom:8px}
+  .warn{border-left:5px solid var(--rust);background:#fdf1ee}
+  .warn .big{font-size:16.5px;font-weight:700;color:var(--rust);margin-bottom:8px}
+  pre{background:#2f2b26;color:#e8e0d0;padding:12px 14px;border-radius:6px;
+      overflow-x:auto;font-size:12.8px;line-height:1.6;margin:10px 0}
+  code{font-family:Consolas,"Courier New",monospace;font-size:13px;
+       background:#efe9da;padding:1px 5px;border-radius:3px}
+  pre code{background:none;padding:0;color:inherit;font-size:12.8px}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px;
+        background:var(--card);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  th{background:#efe9da;text-align:left;padding:9px 12px;font-weight:600;font-size:13px}
+  td{padding:9px 12px;border-top:1px solid var(--line);vertical-align:top;font-size:13.5px}
+  .num{font-family:Consolas,monospace}
+  .bad{color:var(--rust);font-weight:700}
+  .good{color:var(--ok);font-weight:700}
+  ul{margin:8px 0 8px 20px;padding:0}
+  li{margin:5px 0}
+  .foot{margin-top:34px;padding-top:14px;border-top:1px solid var(--line);
+        color:var(--dim);font-size:12.8px;line-height:1.8}
+  .kbd{background:#efe9da;border:1px solid #ddd3bf;border-bottom-width:2px;
+       border-radius:4px;padding:1px 6px;font-family:Consolas,monospace;font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>「进游戏不能动，只有音乐」—— 已定位</h1>
+  <div class="sub">
+    2026-09-19 · 07:36 那一次运行 · <b>不是崩溃</b> · 我已顺手把游戏改回可玩状态
+  </div>
+
+  <h2>0. 你现在要做的（一分钟）</h2>
+  <div class="card hero">
+    <div class="big">我已经改好了 INI，直接重启游戏即可。</div>
+    <p style="margin:6px 0 0">
+      改的是 <code>Provider 1→0</code>、<code>MFGMaxFramesOverride 3→0</code> ——
+      也就是<strong>先把帧生成关掉</strong>。原文件已备份为
+      <code>DynamicShaderFrameGen.ini.bak_20260919_090521</code>，随时可以还原。
+    </p>
+    <p style="margin:10px 0 0">
+      依据不是猜的：Transfusion 自己的记录里，<strong>没有帧生成的 39 FPS 是稳的</strong>
+      —— <span class="num">40.3 / 39.3 / 38.9 / 39.1 FPS，1% Low 38.9–39.0</span>。
+    </p>
+  </div>
+  <div class="card warn">
+    <div class="big">如果关掉帧生成后还是不能动</div>
+    那就不是本插件的问题，回来告诉我 —— 下一步去 MO2 直接取消勾选
+    <code>DynamicShaderFrameGen</code>，切到「完全没有它」的基线再试。
+  </div>
+
+  <h2>1. 结论</h2>
+  <div class="card">
+    <p style="margin:0 0 10px">
+      进程没死、没有崩溃。渲染管线一直在正常轮转 ——
+      <code>alive=1</code>、<code>focus=1</code>，帧计数从 963 涨到 1041，
+      <code>fence</code> 逐帧对齐（1924/1924 → 2080/2080）。
+      崩溃转储一个都没有（`SKSE/Crashlogs` 空、NetScriptFramework 的 Crash 目录不存在）。
+    </p>
+    <p style="margin:0">
+      <b>是画面被冻住了。</b>4x 一启动，交给 DLSS-G 的「相机位移」变成了一个
+      <b>单位矩阵</b>（= 相机完全没动）⇒ 它生成的每一帧都是上一帧的复制
+      ⇒ 画面永远停在原地。而游戏逻辑和音乐照常跑。
+    </p>
+  </div>
+
+  <h2>2. 最硬的证据不是我说的，是另一个程序说的</h2>
+  <div class="card">
+    <p style="margin:0 0 8px">
+      游戏根目录的 <code>DLSSG-Transfusion.log</code> 由 <code>dinput8.dll</code>（Transfusion）写。
+      它 hook 了 <code>slSetConstants</code>，所以它看到的是
+      <strong>我真正交出去的那份数据</strong>，不是我以为我交出去的那份。
+      07:37:57.364，它写的是：
+    </p>
+    <pre><code>[MOTION] route=slSetConstants call=0 ... clipToPrev=identity prevToClip=identity
+         cameraIncluded=1 reset=1
+[MOTION] clipToPrev rows=[1 0 0 0][0 1 0 0][0 0 1 0][0 0 0 1] cameraPos=(0,0,1.00001001)</code></pre>
+    <p style="margin:8px 0 0">
+      <code>rows=[1 0 0 0][0 1 0 0][0 0 1 0][0 0 0 1]</code> 就是单位矩阵。
+      call=1 / 2 / 3 逐条相同。
+      <b class="bad">⇒ 送给 DLSS-G 的重投影矩阵确实是「相机没动」。</b>
+    </p>
+  </div>
+
+  <h2>3. 同一秒钟，帧率开始塌</h2>
+  <table>
+    <tr><th style="width:150px">时刻</th><th>Transfusion 记录的帧率</th><th style="width:150px">1% Low</th></tr>
+    <tr><td class="num">07:37:53.999</td><td><span class="good">39.1 FPS</span>（还没有帧生成，标记 <code>0x</code>）</td><td class="num">38.9</td></tr>
+    <tr><td class="num">07:37:57.527</td><td colspan="2"><b>DLSS-G actual presentation count: 4x</b> ← 4x 在这一刻启动</td></tr>
+    <tr><td class="num">07:37:59.053</td><td><span class="bad">34.3 FPS</span></td><td class="num">9.8</td></tr>
+    <tr><td class="num">07:38:04.079</td><td><span class="bad">24.0 FPS</span></td><td class="num">9.7</td></tr>
+    <tr><td class="num">07:38:09.105</td><td><span class="bad">18.5 FPS</span>，还在往下掉</td><td class="num">9.7</td></tr>
+  </table>
+  <div class="card">
+    生成确实在执行，但它拿到的「位移」是零 ——
+    <b>开销照付，收益为零</b>，所以帧率单调下降。
+    这就是「画面不动、声音照放」的完整机制。
+  </div>
+
+  <h2>4. 相机位置字段有两种取值</h2>
+  <table>
+    <tr><th style="width:130px">时段</th><th>CameraPosAdjust（c80）</th><th style="width:110px">状态</th></tr>
+    <tr>
+      <td>走动中<br><span class="num" style="font-size:12px">07:37:46</span></td>
+      <td><code>c80 = -49.99428, 891.753, 95.28526</code><br>
+          <code>c82 = -49.99497, 892.2664, 95.32975</code><br>
+          <span style="color:var(--dim);font-size:12.5px">两者不同</span></td>
+      <td><span class="good">活的</span></td>
+    </tr>
+    <tr>
+      <td>4x 启动后</td>
+      <td>每一条心跳都是 <code>pos=(0.0,0.0,1.0)</code> <code>prevPos=(0.0,0.0,0.0)</code></td>
+      <td><span class="bad">(0,0,1)</span></td>
+    </tr>
+  </table>
+  <div class="card">
+    这两个值相差约 <b>900 单位</b>，而<b>中间没有任何过渡帧</b> ——
+    它是被换掉的，不是停下来了。
+    <p style="margin:8px 0 0;color:var(--dim);font-size:13px">
+      ★ 边界：4x 启动与字段变值<b>同时发生</b>，这份日志<b>分不出</b>哪个是因。
+      所以它现在只是<b>线索</b>，我不把它写成结论。
+    </p>
+  </div>
+
+  <h2>5. 我上一轮错在哪</h2>
+  <div class="card">
+    <ul>
+      <li><b>问错了问题。</b>我问你「走动那 8 秒画面有没有来回循环」，而你的症状是「根本不能动」。</li>
+      <li><b>插的探针打空了（第三次）。</b>我把探针挂在 <code>[MOTION]</code> 那条分支上，
+          而它<b>一次都没触发</b>；真正输出那个数的是一条完全不同的路径
+          （<code>FrameGen.cpp:691</code>，共 24 条，从第 1 帧起就有）。</li>
+      <li><b>上一章的判读口径要改。</b>那 134 条「位移=0」的读数，
+          <b>全部落在 4x 时段</b>——它们不是「相机静止所以正确」，而是
+          <b>4x 那条坏路径上的读数</b>。</li>
+    </ul>
+  </div>
+
+  <h2>6. 下一轮要回答的唯一问题</h2>
+  <div class="card">
+    <p style="margin:0 0 8px">要在 4x 启动前后各一秒，把每一帧的这几个字段打出来，然后只看一件事：</p>
+    <p style="margin:0 0 8px;font-size:15.5px;font-weight:700">
+      4x 启动后的 <code>(0,0,1)</code>，是「引擎不再更新这个字段」，还是「我们读了另一份帧缓冲」？
+    </p>
+    <ul style="margin-bottom:0">
+      <li>若 <code>c82</code> 也变 <code>(0,0,0)</code>、而 <code>c24</code> 仍在变 ⇒ <b>引擎侧字段停更</b></li>
+      <li>若 <code>c24</code> 也一起冻住 ⇒ <b>我们读的不是引擎正在渲染的那一份</b>（捕获侧）</li>
+    </ul>
+  </div>
+
+  <div class="foot">
+    <b>诚实说明：这一轮我没有修任何功能。</b>
+    在「送出去的东西是单位矩阵」这件事还没查清来源之前动手改，只会给下一轮增加要撤销的东西。<br>
+    本轮只做了三件事：把机制查清楚、把口径纠正过来、把你的游戏改回可玩。<br>
+    <br>
+    落盘：账本 <code>MFG_MASTER_NOTES.md</code> 第 20 章（八小节）；
+    当日日志 <code>memory/2026-09-19.md</code> 第 4 节；技能新增 §46「跨进程交叉验证」与
+    §47「探针三连空」。提交 <code>37af551</code>；<b>二进制一个字没动</b>，DLL 仍是
+    <code>0a10b4b6…b613</code>。
+  </div>
+
+</div>
+</body>
+</html>
