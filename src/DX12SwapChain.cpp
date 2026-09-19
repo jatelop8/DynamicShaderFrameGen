@@ -977,6 +977,32 @@ namespace FrameGen
 					cfgProvider, cfgProvider == providerAtCreate ? "" : " (CHANGED - RESTART REQUIRED)");
 				probeFrames = 0;
 				probeLast = probeNow;
+
+				// v1.26 -- measured, not computed. DXGI keeps its own present counter for
+				// the swap chain, so the ratio of ITS advance to OURS over the same
+				// window is the number of flips the chain really did per real frame --
+				// from a component neither the plugin nor the second DLSS-G driver in
+				// this process controls. On the 02:25 run the watchdog's lastPr/frames
+				// pair read 1.00 across the entire loading screen and exactly 4.00 from
+				// the frame the guard released onwards. Every other multiplier number
+				// this project prints is either our request or the runtime's report.
+				{
+					static unsigned long long s_lastFlips = 0;
+					static unsigned long long s_lastFrames = 0;
+					static bool s_haveFlipBase = false;
+					const unsigned long long flips = g_lastPresentCount.load();
+					const unsigned long long fr = static_cast<unsigned long long>(frameCounter.load());
+					if (s_haveFlipBase && fr > s_lastFrames && flips > s_lastFlips) {
+						SKSE::log::info("[FrameGen] FLIPS per real frame = {:.2f} "
+							"(DXGI lastPresentCount {} -> {}, our Present {} -> {}) - DXGI's own "
+							"counter, not the runtime's report and not real*mult",
+							static_cast<double>(flips - s_lastFlips) / static_cast<double>(fr - s_lastFrames),
+							s_lastFlips, flips, s_lastFrames, fr);
+					}
+					s_lastFlips = flips;
+					s_lastFrames = fr;
+					s_haveFlipBase = true;
+				}
 			}
 		}
 
@@ -1619,6 +1645,15 @@ namespace FrameGen
 		const HRESULT hrPresentFsr = swapChain->Present(1, Flags);
 		if (hrPresentFsr != DXGI_ERROR_WAS_STILL_DRAWING)
 			DX::ThrowIfFailed(hrPresentFsr);
+		// v1.26: the DLSS-G branch has recorded GetLastPresentCount since v0.74; this
+		// branch never did, so on FSR3 -- the only provider any run has stayed alive
+		// on -- the one measurement that does not depend on the runtime's own report
+		// was unavailable.
+		{
+			UINT pc = 0;
+			if (SUCCEEDED(swapChain->GetLastPresentCount(&pc)))
+				g_lastPresentCount.store(pc);
+		}
 		Get().streamline.PresentMarkerEnd();
 
 		// 等 D3D12 完成
@@ -1772,14 +1807,23 @@ namespace FrameGen
 				// it never has to know the bytes per pixel. Any change inside the block
 				// changes the hash; the padding is stable, so it cannot mask one.
 				std::uint64_t h = 1469598103934665603ull;   // FNV-1a offset basis
+				// v1.26: the block's mean byte alongside the hash. The hash answers
+				// "did it change"; the mean answers "did it get brighter or darker",
+				// and an oscillation needs the second one. RowPitch padding is stable,
+				// so it dilutes the mean by a fixed amount and cannot fake a swing.
+				std::uint64_t lumSum = 0;
+				std::uint64_t lumN = 0;
 				const auto* rows = static_cast<const std::uint8_t*>(ms.pData);
 				for (UINT y = 0; y < pixelProbeHeight; ++y) {
 					const auto* row = rows + static_cast<std::size_t>(y) * ms.RowPitch;
 					for (std::size_t x = 0; x < ms.RowPitch; ++x) {
 						h ^= row[x];
 						h *= 1099511628211ull;
+						lumSum += row[x];
+						++lumN;
 					}
 				}
+				const float lum = lumN ? static_cast<float>(lumSum) / static_cast<float>(lumN) : 0.0f;
 				d3d11Context->Unmap(pixelProbeStaging.get(), 0);
 				pixelProbeCopyPending = false;
 
@@ -1799,6 +1843,36 @@ namespace FrameGen
 				}
 				pixelProbeLastHash = h;
 
+				// v1.26 -- oscillation window. `changed` is incremented whenever this
+				// sample differs from the previous one, so an image that alternates
+				// A,B,A,B scores a change on every single sample and reads as the
+				// healthiest possible picture. The window is what tells the two apart:
+				// real content advances through many states, a flicker cycles a few.
+				pixelProbeLum = lum;
+				pixelProbeRingHash[pixelProbeRingAt] = h;
+				pixelProbeRingLum[pixelProbeRingAt] = lum;
+				pixelProbeRingAt = (pixelProbeRingAt + 1u) % 8u;
+				if (pixelProbeRingFill < 8u)
+					++pixelProbeRingFill;
+				std::uint32_t distinct = 0;
+				{
+					std::uint64_t seenHash[8] = {};
+					for (std::uint32_t i = 0; i < pixelProbeRingFill; ++i) {
+						bool dup = false;
+						for (std::uint32_t j = 0; j < distinct; ++j)
+							if (seenHash[j] == pixelProbeRingHash[i]) { dup = true; break; }
+						if (!dup)
+							seenHash[distinct++] = pixelProbeRingHash[i];
+					}
+				}
+				float lumLo = 1.0e9f;
+				float lumHi = -1.0e9f;
+				for (std::uint32_t i = 0; i < pixelProbeRingFill; ++i) {
+					if (pixelProbeRingLum[i] < lumLo) lumLo = pixelProbeRingLum[i];
+					if (pixelProbeRingLum[i] > lumHi) lumHi = pixelProbeRingLum[i];
+				}
+				const float lumSwing = (pixelProbeRingFill >= 8u) ? (lumHi - lumLo) : 0.0f;
+
 				// v1.23: a streak of identical frames only means "frozen" if the camera
 				// was moving. With a static camera DLSS-G's interpolated output is
 				// legitimately identical to the real frame, so the hash alone cannot
@@ -1810,10 +1884,13 @@ namespace FrameGen
 					pixelProbeMovedDuringStreak = 0;
 
 				SKSE::log::info("[PIXEL] #{} hash={:016X} chg={} streak={} clipDev={:.6f} movedThisStreak={} "
-					"changed={} unchanged={} maxStreak={} dropped={}",
+					"changed={} unchanged={} maxStreak={} dropped={} "
+					"lum={:.2f} seen={}/{} swing={:.1f}",
 					pixelProbeSamples, h, changed ? 1 : 0, pixelProbeStreak, static_cast<double>(cd),
 					pixelProbeMovedDuringStreak, pixelProbeChanged, pixelProbeUnchanged,
-					pixelProbeMaxStreak, pixelProbeDropped);
+					pixelProbeMaxStreak, pixelProbeDropped,
+					static_cast<double>(lum), distinct, pixelProbeRingFill,
+					static_cast<double>(lumSwing));
 
 				// The verdict. Every other witness this file owns can only say that a
 				// flip happened; this is the only one that can say the picture moved.
@@ -1835,6 +1912,37 @@ namespace FrameGen
 							"Hold W for 3 s to make the next streak mean something.",
 							pixelProbeStreak, pixelProbeMovedDuringStreak);
 					}
+				}
+
+				// v1.26 -- the flicker verdict. This one needs no input and no camera
+				// motion, which is the point: the input witness has read INPUT_NONE on
+				// every movement key in every run since it was added, so a verdict that
+				// depends on the player walking has never once been reachable. What the
+				// player actually reports is a picture that flickers, and a picture that
+				// flickers is exactly what the change counter scores as healthy.
+				if (pixelProbeRingFill >= 8u && distinct <= 3u && lumSwing > 40.0f &&
+					pixelProbeFlickerFired < 4u) {
+					++pixelProbeFlickerFired;
+					SKSE::log::error("[PIXEL] FLICKER: the last 8 samples ({:.1f} s) contain only "
+						"{} distinct images while the block's brightness swings {:.0f}/255 "
+						"(min {:.0f} max {:.0f}). A picture that CHANGES is not the same as one "
+						"that ADVANCES, and the changed counter cannot tell them apart: every "
+						"sample differs from the previous one and the image is still cycling "
+						"through a handful of states. This is the flicker, measured.",
+						static_cast<double>(pixelProbeRingFill) * 0.5, distinct,
+						static_cast<double>(lumSwing), static_cast<double>(lumLo),
+						static_cast<double>(lumHi));
+					SKSE::log::info("[PIXEL] FLICKER window (oldest first): "
+						"[{:016X} {:.1f}] [{:016X} {:.1f}] [{:016X} {:.1f}] [{:016X} {:.1f}] "
+						"[{:016X} {:.1f}] [{:016X} {:.1f}] [{:016X} {:.1f}] [{:016X} {:.1f}]",
+						pixelProbeRingHash[(pixelProbeRingAt + 0u) % 8u], static_cast<double>(pixelProbeRingLum[(pixelProbeRingAt + 0u) % 8u]),
+						pixelProbeRingHash[(pixelProbeRingAt + 1u) % 8u], static_cast<double>(pixelProbeRingLum[(pixelProbeRingAt + 1u) % 8u]),
+						pixelProbeRingHash[(pixelProbeRingAt + 2u) % 8u], static_cast<double>(pixelProbeRingLum[(pixelProbeRingAt + 2u) % 8u]),
+						pixelProbeRingHash[(pixelProbeRingAt + 3u) % 8u], static_cast<double>(pixelProbeRingLum[(pixelProbeRingAt + 3u) % 8u]),
+						pixelProbeRingHash[(pixelProbeRingAt + 4u) % 8u], static_cast<double>(pixelProbeRingLum[(pixelProbeRingAt + 4u) % 8u]),
+						pixelProbeRingHash[(pixelProbeRingAt + 5u) % 8u], static_cast<double>(pixelProbeRingLum[(pixelProbeRingAt + 5u) % 8u]),
+						pixelProbeRingHash[(pixelProbeRingAt + 6u) % 8u], static_cast<double>(pixelProbeRingLum[(pixelProbeRingAt + 6u) % 8u]),
+						pixelProbeRingHash[(pixelProbeRingAt + 7u) % 8u], static_cast<double>(pixelProbeRingLum[(pixelProbeRingAt + 7u) % 8u]));
 				}
 			}
 		}

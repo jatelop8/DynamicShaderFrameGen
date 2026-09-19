@@ -305,6 +305,17 @@ namespace FrameGen
 		// camera DLSS-G's interpolated output is legitimately identical to the real
 		// frame, so the streak alone cannot separate a still picture from a stale one.
 		std::uint32_t pixelProbeMovedDuringStreak = 0;
+		// v1.26 -- oscillation state. A flicker is neither a change nor a freeze:
+		// the presented image cycles through a small set of states, so the hash
+		// differs on every sample and the "changed" counter calls it healthy.
+		// What separates it from real content is that the set stays tiny and that
+		// its brightness swings. 8 samples at 2 Hz = a 4 s window.
+		std::uint64_t pixelProbeRingHash[8] = {};
+		float pixelProbeRingLum[8] = {};
+		std::uint32_t pixelProbeRingFill = 0;
+		std::uint32_t pixelProbeRingAt = 0;
+		float pixelProbeLum = 0.0f;
+		std::uint32_t pixelProbeFlickerFired = 0;
 		std::uint64_t pixelProbeArmedMs = 0;
 	};
 }

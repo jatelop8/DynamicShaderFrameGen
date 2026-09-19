@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DFG v1.26 —— 4x 实测是 4.00；而"活着"那局和冻结局，我们的读数一模一样</title>
+<style>
+  :root{
+    --bg:#14161a; --panel:#1b1f26; --panel2:#21262f; --line:#2c333d;
+    --fg:#e6eaf0; --dim:#98a3b3; --dim2:#6f7b8c;
+    --red:#ff6b6b; --amber:#ffb454; --green:#5ddc8a; --blue:#63b3ff; --purple:#b48cff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1080px;margin:0 auto;padding:34px 26px 80px}
+  h1{font-size:25px;margin:0 0 6px;letter-spacing:.4px;line-height:1.45}
+  h2{font-size:19px;margin:38px 0 12px;padding-left:11px;border-left:4px solid var(--blue)}
+  h3{font-size:16px;margin:24px 0 8px;color:var(--amber)}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:26px}
+  .lead{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--amber);
+    border-radius:8px;padding:16px 18px;margin:22px 0}
+  .lead b{color:var(--amber)}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+    padding:15px 18px;margin:14px 0}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:var(--dim);font-weight:600}
+  td.n{font-variant-numeric:tabular-nums;white-space:nowrap}
+  .ok{color:var(--green);font-weight:600}
+  .bad{color:var(--red);font-weight:600}
+  .warn{color:var(--amber);font-weight:600}
+  .mut{color:var(--dim)}
+  code{background:#0e1014;border:1px solid var(--line);border-radius:4px;
+    padding:1px 6px;font:13px/1.5 Consolas,"Courier New",monospace;color:var(--blue)}
+  pre{background:#0e1014;border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+    overflow-x:auto;font:13px/1.65 Consolas,"Courier New",monospace;color:#cfe0f5}
+  ul{margin:8px 0 8px 20px;padding:0} li{margin:5px 0}
+  .kv{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}
+  .kv div{background:var(--panel2);border:1px solid var(--line);border-radius:6px;
+    padding:7px 12px;font-size:13px}
+  .kv span{color:var(--dim2);margin-right:6px}
+  .step{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+    padding:14px 18px;margin:12px 0;border-left:4px solid var(--green)}
+  .step.a{border-left-color:var(--blue)}
+  .step.b{border-left-color:var(--amber)}
+  .big{font-size:30px;font-weight:700;color:var(--green);font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>DFG v1.26 —— 4x <span class="ok">实测是 4.00</span>；而"活着"那局与冻结局，我们的读数一模一样</h1>
+<div class="sub">
+  局：2026-09-20 02:24:11 → 02:25:20（69 s）· v1.25 首跑 ·
+  归档 <code>docs/runlogs/2026-09-20-0225-v1.25-affinity-gate.*</code><br>
+  DLL <code>5780f34d2dd502248a57df0c4f9104b3</code> · 1,377,280 B · build == MO2 部署目录 · INI 未动（8 键）
+</div>
+
+<div class="lead">
+<b>这一局最有价值的两件事，都不是"改好了什么"，而是"终于量到了什么"。</b><br>
+① 4x 之前从来没有实测值 —— 现在我方 `Present()` 计数和 <b>DXGI 自己的 present 计数</b>同窗相除，
+   加载期 <b>1.00</b>、闸门放开后一路 <b>4.00</b>。<br>
+② 同时必须承认：<b>把你说"画面活了"的那局拉出来逐字比对，世界段每一个读数都和你说"卡死"的局一样</b>
+   —— 相机静止、玩家不动、一个键都没按、游戏时钟在走。<b>我们没有任何量能分出死活。</b>
+</div>
+
+<h2>一、v1.25 的两处修复，都被"别人写的"日志验证了</h2>
+
+<table>
+<tr><th>项</th><th>判据</th><th>结果</th></tr>
+<tr>
+  <td><b>A</b> 反投影家族匹配 + 仿射闸</td>
+  <td>Transfusion 的 <code>[MOTION]</code> 是另一个模块自己 dump 的矩阵，不是我方日志的回声</td>
+  <td class="ok">全档 <code>MOTION</code> = 0 条（此前 13 局里 12 局各 1 条）<br>
+      我方 <code>clipW</code> 全档只有 <code>1.000000</code>（此前世界入口那帧 <code>-195.222366</code>）<br>
+      同一毫秒 Transfusion 的 rows 变成 <code>[…][…][…][-1.53e-05 5.78e-06 -6.10e-05 0.99999994]</code> —— <b>w≈1，仿射了</b></td>
+</tr>
+<tr>
+  <td><b>B</b> 闸门合上时不碰运行时</td>
+  <td>Transfusion 的 <code>[OPTIONS]</code> 计数</td>
+  <td class="ok">全档 <b>只有 1 条</b>，时间 <b>02:25:17.498</b>，正是闸门释放那一毫秒<br>
+      加载那 17.5 秒里运行时一次都没被碰过<br>
+      <span class="mut">对照 v1.24 那局：唯一一次下发落在 02:24:59 的<b>加载屏幕</b>（serial=2）—— v1.24 声称修了，其实没修</span></td>
+</tr>
+</table>
+
+<div class="panel">
+本局时间线要点：<code>02:24:59.394 MENU EDGE open=1 serial=2</code> → <code>[MFG] ladder held back</code> →
+（加载 17.5 s，<code>ask=4 accepted=0</code>）→ <code>02:25:17.498 open=0 serial=862</code> +
+<code>ladder resumed</code> + <code>Applied fixed multiplier: 4x</code> → <code>02:25:17.711 DLSS-G actual presentation count: 4x</code>。
+</div>
+
+<h2>二、新硬结论：4x 是 <span class="big">4.00</span>，实测</h2>
+
+<p>看门狗里有两个互不相干的计数：<code>frames</code>（我方 <code>Present()</code> 被调用的次数）和
+<code>lastPr</code>（DXGI 自己的 <code>GetLastPresentCount</code>）。同窗相除 = <b>swapchain 每真实帧真正翻转了几次</b>。</p>
+
+<table>
+<tr><th>时刻</th><th class="n">frames</th><th class="n">lastPr</th><th class="n">ΔlastPr / Δframes</th><th>阶段</th></tr>
+<tr><td class="n">02:25:17.396</td><td class="n">857</td><td class="n">857</td><td class="n ok">1.00</td><td>闸门未开</td></tr>
+<tr><td class="n">02:25:18.013</td><td class="n">879</td><td class="n">906</td><td class="n ok">4.00</td><td>闸门放开后</td></tr>
+<tr><td class="n">02:25:19.043</td><td class="n">913</td><td class="n">1042</td><td class="n ok">4.00</td><td></td></tr>
+<tr><td class="n">02:25:20.674</td><td class="n">968</td><td class="n">1262</td><td class="n ok">4.00</td><td>最后一行</td></tr>
+</table>
+
+<p class="mut">这是 DXGI 自己的数 —— 不是"我方向运行时要的"，也不是"运行时回报的"。
+挂了很多版的「呈现帧率无实测值」到此结案。<br>
+顺带解掉那个三方分歧：Transfusion <code>[PERF] FPS: 34.7</code> 量的是<b>真实帧率</b>（我方同刻 <code>real=33.4</code>，两者一致），
+不是呈现翻转率；翻转率 ≈ 33.4×4 ≈ 134/s，在 160 Hz 面板内。</p>
+
+<h2>三、★★★★ 必须承认的修正："活着"和"卡死"，我们的读数完全一样</h2>
+
+<p>把你说"画面活了"的那局（<b>23:38 / v1.19 / FSR3</b>）的世界段和这一局逐字对照：</p>
+
+<table>
+<tr><th>读数</th><th>23:38（你说<b class="ok">画面活了</b>）</th><th>02:25（你说<b class="bad">卡死</b>）</th></tr>
+<tr><td><code>eye</code>（相机世界坐标）</td><td class="n">(-242.80,-415.30,118.60) <b>全程不变</b></td><td class="n">(-243.05,-415.31,118.56) <b>全程不变</b></td></tr>
+<tr><td><code>eyeD</code>（每秒位移）</td><td class="n bad">0.00</td><td class="n bad">0.00</td></tr>
+<tr><td><code>plr</code> / <code>plrD</code></td><td class="n">(-250.3,-360.4,-0.0) / 0.00</td><td class="n">(-250.3,-360.4,-0.0) / 0.00</td></tr>
+<tr><td><code>hrsD</code>（游戏时钟）</td><td class="n">0.00563 ~ 0.00581 <b>在走</b></td><td class="n">0.00574 ~ 0.00605 <b>在走</b></td></tr>
+<tr><td>按键位 <code>os</code></td><td class="n bad">0x0（全档没按过 W/A/S/D/空格/Shift/鼠标键）</td><td class="n bad">0x0</td></tr>
+<tr><td>形态</td><td><code>PC_STILL</code></td><td><code>PC_STILL</code></td></tr>
+</table>
+
+<div class="lead">
+<b>⇒ 我们手上没有任何一个量能把"你说活着"和"你说冻了"分开。</b><br>
+所以前面几轮里我说的"相机静止 ⇒ 世界冻了"，<b>没有依据</b> —— 它在活局里同样静止。
+<code>hrsD&gt;0</code> 只证明游戏循环在跑（一直成立），<code>eyeD=0</code> 只证明相机没动（也一直成立）。<br><br>
+<b>这直接决定下一件该测什么：</b>你报的是<b>画面闪烁</b>，而"闪烁"恰恰是现有像素探针
+<b>结构性看不见</b>的东西 —— 振荡的画面每个样本都和上一个不同 ⇒ <code>chg=1</code> ⇒ 读成最健康。
+（本局世界段 7 个样本全部 <code>chg=1</code>，而 <code>clipDev=0.000061</code> 相机根本没动。）
+</div>
+
+<h2>四、v1.26 改了两处 —— 都是仪器，不是功能</h2>
+
+<div class="step a">
+<h3>A · <code>PixelProbeTick()</code> 现在能测「振荡（闪烁）」</h3>
+<ul>
+<li>采样块顺手算<b>平均字节亮度</b> <code>lum</code>（沿原来的 FNV 循环累加；<code>RowPitch</code> 填充是稳定的，
+    只会把均值稀释一个固定量，造不出假摆动）。</li>
+<li>保留最近 <b>8 个</b> <code>(hash, lum)</code>。判据：<b>不同 hash 数 ≤ 3</b> 且 <b>亮度摆幅 &gt; 40/255</b>
+    ⇒ 打 <code>[PIXEL] FLICKER</code>，并附整个 8 窗口。样本行加 <code>lum= seen=/{}/ swing=</code>。</li>
+<li class="warn">这条判据<b>不需要输入、不需要相机移动</b> —— 而依赖"玩家走路"的旧判据，自加入以来一次都没可能触发。</li>
+</ul>
+</div>
+
+<div class="step b">
+<h3>B · FPS 探针加一行「实测倍率」</h3>
+<ul>
+<li><code>[FrameGen] FLIPS per real frame = X.XX (DXGI lastPresentCount a -&gt; b, our Present c -&gt; d)</code>，
+    每 2 s 输出一次。</li>
+<li>并给 <b>FSR3 分支补上 <code>GetLastPresentCount</code></b>（v0.74 起只有 DLSS-G 分支记录它）
+    —— FSR3 是唯一活过的 provider，这个不依赖运行时的读数在那儿原本是缺的。</li>
+</ul>
+</div>
+
+<h2>五、两条否定（A≠B）</h2>
+<ol>
+<li><b>first-chance 访问违例与本故障无关。</b>本局 crash log 有 3 条 <code>0xC0000005</code>，
+    faulting module = <code>D:\ENB-EJ\Skyrim Special Edition\DINPUT8.dll</code>（= Transfusion 自己），
+    <code>rva=0x7B9D</code>，读的是 <code>…\NGX\models\dlssg\…\160_876232C.bin</code> 的 MZ 头（<code>Rax=0x5A4D</code>）
+    —— 它在扫 NGX 的 dlssg 模型 blob。<br>
+    但逐局计数是 <b>3 / 0 / 3 / 0 / 3</b>（00:31=3、00:58=0、01:30=3、01:56=0、02:25=3）
+    ⇒ <b>有故障的局里也可能一条没有</b> ⇒ 划掉。</li>
+<li><b>"加载期武装 4x 有害"既没被推翻也没被坐实</b>，但本局加载期 <code>lastPr/frames</code> 恒为 <b>1.00</b>，
+    说明那 30 秒里没有任何多余翻转。</li>
+</ol>
+
+<h2>六、修正：那 30 秒停顿<b>不在我方 <code>Present()</code> 里面</b></h2>
+
+<p>上一轮我把 <code>stage=d3d11 Wait</code> 读成"我们的围栏在等"。<b>这个读法是错的：</b></p>
+<ul>
+<li>那段里 <code>frames</code>（= <code>++frameCounter</code>，写在 <code>Present()</code> 里、<b>在任何调用之前</b>）
+    从 1 不动 ⇒ <b>渲染线程 30 秒里一次都没再进过 <code>Present()</code></b>；</li>
+<li><code>presentAge</code> 也是<b>陈旧的</b>：它量 <code>nowMs - g_presentEnteredMs</code>，而那枚时间戳停在 02:24:29.309 没更新过
+    ⇒ 26 s 的 <code>presentAge</code> 是同一枚旧时间戳；</li>
+<li>所以 <code>stage=d3d11 Wait</code> 是<b>上一帧结束时留下的名字</b>，不是"当前所在调用"。</li>
+</ul>
+<p class="mut">⇒ 只能得出：渲染线程卡在我们看不见的地方（引擎侧），看门狗没有能力给它命名。
+以后看门狗里的 <code>stage=</code> 要降级读成"最后写下的那个名字"。</p>
+
+<h2>七、未证（不装懂）</h2>
+<ul>
+<li><b>闪烁是否真实存在 —— 未证。</b>你从 23:38 那局起就一直在说"闪烁"，但<b>至今没有任何一个仪器量过它</b>。
+    v1.26 A 就是为它造的，<b>它是否触发，要看下一局</b>。</li>
+<li>那 30 秒停顿是不是病态 —— 未证。13/13 局都有（含 FSR3 活局 23.0 s），本局 30.0 s 是最长的一次。</li>
+<li>世界段只跑了 3.2 秒、输入 21/22 <code>INPUT_NONE</code> ⇒ <b>本局又一次答不了"世界响应输入吗"</b>。</li>
+<li>Transfusion 与冻结 —— 仍 <b>12/12 相关</b>，<b>隔离实验（<code>DINPUT8.dll</code> 改名）至今一次都没跑</b>。</li>
+</ul>
+
+<h2>八、下一局</h2>
+<div class="panel">
+<b>照旧，但这次多一个看点：</b><br>
+1. 进世界 → 站 15 秒 → <b>按住 W 走 10 秒以上</b> → 松开站 10 秒 → 再退（别提前退）。<br>
+2. 如果你看到闪烁，<b>就站在那里盯着看 20 秒以上</b> —— v1.26 A 需要 8 个样本（4 秒）才能判，而它在<b>不需要你动</b>的情况下就能出结论。<br>
+3. 想坐实"第二个 DLSS-G 驱动"，唯一零代码的实验：把游戏根目录 <code>DINPUT8.dll</code>
+   改名成 <code>DINPUT8.dll.transfusion-off</code>（<b>别用 <code>.disabled</code></b>，那个名字已被另一个 5.9 MB 的 DLL 占着）。<br>
+   <span class="mut">预期：那一局只有 2x（第二个驱动不供内核解锁器）。这是"我们的插件 + DLSS-G + 无第二驱动"的唯一干净基线。</span>
+</div>
+
+</div>
+</body>
+</html>
