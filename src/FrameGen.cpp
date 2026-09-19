@@ -751,6 +751,13 @@ namespace FrameGen
 						break;
 					}
 				}
+				if (slot < 0 && !snapFamOverflowLogged) {
+					// v1.15b: never drop a family silently. If this fires, a family is
+					// going uncounted and its motion is invisible -- raise kSnapFamMax.
+					snapFamOverflowLogged = true;
+					SKSE::log::info("[CAM] FAM table full ({} slots): proj00={:.6g} is NOT "
+						"being tracked - raise kSnapFamMax", kSnapFamMax, famKey);
+				}
 			}
 			if (slot >= 0) {
 				const auto s = static_cast<std::uint32_t>(slot);

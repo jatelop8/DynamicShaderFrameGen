@@ -389,7 +389,10 @@ namespace FrameGen
 	// which a single PARKED writer also increments without bound. These count
 	// the step between CONSECUTIVE arrivals, bucketed by proj00, so a live
 	// family is separable from a parked one by reading `moved` on [CAM] FAM.
-	static constexpr std::uint32_t kSnapFamMax = 8;
+	// v1.15b: 8 slots was not enough of a margin -- the menu period of the
+	// 21:15 run alone showed four distinct proj00 values, and a family dropped
+	// because the table was full is exactly the one we are hunting.
+	static constexpr std::uint32_t kSnapFamMax = 16;
 	bool snapFamSeen[kSnapFamMax] = {};
 	float snapFamProj[kSnapFamMax] = {};
 	float snapFamPos[kSnapFamMax][3] = {};
@@ -399,6 +402,7 @@ namespace FrameGen
 	std::uint64_t snapFamMovedTotal = 0;
 	float snapFamStepTotal = 0.0f;
 	std::uint64_t snapFamLogged = 0;
+	bool snapFamOverflowLogged = false;
 
 	// ---- v1.10: a MOVING family beats a STILL lock ---------------------- 
 	// The 11:30 run is the measurement this exists for. The reset edge at
