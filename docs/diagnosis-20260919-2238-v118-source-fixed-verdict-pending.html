@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>22:38 那局（v1.17）：选源结了，但两天来第一次「没有可修的 bug」</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#161a21; --panel2:#1c212a; --line:#2a313c;
+    --fg:#d8dee9; --dim:#8b95a5; --ok:#4ade80; --bad:#f87171; --warn:#fbbf24; --info:#60a5fa; --pur:#c084fc;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;}
+  .wrap{max-width:1000px;margin:0 auto;padding:34px 24px 60px}
+  h1{font-size:23px;line-height:1.4;margin:0 0 6px}
+  .sub{color:var(--dim);font-size:13.5px;margin-bottom:26px}
+  h2{font-size:17px;margin:34px 0 12px;padding-left:11px;border-left:3px solid var(--info)}
+  h2.ok{border-color:var(--ok)} h2.bad{border-color:var(--bad)} h2.warn{border-color:var(--warn)}
+  h2.pur{border-color:var(--pur)}
+  p{margin:9px 0}
+  code{font-family:"Cascadia Mono",Consolas,Menlo,monospace;font-size:12.6px;
+       background:#20262f;padding:1.5px 5px;border-radius:4px;color:#a5d6ff}
+  pre{background:#0b0e12;border:1px solid var(--line);border-radius:8px;padding:13px 15px;
+      overflow-x:auto;font-family:"Cascadia Mono",Consolas,Menlo,monospace;font-size:12.4px;
+      line-height:1.65;color:#c9d1d9;margin:12px 0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:15px 18px;margin:14px 0}
+  .card.hi{border-color:#2f4f3a;background:linear-gradient(180deg,#141d18,#131720)}
+  .card.al{border-color:#5a3b3b;background:linear-gradient(180deg,#1e1616,#131720)}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13.6px}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:#aab4c4;font-weight:600}
+  td code{font-size:12.2px}
+  .ok{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)} .info{color:var(--info)} .dim{color:var(--dim)}
+  ul{margin:8px 0 8px 4px;padding-left:20px} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11.6px;padding:2px 9px;border-radius:20px;
+       border:1px solid var(--line);color:var(--dim);margin-right:7px}
+  .tag.ok{border-color:#2f6b46;color:var(--ok)} .tag.bad{border-color:#6b3535;color:var(--bad)}
+  .tag.warn{border-color:#6b5a2a;color:var(--warn)}
+  .kv{display:grid;grid-template-columns:190px 1fr;gap:7px 14px;font-size:13.6px}
+  .kv b{color:#aab4c4;font-weight:600}
+  footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);
+         color:var(--dim);font-size:12.6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>22:38 那局（v1.17）：选源结了，但两天来第一次「没有可修的 bug」</h1>
+  <div class="sub">
+    DLL <code>91493b4d2c5d7eaf89761e1b01eb3d</code> · 1,353,728 B · 世界段 22:39:01–22:39:03（约 2 秒 / 64 帧）<br>
+    日志 220,166 B / 1,804 行 · 归档 <code>docs/runlogs/2026-09-19-2238-v1.17-source-fixed-world-2s-no-input.*</code>
+  </div>
+
+  <h2 class="ok">一、选源终结：锁第一次站在活相机上</h2>
+
+  <div class="card hi">
+    <pre>[22:38:59.586] [CAM] PC v1.17: read=389 match=289 adopt=1/1 rej=28 ref=2
+               best=0.00 at proj00=0.8391 eye=(-243.05,-415.31,118.56) eyeD=0.07 PC_MOVING
+[22:39:00.588] [CAM] PC v1.17: read=482 match=444 adopt=0/1 rej=66 ref=2
+               best=0.00 at proj00=0.8391 eye=(-243.05,-415.31,118.56) eyeD=0.00 PC_STILL
+[22:39:03.630] [CAM] PC v1.17: read=423 match=397 adopt=0/3 rej=152 ref=2
+               best=0.00 at proj00=0.8391 eye=(-243.05,-415.31,118.56) eyeD=0.00 PC_STILL
+
+心跳:  lock(pub/hold/re/still)=5938/1/5/0  proj00=0.8391  famRej=0</pre>
+    <p style="margin-bottom:0">
+      <span class="tag ok">match/read ≈ 94%</span>
+      <span class="tag ok">best=0.00 每秒成立</span>
+      <span class="tag ok">rej 每秒 +30</span>
+      <span class="tag ok">60 帧无一帧跑偏</span>
+    </p>
+  </div>
+
+  <p><code>best=0.00</code> 的意思是：引擎自己的活相机节点
+  <code>RE::PlayerCamera::cameraRoot-&gt;world.translate</code> 与那个到达者的
+  <code>CameraPosAdjust</code> <b>相距 0.00 单位</b>，每秒 397 次。三次 <code>PC TAKEOVER</code>
+  的 <code>proj00</code> 全是 <code>0.8391</code>。</p>
+
+  <p class="bad"><b>⇒ v1.00 的族指纹、v1.07b 的「释放后第一个到达者」、v1.11 的接管门、
+  v1.13 的内容判据、v1.16 的夺锁 —— 全部修在错的一侧。v1.17 把
+  <code>RE::PlayerCamera</code> 从「选源依据」升格为「唯一权威」之后，这一局 60 帧里没有一帧落在非相机族上。</b>
+  这是两天来第一个确定性成果，而且它是可测的（<code>match</code> / <code>best</code> / <code>rej</code> 三个数）。</p>
+
+  <h2>二、族普查终于可信（v1.16 的 1e-4 容差生效）</h2>
+
+  <table>
+    <tr><th>族</th><th>proj00</th><th>arr/s</th><th>moved</th><th>stepSum</th><th>span</th><th>判定</th></tr>
+    <tr><td>FAM[2]</td><td><b>0.8391</b></td><td>397</td><td>0</td><td>0.08</td>
+        <td>(0,0,0)</td><td class="ok">活相机 —— 5 秒累计只走 8cm</td></tr>
+    <tr><td>FAM[1]</td><td>1</td><td>216</td><td>532</td><td>332,103</td>
+        <td>(980.8,530.2,11.3)</td><td class="bad">凶物：桶里两个写者相距约 980</td></tr>
+    <tr><td>FAM[0]</td><td>0.149184</td><td>0</td><td>199</td><td>379</td>
+        <td>(0,0,0)</td><td class="dim">主菜单相机，世界段已不写</td></tr>
+    <tr><td>FAM[3]</td><td>0.888889</td><td>26</td><td>0</td><td>0.00</td>
+        <td>(0,0,0)</td><td class="dim">正交/单位投影</td></tr>
+  </table>
+
+  <ul>
+    <li><b>FAM[1] 是两天来见过最凶的假写者</b>：<code>span x=980.84</code>、<code>stepSum</code> 每秒 +67,500、
+      <code>last</code> 恒定、<code>moved=532 &gt; arr=216</code>。它能满足 v1.11 的
+      <code>kCamForeignMoveTol(200)</code>，v1.00g 的同族 step-break 也会把它当锚 —— <b>v1.17 的门现在挡着它。</b></li>
+    <li><code>arr=</code> 是<b>每秒值</b>，<code>moved=</code>/<code>stepSum=</code> 是<b>累计值</b>（不清零）⇒
+      <code>moved &gt; arr</code> 不是 bug，是两种量纲。</li>
+  </ul>
+
+  <h2 class="bad">三、L33：判据只建在故障下游，就无法命名故障</h2>
+
+  <div class="card al">
+    <pre>玩家站着不动    ⇒ 相机不动 ⇒ clipToPrevClip=I ⇒ 画面不变【正确】
+世界被引擎冻住  ⇒ 相机不动 ⇒ clipToPrevClip=I ⇒ 画面不变【就是故障】</pre>
+    <p style="margin-bottom:0"><b>两种世界，日志逐字节相同。</b></p>
+  </div>
+
+  <p><code>eye</code> 是相机的 <b>原点</b>（纯转视角不改它）、<code>matChanges</code> 60 帧只涨 2、
+  <code>FAM[2]</code> 累计只走 8 厘米 —— <b>它们全是下游量</b>，只能证明「相机的输出没变」，
+  <b>永远不能证明「是谁让它没变」</b>。这就是两天读不出结论的唯一原因，而且不是代码问题，是仪器的位置。</p>
+
+  <pre>[22:38:59.586] eyeD=0.07  PC_MOVING   ← 进世界那一秒（加载瞬移）
+[22:39:00.588] eyeD=0.00  PC_STILL
+[22:39:03.630] eyeD=0.00  PC_STILL
+心跳: frozen=60（世界帧 64）| clipDev=0.000061 | clipW=1.000000
+      curVP=15.0006 prevVP=15.0006 | engPrevEqCur=61/61 | det3=1.000000
+watchdog: alive=1 focus=1 presentAge 个位数 ms dsync=0 无崩溃转储
+⇒ 游戏在正常出帧，没有死锁、没有崩溃</pre>
+
+  <h2 class="warn">四、三个「差点误判」——L0 第二遍当场救回来三次</h2>
+
+  <table>
+    <tr><th>字段</th><th>我以为</th><th>实际</th><th>若没查会得出</th></tr>
+    <tr><td><code>inSetOptions</code></td><td>累计调用数 ⇒ 世界段从没调 SetDLSSGOptions</td>
+        <td><code>store(1/0)</code>（<code>Streamline.cpp:1981</code>）=「此刻是否在函数内」</td>
+        <td class="bad">去修一个不存在的问题</td></tr>
+    <tr><td><code>menuUnblockedFrames</code></td><td>总共只 unblocked 1 次</td>
+        <td><code>unblocked=1</code> 是「第一次 unblocked」（<code>DX12SwapChain.cpp:1386</code>）</td>
+        <td class="bad">去修另一个不存在的问题</td></tr>
+    <tr><td><code>camPrev(ok/used)=1/60</code></td><td>重建 prev 只成功 1 次、失败 59 次</td>
+        <td><code>diag.camPrevOk</code> 是<b>赋值</b>（瞬时，<code>:1002</code>），<code>camPrevUsed</code> 才是 <code>++</code></td>
+        <td class="bad">第三趟白修</td></tr>
+  </table>
+
+  <p><b>三者实际全部健康</b>：<code>camPrev</code> 60/60 全用、<code>featureDLSSG</code> 全程 true、
+  <code>SetDLSSGOptions</code> 无异常证据。<b>⇒ 这一局日志里没有任何故障证据，每个指标都自洽。</b></p>
+
+  <p class="warn"><b>铁律（并入 L33）：声称某个计数器证明了什么之前，先去源头看它是
+  <code>= x</code> 还是 <code>++x</code>。</b>一个「累计/瞬时」看错的字段，会凭空造出一个不存在的 bug。</p>
+
+  <h2 class="pur">五、v1.18：四个上游见证（零行为改动，只读）</h2>
+
+  <table>
+    <tr><th>见证</th><th>来源</th><th>能回答什么</th></tr>
+    <tr><td><code>keys</code></td><td>Win32 键态（W/A/S/D/SPACE/SHIFT/LMB/RMB），每次到达采样、<b>按秒 OR</b></td>
+        <td>这一秒有没有输入进窗口</td></tr>
+    <tr><td><code>dc</code></td><td><code>GetCursorPos</code> 每秒累计距离 / 变动次数</td>
+        <td>有没有<b>转视角</b>（<code>eye</code> 是原点，转视角不动它）</td></tr>
+    <tr><td><code>fg</code></td><td>前台窗口 PID 与本进程比对</td>
+        <td><b>Skyrim 失焦会暂停世界</b> ⇒ <code>fg=0</code> 直接就是答案</td></tr>
+    <tr><td><code>plrD</code></td><td><code>RE::PlayerCharacter</code> 每秒位移</td>
+        <td>玩家本体有没有动（既非相机也非输入）</td></tr>
+  </table>
+
+  <p>判据词从 1 个变 2 个，日志自己给出结论：</p>
+  <pre>PC_STILL INPUT_NONE  ⇒ 玩家没动，本局不判定任何东西，重跑（必须走动）
+PC_STILL INPUT_SEEN  ⇒ 输入到了窗口而世界没动 ⇒ 真故障
+PC_MOVING …          ⇒ 正常</pre>
+
+  <p><b>⇒ 这一局如果是 <code>PC_STILL INPUT_NONE</code>，那就是「本局作废」，而不是「还没修好」——
+  这是两天来第一次能把这两件事分开。</b></p>
+
+  <h2>六、下一局怎么判</h2>
+
+  <table>
+    <tr><th>看到</th><th>结论</th><th>下一步</th></tr>
+    <tr><td><code>fg=0</code></td><td>窗口失焦 ⇒ 世界暂停（插件无责）</td><td>查 ForceBorderless / 焦点抢占</td></tr>
+    <tr><td><code>PC_STILL INPUT_SEEN</code></td><td>输入到达但世界冻结</td><td>查引擎暂停态（菜单 / 控制台 / 加载）</td></tr>
+    <tr><td><code>PC_MOVING</code> + <code>path</code>/<code>matChanges</code> 涨</td><td class="ok"><b>源与装配都对，冻结已修</b></td>
+        <td>转 DLSS5 上屏 + 20/30 系</td></tr>
+    <tr><td><code>PC_MOVING</code>（或 <code>plrD&gt;0</code>）但 <code>eyeD=0</code> 且 <code>clipDev=0</code></td>
+        <td>源对了、<b>装配错了</b></td>
+        <td>换官方 <code>recalculateCameraMatrices()</code>（原点平移消 fp32 塌陷）</td></tr>
+    <tr><td><code>PC_STILL INPUT_NONE</code></td><td class="warn"><b>本局作废，不是 bug</b></td>
+        <td>重跑：<b>停留 ≥15 秒，并且真的走路</b></td></tr>
+  </table>
+
+  <div class="card">
+    <p style="margin:0"><b>★ 前置条件（不满足就是又白跑一趟）：进世界后停留 ≥15 秒，并且真的走动。</b>
+    三局的世界段分别只有 4.5 / 2.2 / 2 秒 —— 这一点不解决，再多的字段也读不出结论。</p>
+  </div>
+
+  <h2>七、诚实边界</h2>
+  <div class="card">
+    <div class="kv">
+      <b>冻结是否修好</b><span class="warn">未证（这一局无输入证据）</span>
+      <b>DLSS5 输出上屏</b><span class="warn">未证（只证了在跑）</span>
+      <b>RTX 20/30 系</b><span class="bad">一行未写（grep -i xess = 0）</span>
+      <b>4x 是否在产出</b><span class="ok">已证（presented per real frame = 4）</span>
+      <b>选源是否正确</b><span class="ok">已证（best=0.00, match/read 94%, 60 帧无跑偏）</span>
+    </div>
+  </div>
+
+  <footer>
+    DLL 1,356,800 B · md5 <code>03b8e540cc9e0e91f9a280afd5db57fa</code>（build == MO2 部署）·
+    <code>FrameGen.cpp</code> 95,713 → 99,492 B（CRLF 2,027 / 裸 LF 0）· commit <code>c940ef9</code> · tag <code>v1.18</code><br>
+    回退：<code>src/backup-v1.18-20260919-224153/built_DLL.bin</code>（= v1.17）+
+    <code>git checkout v1.17 -- src/FrameGen.cpp</code> · 一秒回到可玩：<code>Provider=0</code> + <code>MFGMaxFramesOverride=0</code><br>
+    账本 <code>MFG_MASTER_NOTES.md</code> §30 · 当日日志 §6.24
+  </footer>
+
+</div>
+</body>
+</html>
