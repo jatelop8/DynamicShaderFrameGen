@@ -59,6 +59,9 @@
 它的矩阵<b>永远不变</b> ⇒ 我们拿它当相机，<code>clipToPrevClip</code> 就恒等于单位阵
 ⇒ DLSS-G 判定「相机没动」⇒ 插帧 = 复制上一帧 ⇒ 看起来就是卡死。
 <b>v1.13 让「不是相机长相的写入」直接不发布。</b></p>
+<p class="small">★ 并且这条结论有<b>第二条独立证据链</b>（v1.08 时代留下的 <code>[MOTION]</code> 探针，
+与本次推理无关）给出了<b>同一个</b> <code>-0.111111</code>。同时它还<b>证明了世界里确实有真相机写</b>
+（<code>p00=1.1918 / p23=-15.000636</code>）—— 见第二·补节。</p>
 </div>
 
 <h2>一、这局实测到的四件事</h2>
@@ -70,13 +73,17 @@
 <tr><td>2</td><td><b>DLSS5 与帧生成同时在线</b>（目标的一半已达成）</td>
 <td><code>DLSSNR CHAINED with frame generation (v1.01, NRAllowWithFrameGen=1)</code></td></tr>
 <tr><td>3</td><td><b>发布流在世界里完全冻住</b></td>
-<td><code>path</code> 卡在 <code>124.92</code> 三十秒；<code>pos</code> 只抖 ±0.6；
-<code>matChanges</code> 422→6171（<b>+40/s = 2×24</b>）；<code>arrivalsPerSec=591</code></td></tr>
-<tr><td>4</td><td><b>进世界 31 ms 内四次抢锁</b></td>
+<td><code>path</code> 卡在 <code>124.92</code> 三十秒、<code>move=0.0000</code>；<code>pos</code> 只抖 ±1；<br>
+<b>四个采样点的 <code>c8 Proj</code> 逐位相同</b>（<code>#26101 / #27901 / #29701 / #31501</code>，跨 9 秒）；
+<code>matChanges</code> <b>+195/s</b> ≈ <code>591</code> 的 33% ⇒ 每帧约 8 个<b>互不相同</b>的写者</td></tr>
+<tr><td>4</td><td><b>喂给 DLSS-G 的是一个非仿射矩阵</b></td>
+<td><code>[MOTION] clipToPrevClip[3].w=170.324310 (must be 1) … the inverse and the previous matrix
+came from different cameras</code> —— <b>这才是"画面不动"的直接原因</b></td></tr>
+<tr><td>5</td><td><b>进世界 31 ms 内四次抢锁</b></td>
 <td><code>same-family step break</code> ×4，距离 <code>376.6 / 255.2 / 452.7</code></td></tr>
 </table>
-<p class="small">★ 第 3 项那个 <code>+40/s</code> 是关键口味：它正好是 <code>2 × 24</code>。
-两个来源在抢同一个槽 —— 一个是每帧写一次的恒定矩阵，一个是活的相机。</p>
+<p class="small">★ 第 3 项那个 <code>+195/s</code>（= arrivals 的 33%）是关键口味：同一个缓冲里，
+每帧有约 8 个<b>互不相同</b>的矩阵被写进去，而我们的 hook 只留<b>最后那一个</b>。</p>
 
 <h2>二、解剖那个假相机：它是一个正交全屏投影</h2>
 <p>世界阶段十个字段<b>全部退化成平凡矩阵</b>：</p>
@@ -102,6 +109,46 @@ m32 = 0,  m33 = 1         ← ★ 没有透视除法 ⇒ 这是 ORTHO，不是�
 <li>到达率 <code>591/s</code> ÷ 真实帧率 <code>~24</code> ≈ <b>22 次</b> —— 一个渲染帧里同一个缓冲被 Map/Unmap 二十几次，
 而我们（和 Community Shaders）的 hook 都只保留<b>最后一个</b>写者。</li>
 </ul>
+</div>
+
+<h2>二·补、★ 第二条独立证据链：v1.08 的 MOTION 探针</h2>
+<p>上面那张解剖表来自 <b>FLD 转储</b>。而日志里还有一条<b>完全不同来源</b>的探针 ——
+v1.08 时代写进 <code>[MOTION]</code> 告警的两行 <code>p00 / p23</code>。
+它当时是为了查另一个问题（矩阵非仿射）而插的，与本次的推理无关，所以它是一条<b>干净的独立证人</b>。</p>
+<div class="card">
+<p><b>同一个字段，前后相差 0.6 秒，两群样本并排摆在一起：</b></p>
+<pre>[18:21:43.764]  p00 cur=1.1918  prev=0.0000 | p23 cur=<b>-15.000636</b> prev=0.000000
+[18:21:44.357]  p00 cur=1.0000  prev=1.1918 | p23 cur=<b>-0.111111</b>  prev=<b>-15.000636</b></pre>
+<ul>
+<li><code>p00 = 1.1918, p23 = -15.000636</code> ⇒ <b>真实相机</b>。
+<code>p23</code> 就是 <code>-zn</code>，<code>zn = 15.000636</code>（与菜单期手算出的 <code>15.011</code> 同源）。</li>
+<li><code>p00 = 1.0000, p23 = -0.111111</code> ⇒ <b>正交冒牌货</b>，
+与第二章反解出的 <code>z' = 1.1111z - 0.1111</code> 的 <code>-0.1111</code> <b>是同一个数</b>。</li>
+</ul>
+<p><b>★★ 这条证据同时回答了两个问题：</b></p>
+<ul>
+<li><b>世界内确实有真相机写进这个缓冲，而且我们抓到了。</b>
+<code>18:21:43.764</code> 那一行 <code>cur</code> 就是它（刚过 <code>MENU EDGE open=0</code> 21 毫秒）。
+⇒ 「世界里根本没有相机写」这个最坏分支<b>已被排除</b>。</li>
+<li><b>两条判据都能分开两族</b>：<code>p00</code> 差 19%（1.0000 vs 1.1918）、
+<code>p23</code> 差 15（-0.1111 vs -15.0006）。v1.13 选的是 <code>Proj[3][2]/[3][3]</code>，
+因为它<b>有 D3D 规范背书</b>（透视投影必然 <code>m32=1, m33=0</code>），不是经验阈值。</li>
+</ul>
+</div>
+<div class="card">
+<p><b>★ 顺带查出一个此前没说出口的错误决定：</b> <code>v1.11</code> 的接管判据在
+<code>18:21:44.338</code> <b>挑错了族</b> ——</p>
+<pre>[CAM] #14583 FOREIGN TAKEOVER (v1.11): locked proj00=0.8391 has gone 208 publishes with an
+unchanged matrix while the refused family proj00=1 travelled 289.8 units
+- adopting pos=(-464.8,349.9,100.5)</pre>
+<p>它把「锁着的那族<b>不动</b>」当成"这是菜单相机"、把「被拒的那族<b>在动</b>」当成"这才是玩家"。
+在那一刻这个推理是合理的，但被拒的那族 <code>proj00=1</code> 恰恰<b>就是正交冒牌货</b>
+（采纳的 <code>pos=(-464.8,349.9,100.5)</code> 与 <code>[CAM] raw</code> 读到的
+<code>(-464.5398,349.1476,101.2857)</code> 是同一个点）。
+⇒ 接管之后 <code>proj00=1</code>、<code>famRej</code> 从 <code>4157</code> 涨到 <code>15792</code>，
+<b>真相机反而被当成异族拒掉了</b>。</p>
+<p class="small">v1.13 <b>不修改接管判据</b>（一次只动一处可证伪的东西）；
+但因为正交写现在根本<b>进不到发布</b>，接管也就没有机会再采纳它 —— 这正是内容门比改判据更稳的原因。</p>
 </div>
 
 <h2>三、反证：菜单期的字段是好的，所以不是偏移错</h2>
@@ -189,14 +236,20 @@ m32 = 0,  m33 = 1         ← ★ 没有透视除法 ⇒ 这是 ORTHO，不是�
 <table>
 <tr><th>看到什么</th><th>结论</th></tr>
 <tr><td><code>cap=</code> <b>左边 ≈ 帧率</b>（每秒涨 ~24）、右边稳步回落到 0</td>
-<td class="g">判据生效，且世界里<b>确实有</b>相机写 —— 这就是要找的那一群</td></tr>
-<tr><td><code>path</code> 开始增长，走动时 <code>clipDev</code> 明显 &gt; 0（不再恒 <code>0.000061</code>）</td>
+<td class="g">判据生效。<b>「世界里有相机写」已经由上面的 MOTION 探针证过了</b>，
+所以这一项现在只要看「闸门有没有把真相机也一起误杀」</td></tr>
+<tr><td><b>世界期 <code>c8 Proj</code> 不再是恒定的 <code>det=1.11111 / mag=1.11111</code></b>，
+而是出现 <code>det≈79.9 / mag≈15.0</code> 那种透视投影</td>
+<td class="g">★ <b>最硬的一条判据</b>：发布出去的终于是一个真相机的投影了（正交本身消失）</td></tr>
+<tr><td><code>path</code> 开始增长（不再卡 124.92）、<code>move</code> 不再恒 <code>0.0000</code>；走动时 <code>clipDev</code> 明显 &gt; 0</td>
 <td class="g">重投影拿到真实运动 ⇒ 插帧第一次有内容</td></tr>
-<tr><td><code>matChanges</code> 不再有 <code>2×fps</code> 的固定倍率</td>
-<td class="g">抢槽的双写者被清掉了</td></tr>
-<tr><td><code>cap=</code> <b>左边恒 0</b>、右边一路涨到 6000，且旧行为自动恢复</td>
-<td class="k">世界内根本没有相机写这个 CB。下一步换 <code>RE::PlayerCamera</code>
-（<code>cameraRoot-&gt;world.translate</code> 取眼位），逃生门已保证这一版不会更糟</td></tr>
+<tr><td><code>[MOTION] clipToPrevClip[3].w</code> 不再出现非 1 的值（告警停止增长）</td>
+<td class="g">喂给 DLSS-G 的矩阵恢复成仿射的</td></tr>
+<tr><td><code>ident/diff</code> 里 <code>diff</code> 不再固定占 ~33%（<code>matChanges</code> 增速从 195/s 掉下来）</td>
+<td class="g">抢槽的多写者被挡在发布之外了</td></tr>
+<tr><td>（兜底，应当不会发生）<code>cap=</code> <b>左边恒 0</b>、右边一路涨到 6000，旧行为自动恢复</td>
+<td class="k">说明这个判据完全不适用。逃生门已自动把这一版变回 v1.12 行为，
+<b>但根据 MOTION 探针，这个分支已被排除</b>；真要遇到，下一步换 <code>RE::PlayerCamera</code> 源</td></tr>
 <tr><td>画面仍然不动，但上面几项都正常</td>
 <td class="k">根因不在捕获侧；把日志给我，下一层是 <code>slConstants</code> 的装配</td></tr>
 </table>
@@ -204,8 +257,16 @@ m32 = 0,  m33 = 1         ← ★ 没有透视除法 ⇒ 这是 ORTHO，不是�
 <h2>八、诚实边界（未做 / 未证）</h2>
 <div class="card">
 <ul>
-<li><b>世界内到底有没有「相机写」，仍未证。</b>这一趟的全部改动就是为了回答它。
-我用 <code>cap=</code> 把这个问题变成了一个可以一次读数回答的问题。</li>
+<li><b>「世界内到底有没有相机写」——已证：有。</b>
+<code>18:21:43.764</code> 的 MOTION 探针读到 <code>p00 cur=1.1918 / p23 cur=-15.000636</code>，
+那就是真实相机。这个最坏分支被排除了。（这条是 L0 第二遍自检「反向假设」时回去翻日志才发现的：
+我最初只用了 FLD 一条证据链，翻了第二条才敢把「未证」改成「已证」。）</li>
+<li><b>本轮我自己更正了两个数字</b>（原先写错、现已按日志逐条重算）：
+① <code>matChanges</code> 的增速我说 <code>+40/s = 2×24</code>，<b>错</b>，实测
+<code>5571@18:22:11.115 → 6171@18:22:14.191</code> ⇒ <b>+195/s</b>（= arrivals 的 33%，约 8 个不同写者/帧）；
+② 我说「世界内有没有相机写未证」，实际 <b>18:21:43.764 已证有</b>。</li>
+<li><b>v1.11 的接管判据本身挑错过族</b>（采纳了正交冒牌货），本轮<b>按纪律没有改它</b>
+—— 一次只动一处可证伪的东西，让内容门先单独上机说话。</li>
 <li><b>DLSS5 的输出是否真的上屏，仍未证。</b>代码链确认在跑
 （<code>DLSSNR CHAINED</code>），但没有画面的独立证据。</li>
 <li><b><code>ArchivePreviousLog()</code> 仍不产出文件。</b>调用顺序已核对正确、格式串在 DLL 内存在，
