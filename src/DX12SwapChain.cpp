@@ -1873,6 +1873,29 @@ namespace FrameGen
 				}
 				const float lumSwing = (pixelProbeRingFill >= 8u) ? (lumHi - lumLo) : 0.0f;
 
+				// v1.27 -- how many times the window changed state, and the longest run of
+				// one state. `distinct <= 3` plus a wide brightness swing is NOT enough on
+				// its own, and the 02:39 run proved it: the first two FLICKER reports of
+				// v1.26 both saw [0.0] [0.0] [104.0] x6 -- black, black, then lit for the
+				// rest of the window. That is a single transition (the loading screen
+				// lighting up), it lands on 2 distinct images, it swings 104/255, and it
+				// is not an oscillation. An oscillation has to come BACK, so require the
+				// state to change at least three times inside the window (A->B->A->B).
+				// The swing is printed but no longer gates: a flicker between two nearly
+				// equally bright images is still a flicker.
+				std::uint32_t switches = 0;
+				std::uint32_t maxRun = 0;
+				std::uint32_t runLen = 0;
+				for (std::uint32_t i = 0; i < pixelProbeRingFill; ++i) {
+					if (i > 0u && pixelProbeRingHash[i] != pixelProbeRingHash[i - 1u]) {
+						++switches;
+						runLen = 0;
+					}
+					++runLen;
+					if (runLen > maxRun)
+						maxRun = runLen;
+				}
+
 				// v1.23: a streak of identical frames only means "frozen" if the camera
 				// was moving. With a static camera DLSS-G's interpolated output is
 				// legitimately identical to the real frame, so the hash alone cannot
@@ -1885,12 +1908,12 @@ namespace FrameGen
 
 				SKSE::log::info("[PIXEL] #{} hash={:016X} chg={} streak={} clipDev={:.6f} movedThisStreak={} "
 					"changed={} unchanged={} maxStreak={} dropped={} "
-					"lum={:.2f} seen={}/{} swing={:.1f}",
+					"lum={:.2f} seen={}/{} swing={:.1f} sw={} maxRun={}",
 					pixelProbeSamples, h, changed ? 1 : 0, pixelProbeStreak, static_cast<double>(cd),
 					pixelProbeMovedDuringStreak, pixelProbeChanged, pixelProbeUnchanged,
 					pixelProbeMaxStreak, pixelProbeDropped,
 					static_cast<double>(lum), distinct, pixelProbeRingFill,
-					static_cast<double>(lumSwing));
+					static_cast<double>(lumSwing), switches, maxRun);
 
 				// The verdict. Every other witness this file owns can only say that a
 				// flip happened; this is the only one that can say the picture moved.
@@ -1920,17 +1943,22 @@ namespace FrameGen
 				// depends on the player walking has never once been reachable. What the
 				// player actually reports is a picture that flickers, and a picture that
 				// flickers is exactly what the change counter scores as healthy.
-				if (pixelProbeRingFill >= 8u && distinct <= 3u && lumSwing > 40.0f &&
+				if (pixelProbeRingFill >= 8u && distinct <= 3u && switches >= 3u &&
 					pixelProbeFlickerFired < 4u) {
 					++pixelProbeFlickerFired;
-					SKSE::log::error("[PIXEL] FLICKER: the last 8 samples ({:.1f} s) contain only "
-						"{} distinct images while the block's brightness swings {:.0f}/255 "
-						"(min {:.0f} max {:.0f}). A picture that CHANGES is not the same as one "
-						"that ADVANCES, and the changed counter cannot tell them apart: every "
-						"sample differs from the previous one and the image is still cycling "
-						"through a handful of states. This is the flicker, measured.",
-						static_cast<double>(pixelProbeRingFill) * 0.5, distinct,
-						static_cast<double>(lumSwing), static_cast<double>(lumLo),
+					SKSE::log::error("[PIXEL] FLICKER: the last 8 samples ({:.1f} s) hold only "
+						"{} distinct images AND changed state {} times (longest run {}), so the "
+						"image is coming BACK to what it already showed rather than advancing. "
+						"Brightness swings {:.0f}/255 (min {:.0f} max {:.0f}); the swing is "
+						"reported, not required -- a flicker between two equally bright images "
+						"is still a flicker. A picture that CHANGES is not the same as one that "
+						"ADVANCES, and the change counter cannot tell them apart: every sample "
+						"differs from the previous one while the image cycles a handful of "
+						"states. This is the flicker, measured (v1.27: a one-way transition "
+						"such as the loading screen lighting up does NOT qualify -- it has to "
+						"come back).",
+						static_cast<double>(pixelProbeRingFill) * 0.5, distinct, switches,
+						maxRun, static_cast<double>(lumSwing), static_cast<double>(lumLo),
 						static_cast<double>(lumHi));
 					SKSE::log::info("[PIXEL] FLICKER window (oldest first): "
 						"[{:016X} {:.1f}] [{:016X} {:.1f}] [{:016X} {:.1f}] [{:016X} {:.1f}] "

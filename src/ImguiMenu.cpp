@@ -219,6 +219,35 @@ namespace FrameGen
 		else
 			std::snprintf(buf, sizeof(buf), "%.0f FPS%s", s_fps * mult, tag);
 
+		// v1.27 -- how long 4x has actually been running this visit.
+		//
+		// Five consecutive runs ended 2.1 / 3.0 / 3.2 / 2.5 / 6.1 s after the guard
+		// released, so the one question every instrument in this project exists to
+		// answer -- does the world respond, and does the picture advance -- has never
+		// had a world phase long enough to answer it. The player does not read the log
+		// and cannot be blamed for exiting early; they can read the overlay.
+		//
+		// mult > 1 is MEASURED: it is what the runtime reported for the last real
+		// frame, so its rising edge means "4x is running now" and not another name
+		// for "the menu guard is up". It is also the only edge in this overlay that
+		// comes from the runtime rather than from us.
+		static bool s_worldSeen = false;
+		static steady_clock::time_point s_worldSince{};
+		if (mult > 1.0f) {
+			if (!s_worldSeen) { s_worldSeen = true; s_worldSince = now; }
+		} else {
+			s_worldSeen = false;
+		}
+		char buf2[80];
+		buf2[0] = '\0';
+		if (s_worldSeen) {
+			const double secs =
+				duration_cast<duration<double>>(now - s_worldSince).count();
+			std::snprintf(buf2, sizeof(buf2), "%.1f s with 4x - %s", secs,
+				(secs < 20.0) ? "KEEP PLAYING, hold W for 10 s"
+				              : "enough - you can exit now");
+		}
+
 		ImFont* font = fontFps ? fontFps : ImGui::GetFont();
 		const float size = font->LegacySize;  // font size passed to AddFont* (36.0f)
 		const ImVec2 disp = ImGui::GetIO().DisplaySize;
@@ -233,6 +262,20 @@ namespace FrameGen
 					dl->AddText(font, size, ImVec2(pos.x + dx, pos.y + dy),
 						IM_COL32(0, 0, 0, 235), buf);
 		dl->AddText(font, size, pos, IM_COL32(255, 255, 255, 255), buf);
+
+		// v1.27: the world-phase clock, same outline treatment, smaller and amber so
+		// it cannot be mistaken for the frame-rate line above it.
+		if (buf2[0] != '\0') {
+			const float size2 = size * 0.55f;
+			const ImVec2 ts2 = font->CalcTextSizeA(size2, FLT_MAX, 0.0f, buf2);
+			const ImVec2 pos2(disp.x - ts2.x - 26.0f, pos.y + ts.y + 8.0f);
+			for (int dx = -2; dx <= 2; ++dx)
+				for (int dy = -2; dy <= 2; ++dy)
+					if (dx * dx + dy * dy <= 8)
+						dl->AddText(font, size2, ImVec2(pos2.x + dx, pos2.y + dy),
+							IM_COL32(0, 0, 0, 235), buf2);
+			dl->AddText(font, size2, pos2, IM_COL32(255, 220, 110, 255), buf2);
+		}
 	}
 
 	// v0.52：INI 写回统一入口（"Save to INI" 按钮 + 改动即存共用）。
