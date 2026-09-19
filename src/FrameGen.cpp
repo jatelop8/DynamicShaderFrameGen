@@ -706,6 +706,45 @@ namespace FrameGen
 		const float px = a_src.CameraPosAdjust[0];
 		const float py = a_src.CameraPosAdjust[1];
 		const float pz = a_src.CameraPosAdjust[2];
+
+		// ---- v1.14 probe: a census of the WRITERS -- who writes this buffer, and
+		// does any of them MOVE?  Purely additive and placed BEFORE the gate, so it
+		// sees the whole cast.
+		// The 19:39 run proved the v1.13 gate works (the orthographic writer is
+		// dropped 13,804 times, cap=13804/0) but the published camera stayed
+		// byte-identical for the whole 11.4 s world session.  "The player was
+		// standing still" and "we are locked on a parked camera" call for two very
+		// different repairs, and only a census of the actual writers separates
+		// them: if snapCensusNew stays at 2-3 for a whole session, NO writer moves
+		// and the source itself has to change.
+		{
+			bool known = false;
+			for (std::uint32_t i = 0; i < snapCensusCount && !known; ++i) {
+				known = (std::fabs(snapCensus[i][0] - px) +
+				         std::fabs(snapCensus[i][1] - py) +
+				         std::fabs(snapCensus[i][2] - pz)) < 1.0f;
+			}
+			if (!known) {
+				if (snapCensusCount < kSnapCensusMax) {
+					snapCensus[snapCensusCount][0] = px;
+					snapCensus[snapCensusCount][1] = py;
+					snapCensus[snapCensusCount][2] = pz;
+					++snapCensusCount;
+				}
+				++snapCensusNew;
+				if (snapCensusLogged < 80u) {
+					++snapCensusLogged;
+					SKSE::log::info("[CAM] WRITER #{} NEW pos=({:.3f},{:.3f},{:.3f}) proj00={:.6g} "
+						"row3_2={:.6g} row3_3={:.6g} prevPos=({:.3f},{:.3f},{:.3f}) arr#{}",
+						snapCensusNew, px, py, pz,
+						a_src.CameraProj.data[0][0],
+						a_src.CameraProj.data[3][2], a_src.CameraProj.data[3][3],
+						a_src.CameraPreviousPosAdjust[0], a_src.CameraPreviousPosAdjust[1],
+						a_src.CameraPreviousPosAdjust[2], snapArrivals);
+				}
+			}
+		}
+
 		const bool usable = (px == px) && (py == py) && (pz == pz) &&
 		                    camMag(a_src.CameraViewProjUnjittered) > 1.0e-6f &&
 		                    camMag(a_src.CameraView) > 1.0e-6f;
@@ -1252,14 +1291,14 @@ namespace FrameGen
 					SKSE::log::info("[CAM] pub #{} pos=({:.2f},{:.2f},{:.2f}) move={:.4f} path={:.2f} "
 						"matChanges={} arrivalsPerSec={:.0f} | lock(pub/hold/re/still)={}/{}/{}/{} "
 						"proj00={:.6g} famRej={} frozenRep={} ident/diff={}/{} "
-						"fMove={:.1f} takeover={} stalePub={} cap={}/{} | {}",
+						"fMove={:.1f} takeover={} stalePub={} cap={}/{} cen={}/{} | {}",
 						snapAccept, px, py, pz, snapAcceptDist, snapPathLen, snapMatChanges,
 						arrPerSec, snapLockPublish, snapLockHold, snapLockRelock, snapLockStill,
 						snapLockProjValid ? snapLockProj00 : 0.0f, snapLockFamilyRej,
 						snapFrozenRepeats, snapIdenticalArrivals, snapDifferentArrivals,
 						snapForeignMove, snapForeignTakeover,
 						snapPubStale,
-						snapNonCamera, snapSkipsSinceCam,
+						snapNonCamera, snapSkipsSinceCam, snapCensusNew, snapCensusCount,
 						snapMatChanges == 0u
 							? "PROBLEM nothing has ever been published with a changed matrix"
 							: (snapPubStale >= kCamPubStaleTol

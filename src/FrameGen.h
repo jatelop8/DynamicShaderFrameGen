@@ -369,6 +369,21 @@ namespace FrameGen
 	std::uint64_t snapNonCamera = 0;
 	std::uint64_t snapSkipsSinceCam = 0;
 
+	// ---- v1.14 probe: a census of the WRITERS sharing the perFrame buffer.
+	// After v1.13 the orthographic writer is dropped, yet the published camera is
+	// still byte-identical for a whole world session (19:39 run: pos == prevPos ==
+	// (-243.05,-415.31,118.56), move 0.0000, path stuck at 63.91, clipDev pinned
+	// at its floor of 0.000061 across 274 frames).  The decisive question is
+	// whether ANY writer here moves its CameraPosAdjust: if none does, no
+	// acceptance rule can ever produce motion and the SOURCE has to change.
+	// The table is bounded to kSnapCensusMax signatures; snapCensusNew counts
+	// arrivals whose position is not within 1.0 unit of any already-known one.
+	static constexpr std::uint32_t kSnapCensusMax = 8;
+	float snapCensus[kSnapCensusMax][3] = {};
+	std::uint32_t snapCensusCount = 0;
+	std::uint64_t snapCensusNew = 0;
+	std::uint64_t snapCensusLogged = 0;
+
 	// ---- v1.10: a MOVING family beats a STILL lock ---------------------- 
 	// The 11:30 run is the measurement this exists for. The reset edge at
 	// 11:33:15.482 released the lock and "the next arrival" took it -- and that
