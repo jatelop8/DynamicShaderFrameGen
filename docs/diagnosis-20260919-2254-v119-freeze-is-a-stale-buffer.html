@@ -71,7 +71,32 @@
 <tr><td>DLSS5 一直在跑</td><td><code>DLSSNR frames=539 status=initialized version=310.8.0.0</code></td><td class="ok">NR 通路也是活的</td></tr>
 <tr><td>可是画面＝同一帧</td><td><code>clipDev=0.000061 clipW=1.000000</code>；四条 <code>[CAM] acc</code> 逐字节相同；<code>eye</code> 逐位不变</td><td class="bad">clipToPrevClip = I</td></tr>
 <tr><td>相机也是对的</td><td><code>PC v1.18: match=398/read=425 best=0.00 at proj00=0.8391</code>、<code>lock … proj00=0.8391 famRej=0</code></td><td class="ok">选源没退步</td></tr>
+<tr><td><b>玩家坐标也钉死</b></td><td><code>plr=(-250.3,-360.4,-0.0) plrD=0.00</code> —— 三秒逐字相同，与 <code>eyeD=0.00</code> 同时出现</td><td class="bad">不只是相机，<b>人也没在动</b></td></tr>
 </table>
+
+<p class="dim" style="margin-top:-2px">⇒ 相机与玩家<b>同时</b>被冻，说明这一层不是「我选错了哪台相机」，
+而是<b>比相机更上游的东西停了</b>。旧账本把 <code>proj00=0.8391 / pos=(-243,-415,118)</code> 记作
+「MENU 族」，但现在<b>引擎自己的 <code>PlayerCamera</code> 也在那里</b>（<code>eyeD=0.00</code>）——
+两条旧结论冲突，本节只是一个数据点，不下结论。</p>
+
+<div class="card">
+<p style="margin:0"><b>顺带一个方法论附注</b>：<code>eyeD=0.00</code> 只证明
+「我的到达流和引擎的 <code>PlayerCamera</code> <b>看法一致</b>」，
+<b>不证明这个看法是新鲜的</b>。引擎相机自己也可能被冻住 —— <b>地面真值只能证同源，不能证新鲜。</b></p>
+</div>
+
+<p>同一份日志里其实有<b>两段现场</b>，切点就在 <code>22:55:02</code>：</p>
+<table>
+<tr><th style="width:270px">时段</th><th style="width:120px">族</th><th>pos</th><th style="width:130px">path</th></tr>
+<tr><td>22:54:56–22:55:01（约 5 s）</td><td><code>0.149184</code><br><span class="dim">= WORLD 族</span></td>
+    <td><code>(-49.9, 900→807)</code> <span class="ok">稳定下降</span>（<code>move≈0.4/帧</code>，<code>stepSum=400.68</code>）</td>
+    <td><code>19.75→92.87</code></td></tr>
+<tr><td>22:55:02–22:55:06.144（约 4.1 s）</td><td><code>0.8391</code><br><span class="dim">= 旧记「MENU 族」</span></td>
+    <td><code>(-243.05,-415.31,118.56)</code> <span class="bad">不动</span>（<code>moved=0</code>，<code>stepSum=0.08</code>）</td>
+    <td><code>100.33</code> 卡住</td></tr>
+</table>
+<p>⇒ <b>前 5 秒世界是活的</b>（相机真在动），<b>第 6 秒起彻底静止</b>。
+所以「画面从进世界就定死」这句要收窄一点：<b>是进去约 5 秒后才定死</b> —— 这 5 秒很可能就是你走动的那几秒。</p>
 
 <div class="card al">
 <p style="margin:0"><b>结论形状只有一种：喂给 DLSS-G 的那张彩色缓冲是陈旧的。</b>
@@ -142,7 +167,7 @@ NRAllowWithFrameGen=1</pre>
 <li><b>L35：v1.18b「修」了一个不存在的 bug。</b>我当时按「<code>AcceptCameraSnapshot</code> 每秒跑 400 次」推断，
 把 <code>s_plrStep</code> 从 <code>=</code> 改成 <code>+=</code>；但那段见证在<b>每秒执行一次的块</b>里
 （<code>[CAM] PC</code> 每秒恰好一行、<code>read=425</code> 是「这一秒读了几次」），<b>两者在此等价</b>。
-⇒ <b>给一个数值标量纲前，先确认它在哪个<b>块</b>里，而不是它在哪个<b>函数</b>里。</b></li>
+⇒ <b>给一个数值标量纲前，先确认它在哪个「块」里，而不是它在哪个「函数」里。</b></li>
 </ul>
 
 <div class="card al">
