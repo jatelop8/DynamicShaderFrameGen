@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DFG v1.10 — 11:30 那局的结论：4x 其实成功了，插帧内容是复制品</title>
+<style>
+  :root{--bg:#14171c;--panel:#1c2027;--line:#2c323c;--fg:#e6e9ee;--dim:#9aa3b0;
+        --red:#e0564a;--grn:#4fb477;--amb:#d8a13a;--blu:#5b9bd5;}
+  *{box-sizing:border-box}
+  body{margin:0;padding:28px 22px 60px;background:var(--bg);color:var(--fg);
+       font:14px/1.7 "Segoe UI",system-ui,-apple-system,"Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1000px;margin:0 auto}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:22px}
+  h2{font-size:15px;margin:26px 0 10px;padding-left:9px;border-left:3px solid var(--blu)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin:10px 0}
+  .ans{border-left:4px solid var(--red)}
+  .ok{border-left:4px solid var(--grn)}
+  .warn{border-left:4px solid var(--amb)}
+  code,.mono{font-family:ui-monospace,Consolas,"Cascadia Mono",monospace;font-size:12.5px}
+  code{background:#0e1116;border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+  pre{background:#0e1116;border:1px solid var(--line);border-radius:6px;
+      padding:11px 13px;overflow-x:auto;font-size:12.5px;line-height:1.55;margin:8px 0}
+  table{border-collapse:collapse;width:100%;margin:8px 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+  th{background:#222833;color:var(--dim);font-weight:600}
+  .r{color:var(--red)} .g{color:var(--grn)} .a{color:var(--amb)} .b{color:var(--blu)}
+  ul{margin:6px 0 6px 18px;padding:0} li{margin:4px 0}
+  .tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:10px;
+       border:1px solid var(--line);color:var(--dim);margin-right:6px}
+  .big{font-size:15px}
+  .kpi{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}
+  .kpi div{flex:1 1 150px;background:#0e1116;border:1px solid var(--line);border-radius:6px;padding:9px 11px}
+  .kpi b{display:block;font-size:17px;margin-bottom:2px}
+  .kpi span{color:var(--dim);font-size:11.5px}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>DynamicShaderFrameGen — 11:30 那局的结论</h1>
+<div class="sub">v1.10 &nbsp;·&nbsp; 2026-09-19 11:47 &nbsp;·&nbsp; DLL 1,337,856 B &nbsp;·&nbsp; md5 <span class="mono">198877d1…</span>（build == 部署）&nbsp;·&nbsp; commit <span class="mono">7a8ecbc</span> / tag <span class="mono">v1.10</span></div>
+
+<div class="card ans">
+<div class="big"><span class="tag">直答</span>你的直觉对：<b>画面没变顺</b>。但机制不是「4x 没插帧」——
+<b class="g">4x 真的插了</b>，<b class="r">只是插进去的 3 帧和上一帧一模一样</b>。</div>
+<div style="margin-top:8px;color:#cfd6e0">
+而且这一局终于把根因<b>量</b>出来了：锁拿着一个<b>场景固定的相机</b>（菜单/载入相机），真正的玩家相机被当"异族"全部拒掉。
+v1.09 加的探针就是为这件事加的，它一次就给出了答案。
+</div>
+</div>
+
+<h2>一、这局实测到的三件事</h2>
+
+<div class="kpi">
+  <div><b class="g">accepted=4</b><span>4x 被运行时<b>接受</b>（测量值，不是推算）</span></div>
+  <div><b class="b">hwMax=6</b><span>运行时自报支持 <b>6x</b>（5 个插帧）</span></div>
+  <div><b class="r">clipDev=0.000061</b><span>重投影矩阵 = 单位阵 ⇒ 相机被当成没动</span></div>
+  <div><b class="r">matChanges 冻结 168</b><span>9.2 秒 / ≈2100 次发布，矩阵逐字节没变</span></div>
+</div>
+
+<div class="card ok">
+<b>1. 4x 从来没有被上限卡住。</b>
+<pre>[Streamline] DLSS-G supports up to 6x frame generation (5 interpolated frames per real frame)
+[Streamline] MFG override 3 &lt;= hardware max 5 - no change needed
+11:33:16.432  FPS probe: real=25.4 | DLSSG | cap~=101.6 | hwMax=6 ask=4 accepted=4
+11:33:18.483  FPS probe: real=9.7  | DLSSG | cap~=39.0  | hwMax=6 ask=4 accepted=4
+11:33:24.637  FPS probe: real=9.8  | DLSSG | cap~=39.0  | hwMax=6 ask=4 accepted=4</pre>
+<code>accepted</code> 是 <code>dlssgAcceptedFrames+1</code>，<b>实测值</b>（<span class="mono">DX12SwapChain.cpp:968-973</span>）。
+呈现直方图 <code>world=0/12/0/0/174/0/0/0</code> = 世界里 <b>174 次 present 各出 4 个 flip</b>。
+<br><b>⇒ 我之前的记忆「Ada 只能 2x、hwMax=1」是错的。</b>
+</div>
+
+<div class="card" style="border-left:4px solid var(--red)">
+<b>2. 但插帧内容是复制品。</b>
+<pre>11:33:15.546 [MOTION] clipToPrevClip[3].w=-195.222366 (must be 1)
+稳态          clipDev=0.000061 clipW=1.000000
+             curVP=15.0006 prevVP=15.0006  |  pos=(-243.0,-415.3,118.6) prevPos=(-243.0,-415.3,118.6)</pre>
+<code>prev == cur</code>（位置、矩阵都相同）⇒ <code>clipToPrevClip = inv(cur)×prev = I</code>
+⇒ DLSS-G 被告知"相机没动" ⇒ 每 4 个呈现帧里 <b>3 个是同一张图</b>。
+</div>
+
+<div class="card">
+<b>3. v1.09 的探针把"发布流冻结"变成了数字。</b>
+<pre>[CAM] pub #52989 (11:33:15.482) pos=(-243.05,-415.31,118.56) move=0.0000 path=65.41 matChanges=168 proj00=0.8391 famRej=13575
+[CAM] pub #54489 (11:33:24.725) pos=(-243.05,-415.31,118.56) move=0.0000 path=65.41 matChanges=168 proj00=0.8391 famRej=14475</pre>
+9.2 秒、≈2100 次发布，<b>矩阵一次都没变</b>，而 <code>famRej</code> 涨了 900。
+<br><span style="color:#cfd6e0">这就是 v1.09 那一行探针存在的全部理由 —— 之前 19 288 次逐字节相同的发布，在旧日志里看起来像"很健康的忙碌捕获层"。</span>
+</div>
+
+<h2>二、根因：锁拿着「场景固定的相机」，真相机被拒</h2>
+
+<div class="card warn">
+<b>判据不是估值，是跨运行的<b>数字逐位恒等</b>。</b>
+<ul>
+<li>被锁住的位置 <code>(-243.05,-415.31,118.56)</code>，与 <span class="mono">Streamline.cpp</span> 的 v1.07c 注释里引用的
+    <b>23:10 那局（两天前）</b><code>cameraPos=(-243.049301,-415.311523,118.558205)</code>、
+    <code>clipToPrev[3].w=-195.222366</code> —— <b>逐位相同</b>。</li>
+<li>活着的相机不可能精确复现另一局的坐标 ⇒ 那组值是<b>场景几何</b>（3D 菜单 / 载入画面相机）。</li>
+</ul>
+</div>
+
+<div class="card">
+<b>而真正的活相机以 <code>proj00=1</code> 到达，位置在走，却被当"异族"全拒：</b>
+<pre>[CAM] #67695 family rejected: proj00=1 locked=0.8391 ratio=1.1918 pos=(-125.7,210.8,188.4) dist=640.8
+[CAM] #69020 family rejected: proj00=1 locked=0.8391 ratio=1.1918 pos=(255.0,804.7,-94.4)  dist=1334.8</pre>
+<b>反证</b>：菜单阶段同一个 <code>proj00=1</code> 在 <code>pos=(-160.0,160.0,128.0)</code> 上<b>逐字节恒定</b>（238 条拒绝全同）
+⇒ 它的行为与"活相机"完全一致：<b>菜单里静止、世界里走动</b>。
+</div>
+
+<div class="card" style="border-left:4px solid var(--amb)">
+<b>触发点 —— 我把锁交给了一个假设"下一个到达一定是世界相机"的地方：</b>
+<pre>11:33:15.482  [CAM] #66564 lock RELEASED on the reset edge (was proj00=0.149184 famRej=13575)
+                      - the next arrival re-acquires
+11:33:15.482  [CAM] pub #52989 ... proj00=0.8391        &lt;-- 下一个到达 = 场景固定的那种</pre>
+v1.07b 的注释自己写着 release 之后 "hands the lock to the first arrival after it,
+<b>which is the world camera whenever the menu has closed</b>" —— <b class="r">这条假设是错的</b>。
+<br><br><b>而且放不掉：</b>
+<pre>[CAM] #66488 family rejected: ... still=1570/90</pre>
+<b>连续 1570 次拒绝、阈值 90、什么都没发生。</b>全程 <code>lock RELEASED</code> 只有 3 条，全是 <code>on the reset edge</code>。
+</div>
+
+<h2>三、我自己读错的两处（写下来，避免再犯）</h2>
+<table>
+<tr><th style="width:330px">看起来像缺陷</th><th>读代码后</th></tr>
+<tr>
+  <td><code>[MFG] debug CHECK: ... blocked=396 unblocked=1</code><br>
+      我第一遍读成"我们跳过了 396 次 SetDLSSGOptions"</td>
+  <td><b>不是缺陷。</b><span class="mono">DX12SwapChain.cpp:1372-1439</span>：<code>blocked/unblocked</code>
+      数的是 <code>menuBlock</code>，即<b>菜单守卫帧数</b>。396 = 菜单开着 396 帧；警告之所以打，
+      是因为<b>唯一那一个非菜单帧</b>的 <code>EvaluateDLSSG</code> 返回了 false。</td>
+</tr>
+<tr>
+  <td><code>camPrev(ok/used)=1/90</code><br>
+      我第一遍读成"90 次里只成功 1 次"</td>
+  <td><b>不是缺陷。</b><span class="mono">Streamline.cpp:1002</span> 是
+      <code>diag.camPrevOk = camPrevOk ? 1 : 0;</code> —— <b>赋值，瞬时标志</b>；
+      只有 <code>camPrevUsed</code> 才是累加。它读作"此刻重建成功，且已被使用 90 次"。</td>
+</tr>
+</table>
+
+<h2>四、v1.10 改了什么（已构建 = 已部署）</h2>
+<div class="card ok">
+<ul>
+<li><b>核心（一处行为改动）</b>：<code>!sameFamily</code> 分支尾部不再无条件 <code>return false</code>。
+    它现在累计<b>被拒族自己的位移</b>；当 <code>still ≥ 30</code> 且位移 <code>≥ 200 单位</code>（<code>kCamForeignMoveTol</code>）时，
+    <b>由这个会动的族接管 anchor</b>。</li>
+<li><b>为什么这不是 v1.07b 删掉的那个 v0.94 re-acquire</b>：v0.94 是"谁排在第 90 个谁赢"（<b>只看顺序</b>），
+    所以一个静止的错族也能靠顺序夺锁（v1.07b 注释说它有一半概率落到 <code>proj00=1</code>）。
+    这里被拒族<b>必须自己走出 ≥200 单位</b>才可能接管 —— <b>静止或陈旧的相机不可能满足</b>。计数下限只防抖动。</li>
+<li><b>顺带修掉我自己的一个真 bug</b>：<code>main.cpp</code> 里 <code>WatchdogLogPath()</code> 的缓冲区由
+    <code>InitWatchdogLogPath()</code> 填充，而 v1.09 把归档调用写在了它<b>之前</b> ⇒ 缓冲区为空 ⇒
+    <b>11:30 那局一个归档文件都没有</b>，<code>DynamicShaderFrameGen.20*.log</code> = 0。已调正顺序。</li>
+<li>新增读数：<code>[CAM] pub</code> 增加 <code>fMove=</code>（被拒族累计位移）与 <code>takeover=</code>（接管次数）。</li>
+</ul>
+<pre>构建：BUILD SUCCESS   DLL 1,337,856 B   md5 198877d1…（build == 部署）   tag v1.10</pre>
+</div>
+
+<h2>五、下一局只看三样</h2>
+<table>
+<tr><th style="width:390px">看到什么</th><th>说明什么</th></tr>
+<tr><td>出现 <code>FOREIGN TAKEOVER (v1.10)</code>，且随后 <code>matChanges</code> <b>持续增长</b></td>
+    <td class="g"><b>链修对了</b> —— 被发布出去的相机终于跟着玩家动</td></tr>
+<tr><td>走动时 <code>clipDev</code> 明显 &gt; 0（不再恒 <code>0.000061</code>）</td>
+    <td class="g"><code>clipToPrevClip</code> 有运动了 ⇒ 插帧开始有内容</td></tr>
+<tr><td><code>SKSE/DynamicShaderFrameGen.20*.log</code> 出现</td>
+    <td class="g">日志归档修对了（证据不再被下一局销毁）</td></tr>
+<tr><td><code>matChanges</code> 仍然冻结、<code>clipDev</code> 仍恒 <code>0.000061</code></td>
+    <td class="r">接管没触发或触发错了 ⇒ 把那一局日志给我，<code>fMove=</code> 会告诉我为什么</td></tr>
+</table>
+
+<div class="card warn">
+<b>另外一件还没排除的事（不是冻结，但同样影响观感）：真实帧率从 58 塌到 9.8。</b>
+<br>菜单里 <code>real=57.9~58.7</code>，进了世界 <code>25.4 → 9.7 → 9.8</code>。
+首要嫌疑：<code>NRRenderScale=1.00</code> ⇒ 每个真实帧做一遍 <b>3840×2160</b> 的 DLSS5 神经渲染，
+而渲染分辨率只有 1689×950（INI 自己的注释就写着 "the expensive part"）。
+<br><b>没有测过</b>。想界定它只需改一个 INI 值，代价是 DLSS5 的清晰度 —— 这一步等你决定要不要做。
+</div>
+
+<div class="foot">
+判据全部来自 <span class="mono">SKSE/DynamicShaderFrameGen.log</span>（11:30:56–11:33:25，364,070 B）与
+<span class="mono">DX12SwapChain.cpp</span> / <span class="mono">Streamline.cpp</span> / <span class="mono">FrameGen.cpp</span> 的逐行回读。<br>
+详细推导与两处自我更正记录在 <span class="mono">MFG_MASTER_NOTES.md</span> 第 24 章。
+</div>
+
+</div></body>
+</html>
