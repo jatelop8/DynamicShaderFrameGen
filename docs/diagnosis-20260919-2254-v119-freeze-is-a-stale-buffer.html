@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>22:54 那局（v1.18b）：「画面卡死了，怎么动啊？」——问题换掉了</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#161a21; --panel2:#1c212a; --line:#2a313c;
+    --fg:#d8dee9; --dim:#8b95a5; --ok:#4ade80; --bad:#f87171; --warn:#fbbf24; --info:#60a5fa; --pur:#c084fc;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;}
+  .wrap{max-width:1000px;margin:0 auto;padding:34px 24px 60px}
+  h1{font-size:23px;line-height:1.4;margin:0 0 6px}
+  .sub{color:var(--dim);font-size:13.5px;margin-bottom:26px}
+  h2{font-size:17px;margin:34px 0 12px;padding-left:11px;border-left:3px solid var(--info)}
+  h2.ok{border-color:var(--ok)} h2.bad{border-color:var(--bad)} h2.warn{border-color:var(--warn)}
+  h2.pur{border-color:var(--pur)}
+  p{margin:9px 0}
+  code{font-family:"Cascadia Mono",Consolas,Menlo,monospace;font-size:12.6px;
+       background:#20262f;padding:1.5px 5px;border-radius:4px;color:#a5d6ff}
+  pre{background:#0b0e12;border:1px solid var(--line);border-radius:8px;padding:13px 15px;
+      overflow-x:auto;font-family:"Cascadia Mono",Consolas,Menlo,monospace;font-size:12.4px;
+      line-height:1.65;color:#c9d1d9;margin:12px 0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:15px 18px;margin:14px 0}
+  .card.hi{border-color:#2f4f3a;background:linear-gradient(180deg,#141d18,#131720)}
+  .card.al{border-color:#5a3b3b;background:linear-gradient(180deg,#1e1616,#131720)}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13.6px}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:#aab4c4;font-weight:600}
+  td code{font-size:12.2px}
+  .ok{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)} .info{color:var(--info)} .dim{color:var(--dim)}
+  ul{margin:8px 0 8px 4px;padding-left:20px} li{margin:5px 0}
+  .tag{display:inline-block;font-size:11.6px;padding:2px 9px;border-radius:20px;
+       border:1px solid var(--line);color:var(--dim);margin-right:7px}
+  .tag.ok{border-color:#2f6b46;color:var(--ok)} .tag.bad{border-color:#6b3535;color:var(--bad)}
+  .tag.warn{border-color:#6b5a2a;color:var(--warn)}
+  .kv{display:grid;grid-template-columns:190px 1fr;gap:7px 14px;font-size:13.6px}
+  .kv b{color:#aab4c4;font-weight:600}
+  footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);
+         color:var(--dim);font-size:12.6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>22:54 那局（v1.18b）：<span class="warn">「画面卡死了，怎么动啊？」</span><br>——我两天的一个前提，被这一句推翻了</h1>
+<div class="sub">配套改动：v1.19（零行为改动，只读）+ 一行 INI 实验 · DLL md5 <code>df726bcd8ce70d800b9d01fc6f45c06f</code></div>
+
+<h2 class="ok">一、你那句话推翻了什么</h2>
+<p>我问「你说的『卡』是哪种」，你选 <b>「画面完全定死」</b>；我问「那 7 秒内按过键吗」，
+你答 <b>「画面卡死了，怎么动啊？」</b></p>
+
+<div class="card al">
+<p style="margin:0"><b>⇒ 四局世界段只有 2 / 2.2 / 4.5 / 6.8 秒，<code>keys=0x0</code>、<code>dc=0</code> ——
+那不是「玩家站着不动」，是「画面从进世界那一刻就定死，你看了一眼就强退」。</b></p>
+<p style="margin:8px 0 0"><code>keys=0x0</code> 是<b>结果</b>，不是证据：一张不变的脸不会让人想去按键。
+我为此写了 v1.18 的四个「上游见证」——<b>它们在回答一个没人问的问题。</b></p>
+</div>
+
+<p>L33 描写的那层含糊（「玩家没动」和「世界冻结」在日志里同形）<b>消失了</b>，
+换上来一层更利的：<b>渲染循环活着，画面不活。</b></p>
+
+<h2 class="bad">二、这一局的证据：渲染在跑，画面是死的</h2>
+<table>
+<tr><th style="width:230px">事实</th><th>原文</th><th style="width:190px">说明</th></tr>
+<tr><td>渲染循环全程活着</td><td><code>watchdog: frames=528…643 alive=1 focus=1 dsync=0 presentAge=13/0/1/36ms</code> 30 帧/秒，无崩溃转储</td><td class="ok">Present 一直在成功</td></tr>
+<tr><td>进程是被强杀的</td><td>日志在 <code>22:55:06.773</code> <b>句中截断</b>，无 shutdown 行；watchdog 也停在同一刻</td><td class="dim">不是正常退出</td></tr>
+<tr><td>4x 一直在产出</td><td><code>DLSSG presented per real frame = 4 (status=0)</code>、<code>mult(acc/pres)=4/4</code></td><td class="ok">插帧通路是活的</td></tr>
+<tr><td>DLSS5 一直在跑</td><td><code>DLSSNR frames=539 status=initialized version=310.8.0.0</code></td><td class="ok">NR 通路也是活的</td></tr>
+<tr><td>可是画面＝同一帧</td><td><code>clipDev=0.000061 clipW=1.000000</code>；四条 <code>[CAM] acc</code> 逐字节相同；<code>eye</code> 逐位不变</td><td class="bad">clipToPrevClip = I</td></tr>
+<tr><td>相机也是对的</td><td><code>PC v1.18: match=398/read=425 best=0.00 at proj00=0.8391</code>、<code>lock … proj00=0.8391 famRej=0</code></td><td class="ok">选源没退步</td></tr>
+</table>
+
+<div class="card al">
+<p style="margin:0"><b>结论形状只有一种：喂给 DLSS-G 的那张彩色缓冲是陈旧的。</b>
+渲染线程活着、Present 一直成功、4x 一直产出——<b>但每个真实帧读到的都是同一张图。</b></p>
+</div>
+
+<h2 class="pur">三、头号嫌疑：INI 自己写明了机制（v1.01 引入）</h2>
+<p><code>DynamicShaderFrameGen.ini</code> 第 218 行的原文：</p>
+<pre>; 1 = NR runs first on the real frame and DLSS-G then interpolates the
+;     neural-rendered result. (...) (NR writes swapChainBufferWrapped,
+;     which is what EvaluateDLSSG reads, with the D3D11-&gt;D3D12 fence between them).
+; Start at 0 if the picture flickers (...)
+NRAllowWithFrameGen=1</pre>
+
+<div class="card al">
+<p style="margin:0"><b>「NR 写 <code>swapChainBufferWrapped</code>，而 <code>EvaluateDLSSG</code> 读的就是它」</b> ——
+如果 NR 的写入没有落地（fence / 互操作失败），<b>DLSS-G 每个真实帧读到的都是同一张陈旧缓冲</b>：
+画面完全定死，而 <code>Present</code> 一直成功、<code>presentAge</code> 一直正常。<b>这正是观测到的形状。</b></p>
+<p style="margin:8px 0 0">而 <code>NRAllowWithFrameGen</code> 是 <b>v1.01</b> 才有的串联 ——
+它之前任何版本都没有这条路，<b>与「冻结从 MFG 这条支线开始」完全吻合。</b></p>
+</div>
+
+<h2 class="warn">四、已经替你改好的一行（可秒退）</h2>
+<div class="card">
+<div class="kv">
+<b>改了什么</b><span><code>NRAllowWithFrameGen</code> &nbsp; <code>1</code> → <code>0</code></span>
+<b>备份</b><span><code>src/backup-ini-20260919-2310/DynamicShaderFrameGen.ini.bak</code>（原 md5 <code>a19307d4…</code>）</span>
+<b>改后</b><span>md5 <code>ed9655ad2bd0d2576d7f7e9d200a3f4c</code>，CRLF 259 / 裸 LF 0，14,525 B</span>
+<b>一行还原</b><span><code>cp src/backup-ini-20260919-2310/DynamicShaderFrameGen.ini.bak "&lt;MO2&gt;/DynamicShaderFrameGen/SKSE/Plugins/DynamicShaderFrameGen.ini"</code></span>
+</div>
+<p style="margin:12px 0 0"><b>为什么先试这一行：</b>v1.19 是<b>零行为改动</b>，所以这一次运行的结论没有歧义 ——
+<b>画面活过来 ⇒ 一定是 NR↔DLSSG 这条串联</b>（v1.19 什么都没动）；
+<b>还是定死 ⇒ 不是它</b>，同时我们拿到了 v1.19 的存活数据。<b>两种结果都有信息，不会白跑。</b></p>
+</div>
+
+<h2>五、v1.19 加了什么：把「游戏」和「渲染器」分开（零行为改动，只读）</h2>
+<table>
+<tr><th style="width:150px">见证</th><th style="width:330px">取法</th><th>能回答</th></tr>
+<tr><td><code>hrsD</code></td><td><code>RE::Calendar::GetSingleton()-&gt;GetHoursPassed()</code> 的每秒增量</td><td rowspan="2"><b>游戏逻辑在不在跑</b>（取两条路，任一个在动就是证明）</td></tr>
+<tr><td><code>rawD</code></td><td><code>Calendar-&gt;rawDaysPassed * 24</code> 的每秒增量</td></tr>
+<tr><td><code>paused</code></td><td><code>RE::UI::GetSingleton()-&gt;GameIsPaused()</code></td><td>游戏自己说暂停没有</td></tr>
+<tr><td><code>ld</code> / <code>fade</code></td><td><code>IsMenuOpen("Loading Menu")</code> / <code>("Fader Menu")</code></td><td>卡在加载 / 黑屏淡出淡入没有</td></tr>
+</table>
+
+<h2 class="ok">六、下一次运行怎么读（<code>[CAM] PC v1.19</code> 一行）</h2>
+<table>
+<tr><th style="width:330px">看到</th><th>结论</th><th style="width:250px">下一步</th></tr>
+<tr><td><b>画面活过来了</b></td><td class="ok">就是 NR↔DLSSG 串联</td><td>修 v1.01 那条交接（顺序 / fence / 输出目标）</td></tr>
+<tr><td><code>LIVE hrsD&gt;0</code> 或 <code>rawD&gt;0</code>，画面仍定死</td><td class="warn">游戏在模拟 ⇒ <b>陈旧的帧是我们自己的</b></td><td>查 <code>EvaluateDLSSG</code> 的输入有没有刷新</td></tr>
+<tr><td><code>paused=1</code> / <code>ld=1</code> / <code>fade=1</code></td><td class="warn">游戏被暂停 ⇒ <code>clipToPrevClip=I</code> 只是<b>症状</b></td><td>查谁把它按住了（引擎 / 他模组）</td></tr>
+<tr><td><code>hrsD==0</code> 且 <code>paused=0</code>，watchdog 仍在出帧</td><td class="bad">引擎半死（逻辑停、渲染走）</td><td>查主线程卡在哪</td></tr>
+</table>
+<p class="dim">⚠ <code>paused/ld/fade</code> 是那一秒<b>最后一次采样</b>的瞬时值；<code>hrsD/rawD</code> 是每秒增量。量纲不同，别混。</p>
+
+<div class="card hi">
+<p style="margin:0"><b>这一次你不需要按键、不需要走路。</b>进世界，站 15 秒再退就行 —— 现在是插件自己去看
+「游戏有没有在跑」，不再依赖你动。日志停在哪一秒都没关系，<code>[CAM] PC v1.19</code> 每秒一行。</p>
+</div>
+
+<h2>七、我自己这次的三处错（都在游戏之前被拦住）</h2>
+<ul>
+<li><b>引擎侧按键见证拖垮链接</b>：调 <code>GetKeyboard()</code> 会让链接器从 <code>CommonLibSSE.lib</code> 里拖出
+<code>BSWin32KeyboardDevice.cpp.obj</code> 与 <code>BSKeyboardDevice.cpp.obj</code>，这两个编译单元引用了 14 个
+<code>RE::BSInputDevice</code> 虚函数而预编译库里没有定义 ⇒ <b>14 个 LNK2001</b>。整个见证删掉了。</li>
+<li><b>我把 <code>L(...)</code> 的闭合括号写成了字符串</b>：手写补丁时写成 <code>")"</code>，
+于是 <code>ast.parse</code> 报「第 52 行括号未闭合」，<b>而肉眼看那一行完全正常</b>。
+⇒ 新增强制步骤：<b>跑任何补丁脚本前先 <code>ast.parse</code> 它自己。</b></li>
+<li><b>L35：v1.18b「修」了一个不存在的 bug。</b>我当时按「<code>AcceptCameraSnapshot</code> 每秒跑 400 次」推断，
+把 <code>s_plrStep</code> 从 <code>=</code> 改成 <code>+=</code>；但那段见证在<b>每秒执行一次的块</b>里
+（<code>[CAM] PC</code> 每秒恰好一行、<code>read=425</code> 是「这一秒读了几次」），<b>两者在此等价</b>。
+⇒ <b>给一个数值标量纲前，先确认它在哪个<b>块</b>里，而不是它在哪个<b>函数</b>里。</b></li>
+</ul>
+
+<div class="card al">
+<p style="margin:0"><b class="warn">诚实边界</b>：我跑不了游戏。上面第三节只是<b>头号嫌疑</b>，不是结论。
+v1.19 是<b>零行为改动</b>（只读），所以它不会让你的画面更坏，也不会自动修好任何东西 ——
+<b>唯一的行为变化就是那一行 INI</b>。DLSS5 上屏仍未证（只证了在跑）；RTX 20/30 一行未写。</p>
+</div>
+
+<footer>
+DLL 1,357,824 B · md5 <code>df726bcd8ce70d800b9d01fc6f45c06f</code>（build == MO2 部署）·
+<code>FrameGen.cpp</code> 99,971 → 102,934 B（CRLF 2,098 / 裸 LF 0）· commit <code>dd1b004</code> · tag <code>v1.19</code><br>
+INI <code>NRAllowWithFrameGen=0</code>（md5 <code>ed9655ad2bd0d2576d7f7e9d200a3f4c</code>）· 备份 <code>src/backup-ini-20260919-2310/</code><br>
+归档 <code>docs/runlogs/2026-09-19-2254-v1.18b-hard-freeze-from-world-entry.*</code> · 账本 <code>MFG_MASTER_NOTES.md</code> §31 · 回归 <code>git checkout v1.18b -- src/FrameGen.cpp</code>
+</footer>
+
+</div>
+</body>
+</html>
