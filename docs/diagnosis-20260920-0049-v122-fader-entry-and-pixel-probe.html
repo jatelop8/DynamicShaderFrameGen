@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DFG v1.22 —— 4x 已上屏，fader 按住世界入口，装上像素探针</title>
+<style>
+  :root{
+    --bg:#f5f3ee; --card:#fffefb; --ink:#2a2723; --dim:#6b655c;
+    --line:#e2ddd3; --hi:#b4552a; --ok:#3f7a4a; --warn:#a8781f; --bad:#a33a30;
+    --code:#f0ede6;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:28px 20px 64px;background:var(--bg);color:var(--ink);
+       font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:960px;margin:0 auto}
+  h1{font-size:24px;margin:0 0 6px;letter-spacing:-.2px}
+  .sub{color:var(--dim);font-size:13.5px;margin-bottom:26px}
+  h2{font-size:17px;margin:34px 0 12px;padding-bottom:7px;border-bottom:2px solid var(--line)}
+  h3{font-size:15px;margin:22px 0 8px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:14px 0}
+  .hl{border-left:4px solid var(--hi)}
+  .ok{border-left:4px solid var(--ok)}
+  .bad{border-left:4px solid var(--bad)}
+  .warn{border-left:4px solid var(--warn)}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:#efece5;font-weight:600}
+  td.n{font-variant-numeric:tabular-nums;white-space:nowrap}
+  code{background:var(--code);padding:1px 5px;border-radius:4px;font-size:13px;
+       font-family:"Cascadia Mono",Consolas,monospace}
+  pre{background:var(--code);border:1px solid var(--line);border-radius:8px;
+      padding:12px 14px;overflow-x:auto;font-size:12.5px;line-height:1.6;
+      font-family:"Cascadia Mono",Consolas,monospace}
+  ul{margin:8px 0 8px 22px;padding:0}
+  li{margin:5px 0}
+  .tag{display:inline-block;font-size:11.5px;letter-spacing:.4px;padding:2px 8px;
+       border-radius:20px;background:#eae6dd;color:var(--dim);margin-right:6px;vertical-align:2px}
+  .tag.ok{background:#e2efe4;color:var(--ok)}
+  .tag.bad{background:#f6e3e1;color:var(--bad)}
+  .tag.warn{background:#f5ecd8;color:var(--warn)}
+  .big{font-size:15.5px;font-weight:600}
+  .k{color:var(--hi);font-weight:600}
+  footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);
+         color:var(--dim);font-size:12.5px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:720px){.grid2{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>v1.22 —— 4x 第一次真的上屏了；fader 按住的是「能不能进世界」</h1>
+<div class="sub">
+  证据全部来自 <code>docs/runlogs/2026-09-20-0031-v1.21-4x-still-frozen.log</code>（00:30:10.395 → 00:31:07.259，57 秒）<br>
+  DLL md5 <code>5f1793d921493f1e94fc23aad4a8b390</code>（build == 部署）｜ .ini md5 <code>efce89119d840670e519d219749a6476</code>（源树 == 部署）<br>
+  commit <code>f7fe9b7</code> = tag <code>v1.22</code>（账本 ch34 到 <code>e4948c6</code>）
+</div>
+
+<div class="card ok">
+<span class="tag ok">本局最大进展</span>
+<div class="big">4x 请求发出去了，运行时也接受了，插帧真的在上屏。</div>
+<ul>
+  <li><code>FPS probe: ask=4 accepted=4 cap~=200.5 (=real*4)</code></li>
+  <li>看门狗逐秒：<code>00:31:05 → ratio 4.00</code>、<code>00:31:06 → ratio 4.00</code>（4 个 present／每个真实帧）</li>
+  <li><code>presentAge</code> 5 / 11 ms ⇒ 呈现及时，不是卡死</li>
+</ul>
+⇒ <b>上一版「4x 的请求从来没发出去」只对 22:54 那一局成立</b>（那次被 v0.63 闸门按住 571／572 帧）。<br>
+⇒ 你报告的「依旧卡住」发生在 <b>4x 已经生效的那 2.36 秒里</b> ⇒ <b>冻结还有第二个成因，而且不在请求路径上。</b>
+</div>
+
+<h2>1. fader 按住的是「能不能进世界」，不是「能不能玩」</h2>
+
+<p>四项字段取自<b>同一条</b> <code>[CAM] PC v1.19</code> 行：</p>
+
+<table>
+<thead><tr><th>时刻</th><th class="n">paused</th><th class="n">ld</th><th class="n">fade</th><th class="n">hrsD（每秒）</th><th class="n">presents／真实帧</th></tr></thead>
+<tbody>
+<tr><td class="n">00:31:02.935</td><td class="n">0</td><td class="n">0</td><td class="n"><b>1</b></td><td class="n">0.003807</td><td class="n">~1</td></tr>
+<tr><td class="n">00:31:03.935</td><td class="n">0</td><td class="n">0</td><td class="n"><b>1</b></td><td class="n">0.005663</td><td class="n">1.00</td></tr>
+<tr><td class="n">00:31:04.943</td><td class="n">0</td><td class="n">0</td><td class="n"><b>0</b></td><td class="n">0.005501</td><td class="n"><b>4.00</b></td></tr>
+</tbody>
+</table>
+
+<ul>
+  <li>世界在 <b>00:31:02.935 就活了</b>：<code>paused=0</code>、<code>ld=0</code>、日历以 timescale 20 在走，
+      而且 v1.16 的 <code>PC TAKEOVER</code> <b>恰好落在这一采样上</b>（<code>best=0.00 proj00=0.8391</code>）；</li>
+  <li>闸门却又多按了 <b>2 秒</b>，因为 <code>IsMenuOpen("Fader Menu")</code> 仍为真；</li>
+  <li><code>[XRAY] MENU EDGE open=0 serial=653</code> 发生在 <b>00:31:04.683</b>，
+      <b>严格落在</b> <code>fade=1</code> 采样与 <code>fade=0</code> 采样<b>之间</b>；</li>
+  <li><b>90 秒兜底不可能解释它</b>：日志起于 00:30:10.395，释放时整局才 54.3 秒，
+      <code>s_faderT0</code> 只会比这更晚。</li>
+</ul>
+
+<h3>改法与 A≠B 证明</h3>
+<pre>return ui-&gt;IsMenuOpen("Fader Menu") &amp;&amp; faderUpSec &lt; 90;
+   →  return ui-&gt;GameIsPaused()    &amp;&amp; faderUpSec &lt; 90;</pre>
+<ul>
+  <li><b>不是空操作</b>：<code>paused=0</code> 与 <code>fade=1</code> 在中间两个采样上<b>同时</b>成立；</li>
+  <li><code>GameIsPaused()</code> 在世界之前 <b>13 个采样全为 1</b>（v0.96 的保护完好），接管之后 <b>5 个采样全为 0</b>；</li>
+  <li><code>Loading Menu</code> 的提前返回<b>独立</b>覆盖加载窗口（<code>ld=1</code> 从 00:30:57.684 到 00:31:01.919）。</li>
+</ul>
+
+<div class="card warn">
+<span class="tag warn">诚实边界</span>
+这个改动只收回世界入口那 <b>1.75–2 秒</b>的死窗口。它<b>解释不了</b> 4x 已生效那 2.36 秒里的冻结 ——
+那正是下面那件东西存在的原因。
+</div>
+
+<h2>2. 装上像素探针（L38 的那个缺失见证）</h2>
+
+<p>本项目已有的<b>每一个</b>见证 —— <code>Present</code> 的返回值、<code>presentAge</code>、<code>dsync</code>、
+<code>presented per real frame</code> 比值 —— 都只能报「<b>发生了一次 flip</b>」。
+<b>没有一个能看见「同一张画面被翻了两次」。</b>
+这就是为什么 00:30 那一局（ratio 4.00、dsync 0、presentAge 5–8 ms）读起来是健康的，而你看到的是冻结。</p>
+
+<p class="big">flip 不是画面。</p>
+
+<table>
+<thead><tr><th>项</th><th>做法</th></tr></thead>
+<tbody>
+<tr><td>取哪</td><td><b>插件交给交换链的那张纹理</b>的正中央 64×64 块</td></tr>
+<tr><td>多久</td><td>1 Hz（每帧取会把读取本身变成被测变量）</td></tr>
+<tr><td>怎么判</td><td>逐字节哈希；变了记 <code>chg=1</code>，连续 <b>10 秒</b>相同 ⇒ 打 <code>[PIXEL] VERDICT</code></td></tr>
+<tr><td>代价</td><td>1 秒一次小拷贝 + 一次 <code>Map</code>，且用 <code>DO_NOT_WAIT</code>：取不到样本就<b>丢掉</b>，绝不阻塞渲染线程</td></tr>
+<tr><td>开关</td><td>INI <code>PixelProbe=1</code>（默认开），改 <code>0</code> 关掉、<b>无需重编译</b></td></tr>
+</tbody>
+</table>
+
+<div class="card">
+<span class="tag">探针会真的跑起来吗</span>（历史上"挂在死分支上"已发生三次，这次先排掉）
+<ol>
+  <li>调用点插在 <code>m_stage = "present entry";</code> 之后 —— 那是 <code>Present()</code>
+      三个返回分支<b>共用</b>的那条路。<b>可证伪检查</b>：看门狗里 <code>stage=present entry</code>
+      出现 <b>47 次</b> ⇒ 这条路真的在跑。</li>
+  <li><code>CreateInterop()</code>（<code>swapChainBufferWrapped</code> 在那儿创建）在
+      <code>hk_IDXGIFactory_CreateSwapChain</code> 里<b>无条件</b>调用，顺序是
+      <code>SetD3D11Device</code>(1764) → <code>SetD3D11DeviceContext</code>(1770)
+      → <code>CreateSwapChain</code>(1797) → <code>CreateInterop()</code>(1798)，
+      <b>全部早于任何一次 <code>Present</code></b> ⇒ 探针不会因为「纹理还没就绪」在第一次 tick 自禁用。</li>
+</ol>
+</div>
+
+<h2>3. L0 自检两遍（照铁律做了，逐条给结果）</h2>
+
+<h3>第一遍 · 手脚 —— 我改的东西真的落盘/生效了吗</h3>
+<table>
+<thead><tr><th>项</th><th>结果</th></tr></thead>
+<tbody>
+<tr><td>逐符号回读</td><td><code>GameIsPaused</code> 返回 1／<code>void PixelProbeTick();</code> 1／
+  <code>void DX12SwapChain::PixelProbeTick()</code> 1／<code>bool pixelProbe = true;</code> 1／
+  <code>key == "PixelProbe"</code> 1／<code>PixelProbe=1</code> 1</td></tr>
+<tr><td>旧形式必须消失</td><td><code>IsMenuOpen("Fader Menu") &amp;&amp; faderUpSec</code> 计数 = <b>0</b>（<code>POST_GONE</code>）</td></tr>
+<tr><td>行尾</td><td><code>DX12SwapChain.cpp</code> 仍纯 LF（裸 LF 1810→1960）；<code>Streamline.cpp</code> 仍 CRLF+BOM；
+  INI 仍纯 CRLF（343→358 行）；<b>全库 <code>lone_cr = 0</code></b></td></tr>
+<tr><td>构建</td><td><code>BUILD SUCCESS</code>，0 error / 0 warning</td></tr>
+<tr><td>双份 md5</td><td>DLL <code>5f1793d9…</code>（1,362,944 B，build == 部署）；INI <code>efce8911…</code>（源树 == 部署）</td></tr>
+<tr><td>幂等</td><td>补丁重跑 ⇒ <code>REFUSED</code>（marker 已在）</td></tr>
+</tbody>
+</table>
+
+<h3>第二遍 · 脑子 —— 我说的结论真的站得住吗</h3>
+<table>
+<thead><tr><th>问</th><th>答</th></tr></thead>
+<tbody>
+<tr><td>反向假设：若「fader 按住闸门」是错的，日志会长什么样？</td>
+  <td>那 <code>MENU EDGE open=0</code> 必须在 <code>fade=0</code> 之后、或 <code>fade</code> 一直为 0。
+  <b>实测相反</b>：open=0 严格夹在 fade=1 与 fade=0 采样之间。90 秒兜底也被排除（整局 54.3 秒）。</td></tr>
+<tr><td>A ≠ B 吗？（否则是空操作）</td>
+  <td><b>是</b>：<code>paused=0</code> 与 <code>fade=1</code> 同时成立 2 个采样。</td></tr>
+<tr><td>这条路径真会走到吗？</td>
+  <td><code>stage=present entry</code> 在日志里 <b>47 次</b>；<code>GameMenuOpenNow()</code> 每帧由
+  <code>PollMenuState()</code> 与 <code>MenuIsOpen()</code> 两处调用。</td></tr>
+<tr><td>我把「未证」当「已证」了吗？</td>
+  <td><b>没有</b>。机制②（互操作围栏）仍只写作<b>头号嫌疑／症状吻合</b>；
+  冻结的<b>存在性</b>本轮仍无独立见证 —— 那正是要 <code>[PIXEL]</code> 的原因。</td></tr>
+<tr><td>你会不会白跑一趟？</td>
+  <td>不会：本局无论结果如何都能读数 —— 4x 生效看 <code>= 4</code>，画面动没动看 <code>[PIXEL] chg=</code>，
+  两者独立。若探针没跑，日志里必有 <code>probe armed</code> 或 <code>probe disabled: …</code> 之一。</td></tr>
+</tbody>
+</table>
+
+<h2>4. 额外收获：两条方法论（已写进账本 L40／L41）</h2>
+
+<div class="grid2">
+<div class="card">
+<span class="tag bad">L40</span>
+<b>锚点要整行；后置条件必须有一条是「什么都没改」无法满足的。</b>
+<ul>
+  <li>裸串 <code>MenuGuardFader=1</code> 在这份 INI 里出现 <b>2 次</b> —— 第 22 行的<b>文档注释</b>里也提了它；</li>
+  <li>改成 <code>"\nMenuGuardFader=1"</code> 也不行：<code>line_indent()</code> 的
+      <code>rfind("\n",0,i)</code> 会把<b>上一行的内容</b>当成缩进，拼出的锚点永远匹配不上；</li>
+  <li>⇒ 给补丁加了 <code>afterline</code> 模式：按 EOL 切行、要求<b>恰好一行</b>等于该针。</li>
+</ul>
+</div>
+<div class="card">
+<span class="tag bad">L41</span>
+<b>方法名／类名不是字符串。</b>
+<ul>
+  <li><code>grep -a -c GameIsPaused &lt;dll&gt;</code> = <b>0，但这是对的</b>：
+      <code>GetSingleton</code>／<code>Calendar</code>／<code>InterfaceStrings</code> 也全 0；
+      <code>IsMenuOpen</code> 那个 1 来自日志格式串。</li>
+  <li>真凭据看<b>目标文件修饰符号</b>：
+      <code>?GameIsPaused@UI@RE@@QEAA_NXZ</code> 在 <code>Streamline.cpp.obj</code> 里 <b>1 处</b>，
+      而 <code>git show HEAD:src/Streamline.cpp</code> 里为 <b>0</b> ⇒ 只可能来自本次改动。</li>
+  <li>时间戳链：源码 00:52:23 → obj 00:52:44 → DLL 00:52:47。</li>
+</ul>
+</div>
+</div>
+
+<h2>5. 下一局这么跑</h2>
+
+<div class="card hl">
+<b>协议：</b>① 进世界后<b>站着不动 15 秒</b> → ② <b>按住 W 走 5 秒以上</b> → ③ 再退出。
+<div style="margin-top:8px;color:var(--dim);font-size:13.5px">
+上一局你在世界里只待了 4.3 秒、全程 <code>plrD=0.00</code>、<code>INPUT_NONE</code>，
+所以"走动到底行不行"这个问题一次都没被回答过。这次请真的走一下。
+</div>
+</div>
+
+<table>
+<thead><tr><th>看到</th><th>结论</th></tr></thead>
+<tbody>
+<tr><td>进世界就 <code>presented per real frame = 4</code> 且 <code>[PIXEL] chg=1</code></td>
+    <td><b>通了</b>：4x 生效 + 画面在动</td></tr>
+<tr><td><code>[PIXEL] VERDICT</code>（连续 10 秒同哈希）</td>
+    <td><b>陈旧缓冲已证</b> ⇒ 冻结在呈现路径 ⇒ 沿围栏／呈现链继续</td></tr>
+<tr><td><code>[PIXEL]</code> 行完全没出现</td>
+    <td>先看有没有 <code>probe armed</code> / <code>probe disabled: …</code> ——
+        别把「仪器没跑」读成「画面健康」（L39）</td></tr>
+<tr><td><code>chg=1</code> 但你仍说冻</td>
+    <td>冻结在<b>读回点之后</b>（composite / present 之后）⇒ 查交换链呈现链</td></tr>
+<tr><td><code>hrsD == 0</code></td>
+    <td>游戏时钟停了 ⇒ 冻结在<b>游戏里</b>，插件不背这口锅</td></tr>
+<tr><td><code>stage=</code> 停在 <code>d3d12 queue Wait</code></td>
+    <td>围栏不可用 ⇒ <code>InteropFenceWait=0</code>（改 INI，无需重编译）</td></tr>
+</tbody>
+</table>
+
+<h3>自己看日志的三条命令</h3>
+<pre>grep -a "presented per real frame" &lt;log&gt;      # 4x 是不是从进世界就生效 → 找 "= 4"
+grep -a "\[PIXEL\]"                  &lt;log&gt;      # 画面到底动没动 → 每秒 chg= ；VERDICT = 陈旧缓冲已证
+python tools/wd_ratio.py &lt;watchdog.log&gt; 10   # 逐秒 present/真实帧 比值 + presentAge</pre>
+
+<h3>回退</h3>
+<ul>
+  <li><b>fader 闸门那个改动不是 INI 开关</b>：<code>git checkout v1.21 -- src/Streamline.cpp</code> + <code>./build_vs.sh</code>。
+      （<code>MenuGuardFader=0</code> <b>不是</b>它的回退键 —— 那个值是 v0.96 的「fader 永不算菜单」，会进不去游戏。）</li>
+  <li>围栏回 v0.75：<code>InteropFenceWait=0</code>。关探针：<code>PixelProbe=0</code>。两者都只改 INI。</li>
+</ul>
+
+<h2>6. 未证 / 未做（别假装做了）</h2>
+<ul>
+  <li><b>机制②（互操作围栏）仍是症状吻合 + 头号嫌疑，未证。</b></li>
+  <li><b>冻结的「存在性」本轮仍无独立见证</b> —— 没有一个仪器能说屏幕内容变了还是没变，这正是要 <code>[PIXEL]</code> 的原因。</li>
+  <li>本局日志<b>没有关闭序列</b>（最后一行 00:31:07.259，看门狗 <code>alive=1 presentAge=69ms</code>）⇒ 是被强杀／硬挂的，不是正常退出。</li>
+  <li><b>DLSS5 的屏幕输出仍未证实</b>；<b>4x + DLSS5 同时</b>（你的总目标）未成功。</li>
+  <li><b>RTX 20/30 系</b>一行没动。</li>
+</ul>
+
+<footer>
+  DFG v1.22 交付卡 · 生成于 2026-09-20 00:49 · 证据源：<code>docs/runlogs/2026-09-20-0031-v1.21-4x-still-frozen.{log,watchdog.log,transfusion.log}</code><br>
+  账本 <code>MFG_MASTER_NOTES.md</code> 第 34 章 · 代码 <code>f7fe9b7</code> = tag <code>v1.22</code>
+</footer>
+
+</div>
+</body>
+</html>
