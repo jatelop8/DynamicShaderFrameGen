@@ -1538,6 +1538,37 @@ namespace FrameGen
 					static bool s_plrHave = false;
 					static float s_plrStep = 0.0f;
 					
+					// ---- v1.19: THE LIVENESS WITNESSES ----
+					//
+					// The 22:54 run settles what the four witnesses above could not: asked
+					// what the freeze looks like, the answer is "the picture is completely
+					// frozen, how am I supposed to move" -- every run, from the moment the
+					// world loads. keys=0x0 and dc=0 are a consequence of that, not evidence
+					// against it: an image that never changes gives no reason to press
+					// anything, and a game that takes no input shows no reason either.
+					//
+					// So the ambiguity L33 was written about is gone and a sharper one takes
+					// its place. The present loop is alive the whole time -- the watchdog
+					// reports alive=1 focus=1, presentAge in single-digit ms, frames
+					// advancing 30/s -- and the image is not. These witnesses are read from
+					// the GAME, not from the renderer, so they split that pair:
+					//
+					//   hrsD > 0    the game clock runs     -> the game logic is alive, and
+					//                                          the stale image is ours
+					//   hrsD == 0   the game clock is stopped -> the game is paused, and the
+					//                                          frozen image is a symptom
+					//
+					// paused / ld / fade name the pause directly.
+					static bool  s_livePaused  = false;
+					static bool  s_liveLd      = false;
+					static bool  s_liveFade    = false;
+					static float s_liveHrs     = 0.0f;
+					static float s_liveHrsD    = 0.0f;
+					static bool  s_liveHrsHave = false;
+					static float s_liveRaw     = 0.0f;
+					static float s_liveRawD    = 0.0f;
+					static bool  s_liveRawHave = false;
+					
 					{
 						std::uint32_t keys = 0u;
 						if (::GetAsyncKeyState('W') & 0x8000) keys |= 1u;
@@ -1597,29 +1628,62 @@ namespace FrameGen
 						}
 					}
 					
+					// v1.19: the game's own clock and its own pause state, read-only.
+					// hrs / raw are the same quantity from two sources: GetHoursPassed()
+					// goes through the gameDaysPassed TESGlobal, rawDaysPassed is the plain
+					// float the engine accumulates. Either one advancing proves the game
+					// loop is running; both frozen at once, with the watchdog still
+					// presenting, is a game that is not simulating.
+					{
+						auto* ui = RE::UI::GetSingleton();
+						if (ui) {
+							s_livePaused = ui->GameIsPaused();
+							s_liveLd     = ui->IsMenuOpen("Loading Menu");
+							s_liveFade   = ui->IsMenuOpen("Fader Menu");
+						}
+						auto* cal = RE::Calendar::GetSingleton();
+						if (cal) {
+							const float h = cal->GetHoursPassed();
+							if (s_liveHrsHave && h > s_liveHrs)
+								s_liveHrsD += (h - s_liveHrs);
+							s_liveHrs = h;
+							s_liveHrsHave = true;
+							const float r = cal->rawDaysPassed * 24.0f;
+							if (s_liveRawHave && r > s_liveRaw)
+								s_liveRawD += (r - s_liveRaw);
+							s_liveRaw = r;
+							s_liveRawHave = true;
+						}
+					}
 					if (snapPcEyeHave) {
 						const float pdx = snapPcLast[0] - snapPcPrevEye[0];
 						const float pdy = snapPcLast[1] - snapPcPrevEye[1];
 						const float pdz = snapPcLast[2] - snapPcPrevEye[2];
 						snapPcEyeStep = std::sqrt(pdx * pdx + pdy * pdy + pdz * pdz);
 					}
-					SKSE::log::info("[CAM] PC v1.18: read={} match={} adopt={}/{} rej={} ref={} "
+					SKSE::log::info("[CAM] PC v1.19: read={} match={} adopt={}/{} rej={} ref={} "
 						"best={:.2f} at proj00={:.6g} eye=({:.2f},{:.2f},{:.2f}) eyeD={:.2f} "
-						"in(keys=0x{:x} dc={:.0f}/{} fg={}) plr=({:.1f},{:.1f},{:.1f}) plrD={:.2f} {} {}",
+						"in(os=0x{:x} dc={:.0f}/{} fg={}) "
+						"plr=({:.1f},{:.1f},{:.1f}) plrD={:.2f} "
+						"LIVE paused={} ld={} fade={} hrs={:.5f} hrsD={:.6f} rawD={:.6f} {} {}",
 						snapPcRead, snapPcMatch, snapPcAdoptSec, snapPcAdopt, snapPcReject,
 						snapPcRefSeen,
 						snapPcSawAny ? snapPcBestDist : -1.0f, snapPcBestProj,
 						snapPcLast[0], snapPcLast[1], snapPcLast[2], snapPcEyeStep,
 						s_inKeys, s_inDist, s_inMoves, s_inFg,
 						s_plrPos[0], s_plrPos[1], s_plrPos[2], s_plrStep,
+						s_livePaused ? 1 : 0, s_liveLd ? 1 : 0, s_liveFade ? 1 : 0,
+						s_liveHrs, s_liveHrsD, s_liveRawD,
 						snapPcEyeStep <= kCamMoveEps ? "PC_STILL" : "PC_MOVING",
 						(s_inKeys != 0u || s_inMoves != 0u)
-							? "INPUT_SEEN - input reached the window, so eyeD 0 here means a frozen world, not an idle player"
-							: "INPUT_NONE - no key and no mouse motion this second, so an idle player and a frozen world still read the same: re-run and MOVE");
+							? "INPUT_SEEN - input reached the game, so a still eyeD here is a frozen world"
+							: "INPUT_NONE - nothing was pressed this second, so this run cannot say whether input works");
 					s_inKeys = 0u;
 					s_inDist = 0.0f;
 					s_inMoves = 0u;
 					s_plrStep = 0.0f;
+					s_liveHrsD = 0.0f;
+					s_liveRawD = 0.0f;
 					snapPcRead = 0;
 					snapPcMatch = 0;
 					snapPcAdoptSec = 0;
