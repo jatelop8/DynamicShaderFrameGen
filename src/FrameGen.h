@@ -404,6 +404,25 @@ namespace FrameGen
 	std::uint64_t snapFamLogged = 0;
 	bool snapFamOverflowLogged = false;
 
+	// ---- v1.16: selection against the live player camera -------------------
+	// read/match/adopt are per-second counters reset by the [CAM] PC dump;
+	// snapPcAdopt is the cumulative total.
+	std::uint64_t snapPcRead = 0;
+	std::uint64_t snapPcMatch = 0;
+	std::uint64_t snapPcAdopt = 0;
+	std::uint64_t snapPcAdoptSec = 0;
+	std::uint64_t snapPcReject = 0;   // v1.16b: refused because it is not the camera
+	bool snapPcEverMatched = false;   // v1.16b: the reference proved itself
+	float snapPcBestDist = 1.0e38f;
+	float snapPcBestProj = 0.0f;
+	float snapPcLast[3] = {};
+	bool snapPcSawAny = false;
+	// ---- v1.16: census detail, per family, per second ----------------------
+	std::uint32_t snapFamArrSec[kSnapFamMax] = {};
+	std::uint32_t snapFamSpanN[kSnapFamMax] = {};
+	float snapFamMinP[kSnapFamMax][3] = {};
+	float snapFamMaxP[kSnapFamMax][3] = {};
+
 	// ---- v1.10: a MOVING family beats a STILL lock ---------------------- 
 	// The 11:30 run is the measurement this exists for. The reset edge at
 	// 11:33:15.482 released the lock and "the next arrival" took it -- and that
