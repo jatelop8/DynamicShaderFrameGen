@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DFG v1.23 —— 像素探针从来没采到一个样本；零矩阵被当成合法 clipToPrevClip</title>
+<style>
+  :root{
+    --bg:#f5f3ee; --card:#fffefb; --ink:#2a2723; --dim:#6b655c;
+    --line:#e2ddd3; --hi:#b4552a; --ok:#3f7a4a; --warn:#a8781f; --bad:#a33a30;
+    --code:#f0ede6;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:28px 20px 64px;background:var(--bg);color:var(--ink);
+       font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:960px;margin:0 auto}
+  h1{font-size:24px;margin:0 0 6px;letter-spacing:-.2px}
+  .sub{color:var(--dim);font-size:13.5px;margin-bottom:26px}
+  h2{font-size:17px;margin:34px 0 12px;padding-bottom:7px;border-bottom:2px solid var(--line)}
+  h3{font-size:15px;margin:22px 0 8px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:14px 0}
+  .hl{border-left:4px solid var(--hi)}
+  .ok{border-left:4px solid var(--ok)}
+  .bad{border-left:4px solid var(--bad)}
+  .warn{border-left:4px solid var(--warn)}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:#efece5;font-weight:600}
+  td.n{font-variant-numeric:tabular-nums;white-space:nowrap}
+  code{background:var(--code);padding:1px 5px;border-radius:4px;font-size:13px;
+       font-family:"Cascadia Mono",Consolas,monospace}
+  pre{background:var(--code);border:1px solid var(--line);border-radius:8px;
+      padding:12px 14px;overflow-x:auto;font-size:12.5px;line-height:1.6;
+      font-family:"Cascadia Mono",Consolas,monospace}
+  ul{margin:8px 0 8px 22px;padding:0}
+  li{margin:5px 0}
+  .tag{display:inline-block;font-size:11.5px;letter-spacing:.4px;padding:2px 8px;
+       border-radius:20px;background:#eae6dd;color:var(--dim);margin-right:6px;vertical-align:2px}
+  .tag.ok{background:#e2efe4;color:var(--ok)}
+  .tag.bad{background:#f6e3e1;color:var(--bad)}
+  .tag.warn{background:#f5ecd8;color:var(--warn)}
+  .big{font-size:15.5px;font-weight:600}
+  .k{color:var(--hi);font-weight:600}
+  footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);
+         color:var(--dim);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>DFG v1.23 —— 探针从来没采到一个样本；零矩阵被当成合法 clipToPrevClip</h1>
+<div class="sub">
+局：<code>docs/runlogs/2026-09-20-0058-v1.22-loadscreen-freeze.log</code>（00:58:00.284 → 00:58:54.206，54 s）<br>
+实测版本：v1.22（build <code>Sep 20 2026 00:52:35</code>）· 配置 <code>Provider=1</code> / <code>MFGMaxFramesOverride=3</code> / <code>NRAllowWithFrameGen=0</code><br>
+你这次的原话：<span class="big">「这次游戏都没进去，直接在加载界面就卡死闪烁了」</span>
+</div>
+
+<h2>一、先回答你的问题：问题出在三个地方，其中一个是我上一版自己写坏的</h2>
+
+<div class="card bad">
+<span class="tag bad">我的 BUG</span>
+<p><b>v1.22 装的像素探针，39 秒里一个样本都没采到 —— 而它是唯一能回答「画面到底动没动」的仪器。</b>
+日志里只有一行 <code>[PIXEL] probe armed</code>（00:58:14.810），之后再无下文。</p>
+<p>根因在我自己的代码里：<code>CopySubresourceRegion</code> 和 <code>Map</code> 写在<b>同一次调用</b>里，
+所以 Map 永远在问一张 GPU 还没写完的纹理，恒返回 <code>DXGI_ERROR_WAS_STILL_DRAWING</code>；
+而那条失败分支还写了 <code>pixelProbeLastMs = 0</code>，把 1 Hz 节流废掉，
+于是<b>每一帧都重试一次、每一帧都失败、一句日志都不打</b>。</p>
+<p>两个后果：① 这一局最需要的数据没有；② <b>它把一次跨 API 拷贝塞进了每一帧</b>
+（从 D3D12 拥有的共享后备缓冲拷到 D3D11 staging）—— 这是 v1.22 里唯一改动渲染热路径的东西。</p>
+</div>
+
+<div class="card bad">
+<span class="tag bad">真缺陷</span>
+<p><b>一个「零矩阵」被当成了合法的 <code>clipToPrevClip</code>，还被写进历史，之后反复重放。</b></p>
+<pre>[W] [MOTION] clipToPrevClip[3].w=-68.073540 (must be 1) ... v1.08 PROBE:
+    p00 cur=6.7031 prev=0.0000 | p23 cur=-15.010994 prev=0.000000
+[FLD] #1 c32 PrevVPU row3=(0,0,0,0) [3][3]=0 dev=1 det=0 mag=0 BAD</pre>
+<p><code>prev</code> 全是 0 ⇒ <code>inv(cur) x 0 = 0</code>。而代码里唯一的合法性判据是
+<code>clipMagAll &lt; 1.0e30f</code>（本意是挡 NaN/Inf）—— <b>零矩阵的 mag 是 0，「小于 1e30」完全成立</b>，
+所以它被接受，<b>并且被存进 <code>s_lastGoodClip</code></b>，也就是后续帧回退用的那份「上一帧合法位移」。
+污染是不可逆的。</p>
+<p>而且它在 <code>clipDev</code> 那一侧更会骗人：零矩阵的 <code>max|I - 0| = 1.0</code>，
+<b>看起来像「相机动了很远」</b>，实际是个退化矩阵。</p>
+</div>
+
+<div class="card warn">
+<span class="tag warn">诊断自伤</span>
+<p><b>我这轮被自己写的两条诊断误导了。</b></p>
+<ul>
+<li>判定链把 <code>tidCallsB &gt; 10</code>（「第二个线程在持续调用 slSetConstants」）排在所有检查之前，
+可是日志显示 <code>a=1</code> —— 第一个调用者<b>只调了一次就再没回来</b>（世界入口处的一次性调用），
+<code>b=30→180</code> 只是渲染线程正常每帧调用。它一条危害都证明不了。</li>
+<li><code>- depth/mvec must read 2560x1440 (the real interop buffers)</code> 打印时，
+三个 extent 全是 <code>3840x2160</code>；而这些 extent 就在上面几行<b>从 interop 资源本身读出来</b>
+（v0.56 正是为修那个 1.5 倍错配才改成从资源取）。这条陈旧断言确实短暂地把我引向
+「分辨率不匹配」这个<b>不存在的</b>方向。</li>
+</ul>
+</div>
+
+<h2>二、这一局到底发生了什么（时间线全部取自日志原文）</h2>
+
+<table>
+<tr><th>时刻</th><th>日志原文（截断）</th><th>含义</th></tr>
+<tr><td class="n">00:58:14.810</td><td><code>D3D12 FG swapchain created (3840x2160)</code> · <code>[PIXEL] probe armed</code></td><td>装置就位</td></tr>
+<tr><td class="n">00:58:35.782</td><td><code>MENU EDGE open=1 serial=2</code> · <code>paused=1 ld=1 fade=1 hrs=0.0</code></td><td>闸门按在<b>第 2 帧</b></td></tr>
+<tr><td class="n">00:58:37.772</td><td><code>FPS probe: real=45.7 ... ask=4 accepted=4</code></td><td>4x 已被运行时接受</td></tr>
+<tr><td class="n">00:58:41.753</td><td><code>proj00=0.149184 eye=(0,0,128)</code> <code>hrs=32.0</code></td><td><b>加载期空相机</b>（既有的加载指纹）</td></tr>
+<tr><td class="n">00:58:44.761</td><td><code>plr=(-250.3,-360.4,0.1) plrD=3329.08</code> <code>hrs=12.31110</code></td><td>玩家被传送到世界坐标</td></tr>
+<tr><td class="n">00:58:48.150</td><td><code>MENU EDGE open=0 serial=566</code> ⇒ <code>blocked=564 unblocked=1</code></td><td>闸门放开（世界入口）</td></tr>
+<tr><td class="n">00:58:48.807</td><td><code>paused=0 ld=0 best=0.00 proj00=0.8391 hrsD=0.003136</code></td><td><b>世界真的进去了</b></td></tr>
+<tr><td class="n">00:58:48.641</td><td><code>DLSSG presented per real frame = 4</code></td><td>4x 上屏</td></tr>
+<tr><td class="n">00:58:49–53</td><td>看门狗逐秒 <code>ratio = 4.00</code> · <code>dsync=0</code> · <code>presentAge 0–18 ms</code></td><td>呈现链路<b>每一项都健康</b></td></tr>
+<tr><td class="n">00:58:54.206</td><td>最后一行；<b>无关闭序列</b>；看门狗 <code>alive=1</code></td><td>被强杀 / 硬挂</td></tr>
+</table>
+
+<div class="card hl">
+<p class="big">★ 你说「游戏都没进去」，日志说「进去了」—— 两者可以同时为真。</p>
+<p><code>paused=0</code>、<code>ld=0</code>、真玩家相机 <code>best=0.00 proj00=0.8391</code>、
+日历以 timescale 20 在走（<code>hrsD≈0.0057</code>）⇒ <b>世界在跑</b>；
+而你看不到它 ⇒ <b>屏幕没显示它</b>。</p>
+<p>而日志里<b>没有任何一个计数器能看见「屏幕没显示」</b>：present 在发生、presentAge 很小、dsync 是 0、
+4x 比值是 4.00。这正是账本 L38 —— 也是为什么需要像素读回，而这次它恰好坏了。</p>
+</div>
+
+<h2>三、A≠B：这次和上一次（v1.21）几乎是同一局</h2>
+
+<table>
+<tr><th>指纹</th><th>v1.21（00:31）</th><th>v1.22（00:58）</th></tr>
+<tr><td><code>stall governor</code></td><td class="n">2</td><td class="n">2（最大 346 ms → <b>822 ms</b>）</td></tr>
+<tr><td><code>flicker cause</code> / <code>USELESS</code></td><td class="n">3</td><td class="n">1</td></tr>
+<tr><td><code>MOTION</code> / <code>non-affine</code></td><td class="n">1 / 20</td><td class="n">1 / 21</td></tr>
+<tr><td><code>presented per real frame = 1</code> / <code>= 4</code></td><td class="n">10 / 1</td><td class="n">9 / 3</td></tr>
+<tr><td>加载耗时</td><td class="n">12.3 s</td><td class="n">13.1 s</td></tr>
+<tr><td><code>second thread PERSISTENTLY</code></td><td class="n">0</td><td class="n">6（阈值误报）</td></tr>
+<tr><td><code>[PIXEL]</code></td><td class="n">无</td><td class="n"><b>1（只有 armed，0 样本）</b></td></tr>
+</table>
+
+<p><b>⇒ v1.22 没有让加载变慢，也没有把这一局变得更糟</b>（加载 12.3 s vs 13.1 s，其余指纹逐项相同）。
+你觉得「这次更糟」，是因为<b>这次连加载界面都没过去就被杀</b> —— 而日志显示世界其实已经加载完成。
+唯一的实质差异是：<b>本来该告诉我画面真相的仪器，这次坏了。</b></p>
+
+<h2>四、这一轮改了什么（已编进 DLL，9 条编辑 / 4 个文件）</h2>
+
+<table>
+<tr><th>#</th><th>内容</th><th>依据</th></tr>
+<tr><td class="n">1</td><td><b>两相采样</b>：这一秒收割「上一秒发出的拷贝」（有整整一秒落地），再发下一次；取不到样本就<b>丢弃并计数</b>，绝不在同一秒重试</td><td>L43：跨 tick 的生产/消费不能塞进同一个调用</td></tr>
+<tr><td class="n">2</td><td><b>探针自证</b>：armed 后 15 秒仍 0 样本 ⇒ <code>log::error</code>，文本里写死「没有采样行 = 没测量，绝不等于画面正常」</td><td>L42：只在成功路径打日志的仪器，失败时与「一切正常」长得一样</td></tr>
+<tr><td class="n">3</td><td>改采 <b>colorOutWrapped</b>（Streamline 真正上屏的那张）；引擎后备缓冲只是 HUD-less 颜色<b>输入</b></td><td>采错缓冲只能回答「引擎渲染了新帧」，回答不了「屏幕是不是陈旧的」</td></tr>
+<tr><td class="n">4</td><td>把每帧的 <code>clipDev</code> 与哈希并排记录；只有 10 秒里 <b>≥5 秒相机在动</b> 才报 VERDICT，否则明说「站桩造成的，不是冻结」</td><td>L44：一个量只有在「反例下会变」时才是见证</td></tr>
+<tr><td class="n">5</td><td><b>拒绝退化矩阵</b>：<code>clipMagAll &lt; 1.0e30f &amp;&amp; clipMagAll &gt; 1.0e-6f</code>（单位阵 mag=4.0，只有退化矩阵会掉下 1e-6）</td><td>零矩阵缺陷（见上）；失败帧现在保持上一份合法矩阵</td></tr>
+<tr><td class="n">6</td><td>verdict 改为 <code>tidCallsB &gt; 10 &amp;&amp; tidCallsA &gt; 10</code></td><td>两个线程<b>都</b>在活跃才算危害；<code>a=1</code> 是一次性调用</td></tr>
+<tr><td class="n">7</td><td>dims 行改成比较 depth 与 mvec</td><td>删掉「必须读 2560x1440」这条陈旧断言</td></tr>
+</table>
+
+<h2>五、L0 两遍自检（照铁律做了，逐条给结果）</h2>
+
+<div class="card ok">
+<h3>第一遍 · 手脚（我改的东西真的落盘/生效了吗）</h3>
+<ul>
+<li>逐符号回读 9 项全为 <b>1</b>；旧形式全部 <b>0</b>（<code>pixelProbeLastMs = 0;</code>、<code>2560x1440</code> 那条日志、旧的 <code>tidCallsB</code> 条件）</li>
+<li><b>9 条锚点 count 全 == 1</b>；组装后的 span 也各查一次；重跑补丁 <code>REFUSED: already applied</code></li>
+<li>函数替换用签名 + 自身花括号定位：<b>124 行 → 199 行</b>，与实现文件行数完全一致</li>
+<li>行尾逐文件不变：<code>DX12SwapChain.cpp</code> 纯 LF（bare_lf 1819→2035）、<code>Streamline.cpp</code> CRLF+BOM、两个头文件纯 CRLF；全库 <code>lone_cr=0</code></li>
+<li>构建 <code>BUILD SUCCESS</code>，0 error 0 warning</li>
+<li>双份 md5 一致：DLL <code>83e84a781bf645ec3363b58c5fb671ec</code>（1,368,576 B，build == MO2 部署）；
+INI <code>efce89119d840670e519d219749a6476</code>（源树 == 部署，本轮<b>无新键</b>）</li>
+<li>新代码的字符串字面量在 DLL 里：<code>movedThisStreak</code> / <code>produced ZERO samples</code> /
+<code>source={}</code> / <code>rearming the probe</code> 各 1 处；时间戳链 源 01:06:25 → obj 01:06:45 → DLL 01:06:49</li>
+</ul>
+</div>
+
+<div class="card ok">
+<h3>第二遍 · 脑子（我说的结论真的站得住吗）</h3>
+<ul>
+<li><b>反向假设</b>：如果 v1.22 真的把加载弄坏了，v1.21 局的加载应该显著更短、指纹应该不同 ——
+实测 12.3 s vs 13.1 s、指纹逐项相同 ⇒ <b>排除</b>「v1.22 让加载变差」。所以我没有把它当成回退目标。</li>
+<li><b>这条路径真会走到吗</b>：探针调用点在 <code>m_stage = "present entry"</code> 之后，
+而上一次看门狗里该 stage 出现 47 次 ⇒ 调用点确实每帧在走（不是挂在死分支上）。
+<span class="tag warn">但</span>「调用点走到了」与「探针采到了」是两件事 —— 这正是这次栽的地方，已写进 L42。</li>
+<li><b>A≠B</b>：<code>GameIsPaused()</code> 与 <code>fade</code> 确实是两个量（v1.22 的 fader 改动）；
+本次闸门在 <code>serial 566</code> 放开，与世界入口（<code>paused=0 ld=0</code>）吻合 ⇒ 该改动按设计工作。</li>
+<li><b>用户会不会白跑</b>：探针的 VERDICT 需要「相机在动」，所以下一局协议改成
+<b>按住 W 走 10 秒以上</b>，否则探针只会打「站桩造成的，不是冻结」。</li>
+<li><b>同时发生 ≠ 因果</b>：822 ms 的卡顿与探针的逐帧拷贝同时出现，
+但 <code>stall governor</code> 在 v1.21 也触发过 2 次 ⇒ <b>记为嫌疑，不记为成因</b>（见下）。</li>
+</ul>
+</div>
+
+<h2>六、下一局请这样跑（协议改了，第二步必须够长）</h2>
+
+<div class="card hl">
+<p class="big">① 进世界<b>站着不动 15 秒</b> → ② <b>按住 W 走 10 秒以上</b> → ③ 再退。</p>
+<p>为什么第二步要 10 秒：探针报 VERDICT 需要<b>连续 10 个样本</b>，而且要求其中 ≥5 个样本相机在动。
+走 5 秒只会得到「站桩」判定，等于白跑。</p>
+</div>
+
+<table>
+<tr><th>看什么</th><th>判据</th></tr>
+<tr><td><code>grep -a "\[PIXEL\]" &lt;log&gt;</code></td><td>每秒一行 <code>#N hash=... chg= clipDev= movedThisStreak=</code> ⇒ 仪器活着，它的读数才算证据</td></tr>
+<tr><td>同上</td><td><code>[PIXEL] ERROR: ... produced ZERO samples</code> ⇒ <b>仪器坏了，不是画面正常</b>（L42）</td></tr>
+<tr><td>同上</td><td><code>[PIXEL] VERDICT</code>（连续 10 秒同哈希且相机在动）⇒ <b>陈旧缓冲已证</b>，冻结在呈现路径</td></tr>
+<tr><td>同上</td><td><code>10 identical seconds, but the camera was still</code> ⇒ <b>预期行为，不是冻结</b>（L44）</td></tr>
+<tr><td><code>grep -a "presented per real frame"</code></td><td>出现 <code>= 4</code> ⇒ 4x 生效</td></tr>
+<tr><td><code>grep -a "\[MOTION\]"</code></td><td>修订后<b>应消失</b>；若仍在，看它是否伴随 <code>detGuard</code> 计数上升</td></tr>
+<tr><td><code>grep -a "stall governor"</code></td><td>最大帧时间是否仍 &gt; 800 ms ⇒ 那说明另有卡顿源</td></tr>
+</table>
+
+<h3>回退线（都可以一条命令回）</h3>
+<ul>
+<li>探针：<code>PixelProbe=0</code>（只改 INI，不必重编译）</li>
+<li>互操作围栏：<code>InteropFenceWait=0</code>（只改 INI）</li>
+<li>零矩阵那条与 fader 那条在<b>代码</b>里 ⇒ <code>git checkout v1.22 -- src/</code> 再 <code>./build_vs.sh</code></li>
+</ul>
+
+<h2>七、诚实边界（不说满）</h2>
+
+<div class="card warn">
+<ul>
+<li>本轮<b>修的是仪器 + 一个已证的缺陷</b>，<b>没有证明冻结已经消失</b>。它到底修没修好，只有你跑完这一局才知道。</li>
+<li><b>「v1.22 的每帧跨 API 拷贝导致了加载卡死」—— 未证。</b> 它被移除的理由是<b>它是一个缺陷</b>，
+不是因为我证明了它是成因。822 ms 与它同时出现，但 v1.21 局也有 <code>stall governor</code>。</li>
+<li><b>机制②（互操作围栏）仍是「症状吻合 + 头号嫌疑」</b>，没有证明。</li>
+<li><b>冻结的「存在性」至今没有独立见证</b>：<code>[PIXEL]</code> 从未成功采样过任何一局。
+在此之前，所有「冻结在呈现路径」的说法都只是推理。</li>
+<li>DLSS5 的<b>屏幕输出</b>仍未证实；RTX 20/30 系一行未动；<b>4x 与 DLSS5 同时</b>（你的总目标）尚未成功。</li>
+</ul>
+</div>
+
+<footer>
+DLL 1,368,576 B · md5 <code>83e84a781bf645ec3363b58c5fb671ec</code>（build == MO2 部署）<br>
+INI md5 <code>efce89119d840670e519d219749a6476</code>（源树 == 部署；本轮零新键）<br>
+代码 commit <code>2acd52f</code> = tag <code>v1.23</code>；账本第 35 章<br>
+补丁 <code>tools/patch_v123_probe_fix.py</code> + 实现体 <code>tools/v123_pixelprobe_impl.txt</code>
+</footer>
+
+</div>
+</body>
+</html>

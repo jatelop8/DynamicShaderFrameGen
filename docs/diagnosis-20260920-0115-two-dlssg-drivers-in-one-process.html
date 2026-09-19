@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DFG —— 进程里有两个 DLSS-G 驱动</title>
+<style>
+  :root{
+    --bg:#14161a; --panel:#1b1f26; --panel2:#21262f; --line:#2c333d;
+    --fg:#e6eaf0; --dim:#98a3b3; --dim2:#6f7b8c;
+    --red:#ff6b6b; --amber:#ffb454; --green:#5ddc8a; --blue:#63b3ff; --purple:#b48cff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1080px;margin:0 auto;padding:34px 26px 80px}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:.5px}
+  h2{font-size:19px;margin:38px 0 12px;padding-left:11px;border-left:4px solid var(--blue)}
+  h3{font-size:16px;margin:24px 0 8px;color:var(--amber)}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:26px}
+  .lead{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--red);
+    border-radius:8px;padding:16px 18px;margin:22px 0}
+  .lead b{color:var(--red)}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+    padding:15px 18px;margin:14px 0}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:var(--dim);font-weight:600}
+  td.n{font-variant-numeric:tabular-nums;white-space:nowrap}
+  .ok{color:var(--green);font-weight:600}
+  .bad{color:var(--red);font-weight:600}
+  .warn{color:var(--amber);font-weight:600}
+  .mut{color:var(--dim)}
+  code{background:#0e1014;border:1px solid var(--line);border-radius:4px;
+    padding:1px 6px;font:13px/1.5 Consolas,"Courier New",monospace;color:var(--blue)}
+  pre{background:#0e1014;border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+    overflow-x:auto;font:13px/1.65 Consolas,"Courier New",monospace;color:#cfe0f5}
+  ul{margin:8px 0 8px 20px;padding:0} li{margin:5px 0}
+  .kv{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}
+  .kv div{background:var(--panel2);border:1px solid var(--line);border-radius:6px;
+    padding:7px 12px;font-size:13px}
+  .kv span{color:var(--dim2);margin-right:6px}
+  .step{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+    padding:14px 18px;margin:12px 0;border-left:4px solid var(--green)}
+  .step.a{border-left-color:var(--blue)}
+  .step.b{border-left-color:var(--amber)}
+  .tag{display:inline-block;font-size:12px;padding:1px 8px;border-radius:99px;
+    border:1px solid var(--line);background:var(--panel2);color:var(--dim);margin-left:8px}
+  .foot{margin-top:48px;padding-top:18px;border-top:1px solid var(--line);
+    color:var(--dim2);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>进程里有两个 DLSS-G 驱动</h1>
+<div class="sub">DynamicShaderFrameGen 诊断 · 2026-09-20 01:15 · 复盘 12 局日志 + 4 份第三方驱动日志</div>
+
+<div class="lead">
+<b>一句话：</b>这个进程里除了我们的插件，还跑着第二个帧生成驱动 —— <code>DLSSG-Transfusion</code>（伪装成游戏根目录的 <code>dinput8.dll</code>），
+它被配置成 <b>Blackwell 模式 + 固定 4x + 关闭菜单检测</b>，钩住和<b>完全相同的 7 个 Streamline 入口点</b>，
+并在每次启动时对 DLSS-G 的 NGX 运行时做二进制 patch。
+<br><br>
+<b>而 12 局日志给出一个 12/12 的切分：凡是 DLSS-G 参与运行的局，画面冻结；唯一一次 DLSS-G 完全没参与（FSR3），画面活着。</b>
+</div>
+
+<h2>一、12 局对照：冻结与什么同现</h2>
+
+<table>
+<tr><th>局</th><th>Provider</th><th>请求 / 接受</th><th>Transfusion 是否施加 4x</th><th>画面</th></tr>
+<tr><td class="n">09-19 14:55 v1.11</td><td>DLSSG</td><td class="n">4 / 4</td><td>是</td><td class="bad">冻结</td></tr>
+<tr><td class="n">09-19 18:20 v1.12</td><td>DLSSG</td><td class="n">4 / 4</td><td>是</td><td class="bad">冻结</td></tr>
+<tr><td class="n">09-19 19:39 v1.13</td><td>DLSSG</td><td class="n">4 / 4</td><td>是</td><td class="bad">冻结</td></tr>
+<tr><td class="n">09-19 21:15 v1.14</td><td>DLSSG</td><td class="n">4 / 4</td><td>是</td><td class="bad">冻结</td></tr>
+<tr><td class="n">09-19 22:02 v1.15</td><td>DLSSG</td><td class="n">4 / 4</td><td>是</td><td class="bad">冻结</td></tr>
+<tr><td class="n">09-19 22:22 v1.16</td><td>DLSSG</td><td class="n">4 / 4</td><td>是</td><td class="bad">冻结</td></tr>
+<tr><td class="n">09-19 22:38 v1.17</td><td>DLSSG</td><td class="n">4 / 4</td><td>是</td><td class="bad">冻结</td></tr>
+<tr><td class="n">09-19 22:54 v1.18b</td><td>DLSSG</td><td class="n">4 / 4</td><td>是</td><td class="bad">硬冻结</td></tr>
+<tr><td class="n">09-19 23:22 v1.19</td><td>DLSSG</td><td class="n">4 / 4</td><td>是</td><td class="bad">硬冻结</td></tr>
+<tr><td class="n" style="color:#5ddc8a"><b>09-19 23:38 v1.19</b></td><td><b>FSR3</b></td><td class="n">2 / 0</td><td><b class="ok">从未</b></td><td class="ok"><b>活了</b></td></tr>
+<tr><td class="n">09-20 00:31 v1.21</td><td>DLSSG</td><td class="n">4 / 4</td><td>是</td><td class="bad">冻结</td></tr>
+<tr><td class="n">09-20 00:58 v1.22</td><td>DLSSG</td><td class="n">4 / 4</td><td>是</td><td class="bad">冻结</td></tr>
+</table>
+
+<div class="panel">
+<b>这张表否掉了两件事：</b>
+<ul>
+<li><span class="bad">否掉</span>「4x 请求没发出去」—— <b>11 局 DLSSG 全部 <code>ask=4 accepted=4</code></b>。请求路径一直是通的。</li>
+<li><span class="bad">否掉</span>「倍数太高」—— 22:54 那一局全程 <code>presented per real frame = 1</code>（<b>一帧都没插</b>），画面照样定死。</li>
+</ul>
+<b>剩下的切分只有一条：DLSS-G 这条支线参与 ⟺ 冻结。</b>
+</div>
+
+<h2>二、Transfusion 是谁 —— 它自己写的日志</h2>
+
+<div class="panel">
+先看它自报的身份（<code>DLSSG-Transfusion.log</code>，00:58:00.077）：
+<pre>DLSSG-Transfusion (Universal Blackwell Transfusion &amp; Multi-Game Edition)
+Build: v1.4.0-pure-warp (Sep 14 2026 18:42:03)
+Loaded as: dinput8.dll
+Proxied system DLL: C:\WINDOWS\system32\dinput8.dll
+Initial control: mode=fixed multiplier=4x ... blackwellTransfusion=1 <b>disableMenuDetection=1</b></pre>
+</div>
+
+<h3>它钩的是同一批函数</h3>
+<pre>[00:58:11.622] Direct Detours on sl.interposer.dll installed successfully
+                (slGetFeatureFunction, slInit, slSetD3DDevice, slSetVulkanInfo,
+                 slSetData, slSetConstants, slSetTag, slSetTagForFrame)</pre>
+<p class="mut">这 8 个里有 6 个正是我们插件自己钩的。<code>slSetConstants</code> 是我们发布 <code>clipToPrevClip</code> 的地方。</p>
+
+<h3>它还在改 DLSS-G 的运行时二进制</h3>
+<pre>[00:58:12.802] DLSS-G NGX runtime HUDless UIR patch applied in
+    E:\EJ\mod\mods\DynamicShaderFrameGen\Shaders\Upscaling\Streamline\nvngx_dlssg.dll
+[00:58:12.840] ... applied in C:\ProgramData\NVIDIA\NGX\models\dlssg\versions\0\files/160_876232C.bin
+[00:58:12.881] ... applied in C:\ProgramData\NVIDIA\NGX\models\dlssg\versions\0\files\160_E658703.bin
+[00:58:13.772] ... applied in C:\ProgramData\NVIDIA\NGX\models\dlssg\versions\0\files/160_E658703.bin</pre>
+<div class="panel">
+改动覆盖了 <b>① 我们 mod 目录里的 <code>nvngx_dlssg.dll</code></b>，以及 <b>② 全局 NVIDIA 模型缓存</b>（<code>ProgramData</code>，会影响其它游戏）。
+<code>blackwellTransfusion=1</code> 开在一个 <b>Ada（RTX 40）</b> 卡上 —— 而它自己打印的内核是 <code>Kernel: Ada</code>。
+</div>
+
+<h3>它的 4x 确实在生成</h3>
+<pre>[00:58:35.782] Applied fixed multiplier: 4x, result=0 (eOk)
+[00:58:48.641] DLSS-G actual presentation count: 4x (maximum generated frames=5, status=0)
+[00:58:51.551] [PERF] 4x | Kernel: Ada | FPS: 40.2 (24.85ms)</pre>
+<p class="mut">INI 笔记里那次被记为「4x 真的能用」的 09-18 07:29 局是 <code>4x | Kernel: Ada | FPS: 39.6 (25.28ms)</code> —— <b>两次数字几乎一致</b>。所以这一侧没有坏。</p>
+
+<h3>但它并不是全程都在生成</h3>
+<pre>DLSSG-Transfusion_perf.csv —— 650 帧
+  Multiplier = 0 : 548 帧
+  Multiplier = 4 : 102 帧        （frame 549 处从 0 跳到 4）</pre>
+<p class="mut">也就是说 <b>闸门按住的那 13 秒加载窗口里，Transfusion 的倍数是 0（没在生成）</b>，只有 00:58:49 之后的约 2.9 秒才真正出 4x。这段时间里我们的插件也跳过不提交 —— 两边同时哑火。</p>
+
+<h2>三、闸门开启的同一毫秒</h2>
+
+<p>把两份日志（我们的 + Transfusion 的）按时间戳对齐，<b>两件事落在同一个毫秒</b>：</p>
+
+<table>
+<tr><th>时刻</th><th>来自</th><th>事件</th></tr>
+<tr><td class="n">00:58:35.782</td><td>我们</td><td><code>[XRAY] MENU EDGE open=1 serial=2</code> —— 闸门在第 <b>2</b> 帧就按住了</td></tr>
+<tr><td class="n">00:58:35.782</td><td>Transfusion</td><td><code>[OPTIONS] Game DLSS-G options: mode=eOn frames=3 … flags=0x00000010</code></td></tr>
+<tr><td class="n">00:58:35.782</td><td>Transfusion</td><td><code>Applied fixed multiplier: 4x</code> + <code>stripped eEnableFullscreenMenuDetection (0x10 -&gt; 0x00)</code></td></tr>
+<tr><td class="n">00:58:35.783</td><td>我们</td><td><code>[MFG] probe RUNS while the menu guard skips DLSS-G … step advertised=4x accepted=4x</code></td></tr>
+<tr><td class="n">00:58:48.150</td><td>我们</td><td><code>MENU EDGE open=0 serial=566</code> · <code>blocked=564 unblocked=1</code> —— 闸门在 13 秒后才放开</td></tr>
+</table>
+
+<div class="panel">
+<b>从 00:58:35.782 到 00:58:48.150 这 13 秒里：</b>我们的插件（<code>MenuDisableFrameGen=1</code>）对 <code>SetDLSSGOptions</code> / <code>EvaluateDLSSG</code> <b>一次都不调</b>；
+Transfusion 则把 <code>eEnableFullscreenMenuDetection</code> 这个 flag 从选项里<b>剥掉</b>，让运行时不知道菜单开着。
+两边都不让运行时知道"现在是菜单/加载画面"。
+</div>
+
+<p class="mut">这一条不是新问题：项目自己的 INI 笔记（v1.05 段）就记着一次同源事故 ——
+「Transfusion set 4x, this plugin set 2x, the pacer never converged, and the frame ended inside Present()」，
+那次的读数是 <b>一帧 19480.5 ms</b>。区别只在于当时两边写的值不同；现在两边"同时不说话"。</p>
+
+<h2>四、下一局：把第二个驱动隔离掉（单变量）</h2>
+
+<div class="step">
+<b>步骤 1 · 改名即可，不动任何代码 </b><span class="tag">可秒回退</span>
+<pre>D:\ENB-EJ\Skyrim Special Edition\DINPUT8.dll
+        ↓  改成
+D:\ENB-EJ\Skyrim Special Edition\DINPUT8.dll.transfusion-off</pre>
+<div class="panel" style="margin:12px 0 0">
+<b>名字必须用 <code>.transfusion-off</code> —— 不能用 <code>.disabled</code>：</b>
+游戏根目录里 <b>已经</b>有 <code>dinput8.dll.disabled</code>（5,945,344 B，另一个 DLL）和
+<code>dinput8.dll.rtxmfg-off</code>（同尺寸）。用 <code>.disabled</code> 会撞名，把一个不相干的 5.9 MB 文件覆盖掉。
+<br><br>
+当前生效的那个是 <b>540,672 B / Sep 18 19:44</b> —— 那才是 Transfusion。参照你之前的 <code>.rtxmfg-off</code> 命名法即可。
+</div>
+改完直接进游戏，协议不变：<b>① 进世界站着不动 15 秒 → ② 按住 W 走 10 秒以上 → ③ 再退。</b>
+</div>
+
+<div class="panel">
+<b>这一局会发生什么（先说清，免得白跑）：</b>
+<ul>
+<li>没有内核解锁器 ⇒ 我们插件读到 <code>kernelUnlocker=false</code> ⇒ 请求被夹到硬件上报的 <b>2x</b>。<b>所以这一局不是去拿 4x</b>，是去拿一个干净的基线。</li>
+<li>Ada 原生支持 2x，DLSS-G 在 2x 下本该正常工作 —— <b>而这一配置（我们的插件 + DLSS-G 2x，无第二个驱动）至今没跑过一局</b>。</li>
+</ul>
+</div>
+
+<table>
+<tr><th>看到</th><th>结论</th></tr>
+<tr><td><code>[PIXEL]</code> 每秒一行且 <code>chg=1</code>，画面能走</td><td class="ok">第二个驱动被证实是并因 ⇒ 下一步回去修两者的协同，而不是继续改围栏</td></tr>
+<tr><td>画面仍然冻结，且 <code>presented per real frame</code> 正常</td><td class="warn">第二个驱动被洗清 ⇒ 冻结在我们自己的 DLSS-G 呈现路径里，围栏是下一个目标</td></tr>
+<tr><td><code>[PIXEL] ERROR: … produced ZERO samples</code></td><td class="bad">仪器又坏了 ⇒ 先修仪器，别把"没测到"读成"画面正常"</td></tr>
+<tr><td><code>hrsD == 0</code></td><td class="bad">游戏时钟停了 ⇒ 冻结在游戏里，插件不背这口锅</td></tr>
+</table>
+
+<div class="step b">
+<b>备选（若你想留住 4x 再测）</b> · 只改 <code>DLSSG-Transfusion.json</code> 一个键：
+<pre>"disableMenuDetection": 1   -&gt;   0</pre>
+让 Transfusion 也做菜单检测、在菜单里退让，两边就不再"同时哑火且各自沉默"。
+<b>但它不能单独用来隔离变量</b>：这一局 4x 仍然在，若画面依旧冻结，你分不清是 4x 本身还是协同。
+</div>
+
+<h2>五、L0 两遍自检（逐条给结果）</h2>
+
+<h3>第一遍 · 手脚</h3>
+<table>
+<tr><th>检查</th><th>结果</th></tr>
+<tr><td>构建产物 == MO2 部署（md5）</td><td><code>83e84a781bf645ec3363b58c5fb671ec</code> 两处一致（1,368,576 B）</td></tr>
+<tr><td>INI 源树 == 部署（md5）</td><td><code>efce89119d840670e519d219749a6476</code> 两处一致</td></tr>
+<tr><td>部署 INI 的 8 个键</td><td><code>Provider=1</code> · <code>DLSSGFramesToGenerate=3</code> · <code>MFGMaxFramesOverride=3</code> · <code>MenuDisableFrameGen=1</code> · <code>MenuGuardFader=1</code> · <code>InteropFenceWait=1</code> · <code>NRAllowWithFrameGen=0</code> · <code>PixelProbe=1</code></td></tr>
+<tr><td>git</td><td>HEAD <code>776ff82</code> · tag <code>v1.23</code></td></tr>
+<tr><td>本轮有没有新跑一局</td><td class="warn">没有。最后一份日志仍是 00:58（v1.22）—— v1.23 尚未运行过</td></tr>
+</table>
+
+<h3>第二遍 · 脑子</h3>
+<table>
+<tr><th>反向假设</th><th>日志能不能排除</th></tr>
+<tr><td>若 4x 从来没被请求 —— 那 <code>ask=4 accepted=4</code> 就是假的</td><td class="ok">排除：11 局全部 4/4，且 22:54 在 <code>presented=1</code>（零插帧）下同样冻结</td></tr>
+<tr><td>若冻结只是"相机没动" —— 那 <code>hrsD</code> 应该也是 0</td><td class="ok">排除：00:58 进世界后 <code>paused=0 ld=0</code>、<code>hrsD≈0.0055</code>（timescale 20），世界在跑</td></tr>
+<tr><td>若 Transfusion 就是唯一的成因 —— 那 23:38 它也该施加 4x</td><td class="warn"><b>不能下这个结论。</b>23:38 是 FSR3 局，我们发现它<b>从未</b>施加 4x（<code>Applied fixed multiplier</code> 计数 = 0）—— 这既是支持，也正是为什么必须做隔离实验</td></tr>
+<tr><td>若探针在采样 —— 我们就该有像素读数</td><td class="bad">没有。<code>[PIXEL]</code> 至今<b>从未产出过一个样本</b>；"画面到底是不是陈旧"目前只有间接证据</td></tr>
+</table>
+
+<div class="panel">
+<b>未证 / 不说满：</b>
+<ul>
+<li>Transfusion 与冻结之间是 <b>12/12 的相关性 + 一次时间戳级同现</b>，<b>不是已证的因果</b> —— 隔离实验才是判据。</li>
+<li>它 patch NGX 运行时与全局模型缓存这件事，<b>是否</b>参与了冻结，本轮<b>未证</b>。</li>
+<li><code>blackwellTransfusion=1</code> 用在 Ada 上<b>是否不当</b>，本轮<b>未证</b>。</li>
+<li>DLSS5 的屏幕输出仍未证；RTX 20/30 一行未动。</li>
+</ul>
+</div>
+
+<div class="foot">
+代码 <code>776ff82</code>（tag <code>v1.23</code>）· DLL <code>83e84a781bf645ec3363b58c5fb671ec</code> · INI <code>efce89119d840670e519d219749a6476</code><br>
+证据来源：<code>docs/runlogs/*.log</code>（12 局）· <code>DLSSG-Transfusion.log</code> / <code>.crash.log</code> / <code>_perf.csv</code> · <code>DLSSG-Transfusion.json</code> · 本卡所有数字均由脚本从上述文件重新读出，未取自已发生的对话。
+</div>
+
+</div>
+</body>
+</html>
