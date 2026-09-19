@@ -119,6 +119,24 @@ Initial control: mode=fixed multiplier=4x ... blackwellTransfusion=1 <b>disableM
 <code>blackwellTransfusion=1</code> 开在一个 <b>Ada（RTX 40）</b> 卡上 —— 而它自己打印的内核是 <code>Kernel: Ada</code>。
 </div>
 
+<h3>但「改二进制」这件事，与冻结<b>无关</b>（A≠B，可排除）</h3>
+
+<table>
+<tr><th>局</th><th><code>HUDless UIR patch</code></th><th><code>[OPTIONS]</code> 拦截</th><th><code>Applied fixed</code></th><th><code>[PERF]</code></th><th>画面</th></tr>
+<tr><td class="n">09-19 23:38（活）</td><td class="n"><b>14</b></td><td class="n">0</td><td class="n">0</td><td class="n">0</td><td class="ok">活了</td></tr>
+<tr><td class="n">09-20 00:31（冻）</td><td class="n">10</td><td class="n">1</td><td class="n">1</td><td class="n">4</td><td class="bad">冻结</td></tr>
+<tr><td class="n">09-20 00:58（冻）</td><td class="n">8</td><td class="n">1</td><td class="n">1</td><td class="n">4</td><td class="bad">冻结</td></tr>
+</table>
+
+<div class="panel">
+<b>读法：</b>NGX 二进制 patch 在<b>活着的那一局也发生了 14 次</b> ⇒ <b>它不是并因，要从嫌疑名单上划掉。</b>
+真正与冻结同现的，是 <b>Transfusion 真的拦截并驱动了 DLSS-G</b>（活局全 0，冻局 1 / 1 / 4）。
+<br><br>
+<b>★ 但这里有一个分不开的混淆必须先说：</b>归档里「Transfusion 驱动了 DLSS-G」与「DLSS-G 这条支线被用到」<b>完全共线</b>
+（活局用的是 FSR3，DLSS-G 本来就没启用）。<b>仅凭归档无法把这两者分开 —— 这正是隔离实验的全部理由。</b>
+</div>
+
+
 <h3>它的 4x 确实在生成</h3>
 <pre>[00:58:35.782] Applied fixed multiplier: 4x, result=0 (eOk)
 [00:58:48.641] DLSS-G actual presentation count: 4x (maximum generated frames=5, status=0)
