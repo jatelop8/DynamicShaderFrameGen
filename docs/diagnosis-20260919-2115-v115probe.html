@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DFG v1.15probe — 21:15 那局诊断</title>
+<style>
+:root{
+  --bg:#faf9f7; --card:#ffffff; --line:#e3e0da; --tx:#26251f; --tx2:#6b6862; --tx3:#98948c;
+  --red:#a32d2d; --redbg:#fcebeb; --grn:#3b6d11; --grnbg:#eaf3de; --amb:#854f0b; --ambbg:#faeeda;
+  --blu:#185fa5; --blubg:#e6f1fb;
+}
+@media (prefers-color-scheme: dark){
+:root{
+  --bg:#1c1b19; --card:#252420; --line:#3a3833; --tx:#f0ede6; --tx2:#b4b0a8; --tx3:#807c74;
+  --red:#f09595; --redbg:#3a1c1c; --grn:#97c459; --grnbg:#22301a; --amb:#ef9f27; --ambbg:#3a2c14;
+  --blu:#85b7eb; --blubg:#16283a;
+}
+}
+*{box-sizing:border-box}
+body{margin:0;padding:28px 20px 60px;background:var(--bg);color:var(--tx);
+  font:15px/1.7 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:900px;margin:0 auto}
+h1{font-size:24px;font-weight:500;margin:0 0 6px}
+.sub{color:var(--tx2);font-size:13px;margin:0 0 26px}
+h2{font-size:17px;font-weight:500;margin:34px 0 12px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+h3{font-size:14px;font-weight:500;margin:20px 0 8px;color:var(--tx2)}
+p{margin:10px 0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:14px 0}
+table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13.5px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--tx2);font-weight:500;font-size:12.5px}
+code{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;
+  background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px 14px;
+  overflow-x:auto;font-family:ui-monospace,Consolas,monospace;font-size:12.5px;line-height:1.6;margin:12px 0}
+.tag{display:inline-block;font-size:12px;padding:2px 9px;border-radius:20px;margin-right:6px;
+  border:1px solid var(--line)}
+.g{background:var(--grnbg);color:var(--grn);border-color:var(--grn)}
+.r{background:var(--redbg);color:var(--red);border-color:var(--red)}
+.a{background:var(--ambbg);color:var(--amb);border-color:var(--amb)}
+.b{background:var(--blubg);color:var(--blu);border-color:var(--blu)}
+ul{margin:10px 0;padding-left:22px}
+li{margin:6px 0}
+.k{color:var(--tx2);font-size:13px}
+.big{font-size:15.5px;font-weight:500;margin:0}
+.hl{border-left:3px solid var(--amb);padding-left:14px;margin:14px 0;background:var(--ambbg);
+  border-radius:0 8px 8px 0;padding:12px 16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>21:15 那局：探针先把自己测出了缺陷</h1>
+<p class="sub">v1.14probe 上机 · 48 秒一局 · 世界段仅 3.4 秒 · 游戏正常退出未崩溃</p>
+
+<div class="hl">
+<p class="big">这局没能给出答案，原因在探针，不在游戏。</p>
+<p class="k">v1.14 那个 <code>cen</code> 计数器数错了对象，所以 <code>cen=5077/8</code> 不能当作
+「有 5077 个在动的位置」。这个问题本身已经用 v1.15 修掉了。</p>
+</div>
+
+<h2>一、探针的缺陷（铁证在日志里）</h2>
+
+<p>v1.14 用一张 8 格的表数「见过的不同位置」。表填满之后<strong>既不淘汰、也不再写入</strong>，
+但计数照样加 —— 于是它实际数的是「与最初那 8 个位置相差超过 1 单位」的到达次数。</p>
+
+<pre>[CAM] WRITER #9  NEW pos=(-49.995,892.661,95.364) prevPos=(-49.996,893.077,95.400) arr#3645
+[CAM] WRITER #10 NEW pos=(-49.995,892.661,95.364) prevPos=(-49.996,893.077,95.400) arr#3648</pre>
+
+<p>两条记录的 <code>pos</code> 与 <code>prevPos</code> <b>逐位相同</b>，却都判为 NEW ——
+说明表里装的是更早的 8 个值。<b>一个完全停住的写者，也能让这个计数器无限增长。</b></p>
+
+<div class="card">
+<p class="big">L31：数「见过几个不同的 X」之前，先定义「X 的表满了怎么办」。</p>
+<p class="k">不设上限的「新值计数」，把<b>从未见过</b>和<b>在变化</b>混为一谈。
+这与 L28（用一个会被故障自己重置的计数器做门）是同一族错误的两端。</p>
+</div>
+
+<h2>二、世界段的实测</h2>
+
+<table>
+<tr><th>量</th><th>世界段实测</th><th>读法</th></tr>
+<tr><td>发布的位置</td><td><code>pos=(0.00,0.00,1.00)</code></td><td>不是相机位置</td></tr>
+<tr><td><code>path</code> / <code>move</code></td><td><code>82.39</code> 冻住 / <code>0.0000</code></td><td>发布流静止</td></tr>
+<tr><td><code>stalePub</code></td><td><code>0 → 80</code>，每秒 +26</td><td>连续 80 次发布的矩阵逐字节相同</td></tr>
+<tr><td>锁定的族</td><td><code>proj00=0.888889</code></td><td>进世界后换上的</td></tr>
+<tr><td>被拒的族</td><td><code>proj00=0.8391</code><br><code>pos=(-243.0,-415.3,118.6)</code></td>
+<td>菜单相机，<b>位置恒定</b></td></tr>
+<tr><td><code>famRej</code> / <code>hold</code></td><td>各每秒 +390</td><td>几乎每个到达都被族门拒</td></tr>
+<tr><td><code>arrivalsPerSec</code></td><td><code>620</code></td><td>与 19:39 局一致</td></tr>
+</table>
+
+<p><span class="g">一条正面结论</span> <code>cap=2296/0</code> —— v1.13 的内容门在世界段
+<b>一次都没开火</b>，逃生门也没触发。<b>问题不在内容门。</b></p>
+
+<h2>三、接管门死锁（确证）</h2>
+
+<p>v1.11 的接管门（<code>FrameGen.cpp:1143</code>）要两个条件同时成立：</p>
+
+<pre>if (snapPubStale &gt;= kCamPubStaleTol(200) &amp;&amp; snapForeignMove &gt;= kCamForeignMoveTol(200))</pre>
+
+<table>
+<tr><th>条件</th><th>阈值</th><th>世界段实测</th><th>结论</th></tr>
+<tr><td><code>snapPubStale</code></td><td>200</td><td><code>80</code>，每秒 +26</td>
+<td class="k">需要 <b>7.7 秒</b>，世界段只 3.4 秒</td></tr>
+<tr><td><code>snapForeignMove</code></td><td>200</td><td><b>恒 0</b></td>
+<td class="k">被拒族位置恒定 ⇒ 步长 0 ⇒ 永不累计</td></tr>
+</table>
+
+<p><b>第二个条件是结构性的</b>：它只在「被拒的族自己在走」时才增长。而世界里被拒的是
+<b>停着的菜单相机</b>，所以它永远不会满足。</p>
+
+<div class="hl">
+<p>这个死锁是<b>安全</b>的 —— 它不会让菜单相机夺流，所以一直没暴露。</p>
+</div>
+
+<h3>顺带记下的一条</h3>
+<p>锁在进世界后 <b>124 毫秒内被释放两次</b>：</p>
+<pre>[21:15:09.557] lock RELEASED on the reset edge (was proj00=0.149184 famRej=1095)
+[21:15:09.681] lock RELEASED on the reset edge (was proj00=0.888889 famRej=1122)</pre>
+<p class="k">每次都由「释放后第一个到达者」接管，两次都撞上 <code>0.888889</code> 族。
+这个选择规则没有准入检查。本局不改，先记下。</p>
+
+<h3>顺带排除的一条</h3>
+<pre>[21:15:09.425] [CAM] #7148 non-affine w=0 ACCEPTED (v0.89)
+  row3=(-0.00391655,0.999991,0.0015,0) det3=-2.52504 pos=(-243.0,-415.3,118.6)</pre>
+<p class="k">回代码确认（<code>FrameGen.cpp:842-857</code>）：它打印的是
+<code>CameraViewProjUnjittered</code>（不是 <code>CameraProj</code>），块尾是
+<code>// NO return false</code> —— <b>只是计数器与日志，不改变任何控制流</b>。
+v1.13 闸门查的是另一组字段。排除。</p>
+
+<h2>四、v1.15 改了什么（纯诊断，零行为改动）</h2>
+
+<ul>
+<li><b>删掉旧 census</b>，换成<b>按族测位移</b>：16 个族槽，每槽记
+<code>(proj00, lastPos, moved, stepSum)</code>，比较<b>相邻两次到达</b>的步长，
+超过 <code>0.05</code> 才计一次「在动」。</li>
+<li>每秒一条 <code>[CAM] FAM[n] proj00=… moved=… stepSum=…</code>。</li>
+<li><code>family rejected</code> 行：<code>pos</code> 精度从 1 位小数改 4 位，并加上
+<code>prevPos</code> 与 <code>row3</code> —— <b>1 位小数下「停着」和「在滑」看不出区别</b>，
+这正是上面那张表读不准的原因。</li>
+<li><code>[CAM] MOTION fam=… step=…</code> 打印前 60 次真实位移。</li>
+<li>族表满时<b>打印告警</b>而不是静默丢弃（被丢的那个族很可能就是活相机）。</li>
+</ul>
+
+<h2>五、下一局只看这一处</h2>
+
+<table>
+<tr><th><code>[CAM] FAM</code> 读数</th><th>结论</th><th>修法</th></tr>
+<tr><td>有族的 <code>moved</code> <b>持续增长</b></td><td class="g">活相机正在到达这个 hook</td>
+<td>修<b>接受规则</b>（族锁 / 接管门），不改源</td></tr>
+<tr><td>所有族 <code>moved=0</code>，或 <code>[CAM] MOTION</code> 一行都没有</td>
+<td class="r">到达这个 hook 的没有活相机</td>
+<td>改<b>源</b>：<code>RE::PlayerCamera</code></td></tr>
+<tr><td>出现 <code>[CAM] FAM table full</code></td><td class="a">有族没被统计</td>
+<td>提高 <code>kSnapFamMax</code></td></tr>
+</table>
+
+<div class="hl">
+<p class="big">前置条件：进世界后请停留 15 秒以上，并且真的走动。</p>
+<p class="k">19:39 与 21:15 两局的世界段分别只有 11.5 秒和 3.4 秒。
+<code>stalePub</code> 需要 7.7 秒才够阈值 —— 太短的话，几种可能的情形在日志里仍然是同一种形状。</p>
+</div>
+
+<h2>六、L0 两遍自检</h2>
+
+<p><b>第一遍 · 手脚</b></p>
+<table>
+<tr><th>检查项</th><th>结果</th></tr>
+<tr><td>锚点 <code>count==1</code></td><td>v1.15 五处、v1.15b 三处，全部唯一</td></tr>
+<tr><td>幂等守卫</td><td>两个脚本重跑均 <code>REFUSED</code>（exit 1）</td></tr>
+<tr><td>行尾</td><td><code>FrameGen.cpp</code> 1779 CRLF / 裸 LF 0；<code>FrameGen.h</code> 454 / 0</td></tr>
+<tr><td>编译</td><td><code>BUILD SUCCESS</code>，无 <code>error C*</code> / <code>LNK</code></td></tr>
+<tr><td>build == 部署</td><td>双份 md5 <code>1178525c…</code>，1,349,120 B</td></tr>
+<tr><td>DLL 内字符串</td><td>四条新串各 1 次；两条旧串（<code>WRITER…NEW pos=</code>、<code>cen={}/{}</code>）各 0 次</td></tr>
+<tr><td>版本</td><td>commit <code>8e28f05</code>，tag <code>v1.15probe</code></td></tr>
+</table>
+
+<p><b>第二遍 · 脑子</b></p>
+<ul>
+<li><b>反向假设</b>：这局世界段那 3.4 秒会不会只是加载画面？<b>无法排除</b> —— 所以本局不下结论，
+只把判据做得更硬。</li>
+<li><b>A ≠ B</b>：<code>cen</code> 增长 ≠ 有在动的写者。已识别并改掉。</li>
+<li><b>这条路径真会走到吗</b>：新探针只在步长 &gt; 0.05 时打印 —— 若世界段没有活相机，
+它<b>一行都不会有</b>，而这正是我要的答案（沉默也是一条读数）。</li>
+<li><b>空集不是健康</b>：<code>[CAM] FAM</code> 至少会打出第 0 号族（第一个到达就会占槽），
+一行都没有本身是异常信号。</li>
+<li><b>用户会不会白跑</b>：会 —— 如果又只跑 3 秒。所以「停留 15 秒并走动」写在最显眼处。</li>
+</ul>
+
+<p class="k">本轮我自己踩的两个坑：① 补丁脚本里 <code>kCamCaptureFallbackSkips</code> 锚点用了两个 tab，
+实际是一个（干跑 <code>REFUSED</code>，未落盘）；② <code>notes</code> 脚本里把 <code>b"\n"</code>
+误写成 <code>b"\\n"</code>（写文件前发现）。两次都由断言挡住。</p>
+
+<h2>七、回退</h2>
+<table>
+<tr><th>想要什么</th><th>怎么做</th></tr>
+<tr><td>回到 v1.14probe</td><td><code>src/backup-v1.15-20260919-211959/built_DLL.bin</code>
+（md5 <code>39a41225…</code>）复制到 MO2 的 <code>SKSE/Plugins/</code></td></tr>
+<tr><td>回到 v1.13</td><td><code>src/backup-v1.13-pre-v1.14probe-20260919-1950/</code>
+（源码 82,433 B / 1667 CRLF / 裸 LF 0）拷回 <code>src/</code> 后 <code>./build_vs.sh</code></td></tr>
+<tr><td>只退回节流</td><td>INI <code>ReflexFpsLimit=40</code></td></tr>
+<tr><td>退回纯 2x 可玩</td><td>INI <code>Provider=0</code> + <code>MFGMaxFramesOverride=0</code></td></tr>
+</table>
+
+<p class="k" style="margin-top:26px">
+账本 §27.12 · 日誌 §6.19 · 本局日志存 <code>docs/runlogs/2026-09-19-2115-*</code>
+</p>
+
+</div>
+</body>
+</html>
