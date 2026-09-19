@@ -4318,3 +4318,51 @@ INI = `Provider=1` + `DLSSGFramesToGenerate=3` + `MFGMaxFramesOverride=3`
 - **L38：观测到「计数在涨」与「内容在变」是两件事，必须各有一个见证。**
   `lastPr=832 vs frames=643` 证明 present 在发生，`clipDev/det3` 全部由相机派生
   证明不了屏幕内容。**下一件仪器必须是直接读屏幕内容的东西（像素探针），不是又一个相机派生量。**
+
+## 33.8 L39：验证工具本身会造假阴性 —— `strings` 在这个环境里根本不存在
+
+本轮核「新 INI 键名有没有真的编进 DLL」，执行的是：
+
+```
+for s in InteropFenceWait MenuGuardFader NRAllowWithFrameGen; do
+    printf "%-28s " "$s"; strings -a build/NINJA/DynamicShaderFrameGen.dll | grep -a -c "$s"
+done
+```
+
+三行输出全是 `0`。**如果就此收工，结论会是「补丁没编进去」—— 完全错误，而且会直接导致我推翻一个已经验证过的改动。**
+
+真实原因：`which strings` → `no strings in (...)`。这个 Git Bash 里**没有安装 binutils，没有 `strings`**。
+`strings` 一失败，管道左侧就没有任何输出，`grep -c` 于是老老实实数到 0，
+**退出码 1 又被 `for` 循环吞掉**。⇒ **「工具没能运行」被伪装成了「结果为空」。**
+
+改成 `grep -a -c "$s" <dll>` 直接搜二进制之后：
+
+| 键名 | DLL 内出现次数 |
+|---|---|
+| `InteropFenceWait` | 2 |
+| `MenuGuardFader` | 2 |
+| `NRAllowWithFrameGen` | 3 |
+
+（2 次 = 窄字符 + 宽字符各一份字面量，符合静态库字符串常量的预期。）
+
+**L39：任何「计数为 0」的断言，先证明产生这个计数的那个工具跑起来了。**
+判据三连：① `which <tool>` 先确认存在；② 必须有一个**必然存在的串做阳性对照**
+（例如 `grep -a -c DynamicShaderFrameGen <dll>` 必须 >0）；③ 看退出码，
+别把 `command not found` 读成「没找到目标」。
+
+**「阴性结果」与「仪器坏了」在输出上长得一模一样，这是所有验证里最贵的一类假阴性 ——
+它不产生噪声，它直接产生一个错误结论，且这个结论看起来是「有证据的」。**
+
+## 33.9 本轮收尾状态（供下一局对照）
+
+| 项 | 值 |
+|---|---|
+| DLL | 1,358,336 B，md5 `60378778d6171d3e2651ff3758b47fcb`（build == MO2 部署一致）|
+| INI | md5 `4dabf3bdee6633400ff4cccff70871e4`（源树模板 == 部署一致），19,761 B，CRLF 343 / bareLF 0 |
+| INI 关键 6 键 | `Provider=1`、`DLSSGFramesToGenerate=3`、`MFGMaxFramesOverride=3`、`MenuGuardFader=1`、`NRAllowWithFrameGen=0`、`InteropFenceWait=1` |
+| git | HEAD `c79c644`（交付卡 + 本节），上一提交 `741fbe8`，tag `v1.21`，`git status --short` 空 |
+| 交付卡 | `docs/diagnosis-20260919-2338-v121-the-4x-request-was-never-sent.html`，16,050 B |
+| 本轮新增方法论 | L37（开关只在一条分支被查询 ⇒ 是装饰）、L38（计数在涨 ≠ 内容在变）、L39（阴性断言先证明仪器跑起来）|
+
+**未做 / 未证（别假装做了）**：机制②（互操作围栏）只是**症状吻合 + 头号嫌疑**，不是已证结论；
+DLSS5 的**屏幕输出**仍未证实；RTX 20/30 系一行未动。
