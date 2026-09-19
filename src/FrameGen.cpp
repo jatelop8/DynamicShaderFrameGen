@@ -1510,21 +1510,109 @@ namespace FrameGen
 					// log, which is exactly why the 22:22 run could not be settled: world
 					// segment 2.2 s, eye byte-identical at 2 decimals, family span 0.07
 					// units (idle sway only).
+					// ---- v1.18: THE INPUT WITNESS + THE FOREGROUND WITNESS ----
+					//
+					// Three runs (22:02, 22:22, 22:38) could not be settled, and the 22:38
+					// run is the clearest of them: the lock provably sat on the live camera
+					// (match=397/read=423, best=0.00, proj00=0.8391) and the family census
+					// agreed (FAM[2] moved=0 stepSum=0.08 span=(0,0,0)) -- and the picture
+					// still did not move, because the camera did not move.
+					//
+					// Every field that existed until now is DOWNSTREAM of the camera, so two
+					// opposite worlds print the same line:
+					//
+					//   the player is standing still   -> identity, and identity is CORRECT
+					//   the world is frozen by the game -> identity, and identity IS the freeze
+					//
+					// The four witnesses below are upstream of the game, so they separate the
+					// two readings that the camera cannot. That is L33: a criterion measured
+					// only downstream of the fault cannot name the fault.
+					static std::uint32_t s_inKeys = 0u;
+					static std::uint32_t s_inMoves = 0u;
+					static float s_inDist = 0.0f;
+					static float s_inCurPrev[2] = { 0.0f, 0.0f };
+					static bool s_inCurHave = false;
+					static int s_inFg = -1;
+					static float s_plrPos[3] = { 0.0f, 0.0f, 0.0f };
+					static float s_plrPrev[3] = { 0.0f, 0.0f, 0.0f };
+					static bool s_plrHave = false;
+					static float s_plrStep = 0.0f;
+					
+					{
+						std::uint32_t keys = 0u;
+						if (::GetAsyncKeyState('W') & 0x8000) keys |= 1u;
+						if (::GetAsyncKeyState('A') & 0x8000) keys |= 2u;
+						if (::GetAsyncKeyState('S') & 0x8000) keys |= 4u;
+						if (::GetAsyncKeyState('D') & 0x8000) keys |= 8u;
+						if (::GetAsyncKeyState(VK_SPACE) & 0x8000) keys |= 16u;
+						if (::GetAsyncKeyState(VK_SHIFT) & 0x8000) keys |= 32u;
+						if (::GetAsyncKeyState(VK_LBUTTON) & 0x8000) keys |= 64u;
+						if (::GetAsyncKeyState(VK_RBUTTON) & 0x8000) keys |= 128u;
+						s_inKeys |= keys;
+						
+						POINT pt{};
+						if (::GetCursorPos(&pt)) {
+							if (s_inCurHave) {
+								const float cdx = static_cast<float>(pt.x) - s_inCurPrev[0];
+								const float cdy = static_cast<float>(pt.y) - s_inCurPrev[1];
+								const float cstep = std::sqrt(cdx * cdx + cdy * cdy);
+								s_inDist += cstep;
+								if (cstep > 0.0f)
+									++s_inMoves;
+							}
+							s_inCurPrev[0] = static_cast<float>(pt.x);
+							s_inCurPrev[1] = static_cast<float>(pt.y);
+							s_inCurHave = true;
+						}
+						
+						const HWND fwnd = ::GetForegroundWindow();
+						DWORD fpid = 0;
+						if (fwnd)
+							::GetWindowThreadProcessId(fwnd, &fpid);
+						s_inFg = (fwnd && fpid == ::GetCurrentProcessId()) ? 1 : 0;
+					}
+					{
+						const auto* plr = RE::PlayerCharacter::GetSingleton();
+						if (plr) {
+							const auto& pp = plr->GetPosition();
+							s_plrPos[0] = pp.x;
+							s_plrPos[1] = pp.y;
+							s_plrPos[2] = pp.z;
+							if (s_plrHave) {
+								const float qx = s_plrPos[0] - s_plrPrev[0];
+								const float qy = s_plrPos[1] - s_plrPrev[1];
+								const float qz = s_plrPos[2] - s_plrPrev[2];
+								s_plrStep = std::sqrt(qx * qx + qy * qy + qz * qz);
+							}
+							s_plrHave = true;
+							s_plrPrev[0] = s_plrPos[0];
+							s_plrPrev[1] = s_plrPos[1];
+							s_plrPrev[2] = s_plrPos[2];
+						}
+					}
+					
 					if (snapPcEyeHave) {
 						const float pdx = snapPcLast[0] - snapPcPrevEye[0];
 						const float pdy = snapPcLast[1] - snapPcPrevEye[1];
 						const float pdz = snapPcLast[2] - snapPcPrevEye[2];
 						snapPcEyeStep = std::sqrt(pdx * pdx + pdy * pdy + pdz * pdz);
 					}
-					SKSE::log::info("[CAM] PC v1.17: read={} match={} adopt={}/{} rej={} ref={} "
-						"best={:.2f} at proj00={:.6g} eye=({:.2f},{:.2f},{:.2f}) eyeD={:.2f} {}",
+					SKSE::log::info("[CAM] PC v1.18: read={} match={} adopt={}/{} rej={} ref={} "
+						"best={:.2f} at proj00={:.6g} eye=({:.2f},{:.2f},{:.2f}) eyeD={:.2f} "
+						"in(keys=0x{:x} dc={:.0f}/{} fg={}) plr=({:.1f},{:.1f},{:.1f}) plrD={:.2f} {} {}",
 						snapPcRead, snapPcMatch, snapPcAdoptSec, snapPcAdopt, snapPcReject,
 						snapPcRefSeen,
 						snapPcSawAny ? snapPcBestDist : -1.0f, snapPcBestProj,
 						snapPcLast[0], snapPcLast[1], snapPcLast[2], snapPcEyeStep,
-						snapPcEyeStep <= kCamMoveEps
-							? "PC_STILL - the live camera did not move: an unchanged picture is CORRECT here"
-							: "PC_MOVING - the live camera is walking");
+						s_inKeys, s_inDist, s_inMoves, s_inFg,
+						s_plrPos[0], s_plrPos[1], s_plrPos[2], s_plrStep,
+						snapPcEyeStep <= kCamMoveEps ? "PC_STILL" : "PC_MOVING",
+						(s_inKeys != 0u || s_inMoves != 0u)
+							? "INPUT_SEEN - input reached the window, so eyeD 0 here means a frozen world, not an idle player"
+							: "INPUT_NONE - no key and no mouse motion this second, so an idle player and a frozen world still read the same: re-run and MOVE");
+					s_inKeys = 0u;
+					s_inDist = 0.0f;
+					s_inMoves = 0u;
 					snapPcRead = 0;
 					snapPcMatch = 0;
 					snapPcAdoptSec = 0;
