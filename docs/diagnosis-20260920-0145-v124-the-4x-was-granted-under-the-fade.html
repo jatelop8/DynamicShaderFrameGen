@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DFG v1.24 —— 4x 是在淡入黑幕还挂着的时候打开的</title>
+<style>
+  :root{
+    --bg:#14161a; --panel:#1b1f26; --panel2:#21262f; --line:#2c333d;
+    --fg:#e6eaf0; --dim:#98a3b3; --dim2:#6f7b8c;
+    --red:#ff6b6b; --amber:#ffb454; --green:#5ddc8a; --blue:#63b3ff; --purple:#b48cff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1080px;margin:0 auto;padding:34px 26px 80px}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:.5px}
+  h2{font-size:19px;margin:38px 0 12px;padding-left:11px;border-left:4px solid var(--blue)}
+  h3{font-size:16px;margin:24px 0 8px;color:var(--amber)}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:26px}
+  .lead{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--red);
+    border-radius:8px;padding:16px 18px;margin:22px 0}
+  .lead b{color:var(--red)}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+    padding:15px 18px;margin:14px 0}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:var(--dim);font-weight:600}
+  td.n{font-variant-numeric:tabular-nums;white-space:nowrap}
+  .ok{color:var(--green);font-weight:600}
+  .bad{color:var(--red);font-weight:600}
+  .warn{color:var(--amber);font-weight:600}
+  .mut{color:var(--dim)}
+  code{background:#0e1014;border:1px solid var(--line);border-radius:4px;
+    padding:1px 6px;font:13px/1.5 Consolas,"Courier New",monospace;color:var(--blue)}
+  pre{background:#0e1014;border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+    overflow-x:auto;font:13px/1.65 Consolas,"Courier New",monospace;color:#cfe0f5}
+  ul{margin:8px 0 8px 20px;padding:0} li{margin:5px 0}
+  .kv{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}
+  .kv div{background:var(--panel2);border:1px solid var(--line);border-radius:6px;
+    padding:7px 12px;font-size:13px}
+  .kv span{color:var(--dim2);margin-right:6px}
+  .step{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+    padding:14px 18px;margin:12px 0;border-left:4px solid var(--green)}
+  .step.a{border-left-color:var(--blue)}
+  .step.b{border-left-color:var(--amber)}
+  .step.c{border-left-color:var(--red)}
+  .tag{display:inline-block;font-size:12px;padding:1px 8px;border-radius:99px;
+    border:1px solid var(--line);background:var(--panel2);color:var(--dim);margin-left:8px}
+  .foot{margin-top:48px;padding-top:18px;border-top:1px solid var(--line);
+    color:var(--dim2);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>v1.24 —— 4x 是在淡入黑幕还挂着的时候打开的</h1>
+<div class="sub">局：2026-09-20 01:29:54 → 01:30:55（61 s）· DLL build 01:06:38 (v1.23) · 归档 <code>docs/runlogs/2026-09-20-0130-v1.23-loadscreen-freeze-4x-visible.*</code></div>
+
+<div class="lead">
+<b>一句话。</b> 4x 的请求根本不是问题 —— 13 局里 11 局日志里都有 <code>presented per real frame = 4</code>，
+您看到的"帧数变 4 倍"是真的。本局真正异常的是它被<b>提前 0.36 秒</b>打开了：
+开在<b>加载淡入（fade）还没落下</b>的那一帧上。游戏没死、没崩、窗口没未响应 —— 时钟还在走。
+</div>
+
+<h2>1 · 「4x 没成功」这条线，本局正式判死</h2>
+
+<p>把 9 月 19–20 日全部归档按同一口径数一遍（<code>DLSSG presented per real frame = 4</code> 的行数）：</p>
+
+<table>
+<tr><th>局</th><th>加载时长</th><th>闸门释放后你还玩了多久</th><th>出现的 <code>presented=4</code></th></tr>
+<tr><td>v1.11 14:55</td><td class="n">12.1 s</td><td class="n">14.1 s</td><td class="n ok">2 次</td></tr>
+<tr><td>v1.12 18:20</td><td class="n">29.4 s</td><td class="n">30.6 s</td><td class="n ok">6 次</td></tr>
+<tr><td>v1.13 19:39</td><td class="n">119.3 s</td><td class="n">11.7 s</td><td class="n ok">3 次</td></tr>
+<tr><td>v1.17 22:38</td><td class="n">13.6 s</td><td class="n">2.6 s</td><td class="n ok">2 次</td></tr>
+<tr><td>v1.19 23:22</td><td class="n">27.1 s</td><td class="n">2.9 s</td><td class="n ok">2 次</td></tr>
+<tr><td>v1.21 00:31</td><td class="n">14.9 s</td><td class="n">2.6 s</td><td class="n ok">1 次</td></tr>
+<tr><td>v1.22 00:58</td><td class="n">12.4 s</td><td class="n">6.1 s</td><td class="n ok">3 次</td></tr>
+<tr><td><b>v1.23 01:30（本局）</b></td><td class="n">23.3 s</td><td class="n bad">2.5 s</td><td class="n ok">2 次</td></tr>
+</table>
+
+<p class="mut">唯一一次 <code>presented=4</code> 为 0 的局是 FSR3 那一局（Provider=0，DLSS-G 根本没启用）。
+所以"运行时拒绝 4x""请求没发出去"这两条假设，从 v1.11 起就不成立了。</p>
+
+<h2>2 · 游戏没死 —— 三份互相独立的证据</h2>
+
+<div class="kv">
+  <div><span>窗口</span><code>msg=1 alive=1 focus=1</code></div>
+  <div><span>Present</span><code>lastPr</code> 1161→1451 一直在涨</div>
+  <div><span>队列</span><code>queued=1 dsync=0 presentAge=5~28ms</code></div>
+  <div><span>主线程</span><code>silent=2~29ms</code></div>
+</div>
+
+<ul>
+<li><code>msg=1</code> 是 <code>SendMessageTimeoutA(WM_NULL, SMTO_ABORTIFHUNG)</code> 真的返回了 ——
+操作系统<b>不认为</b>这个窗口卡住（没进"未响应"状态）。</li>
+<li>Windows 应用事件日志里<b>没有</b> <code>Application Error</code> / <code>Application Hang</code> 记录 ⇒ 不是崩溃退出。</li>
+<li>游戏时钟在走：<code>hrsD=0.006651</code> / <code>0.005666</code> ⇒ timescale 下日历在推进 ⇒
+<b>世界逻辑没冻</b>。</li>
+</ul>
+
+<h2>3 · 闸门释放那一刻，fade 还挂着</h2>
+
+<p>同一秒、同一个 <code>[CAM] PC v1.19</code> 行读出来的四个字段，构成完整因果链：</p>
+
+<pre>[01:30:53.130] [XRAY] MENU EDGE open=0 serial=1158 consts(ok=0 fail=0)      ← 闸门释放，此时一帧相机常量都还没喂过
+[01:30:53.365] paused=0 ld=0 fade=1 hrsD=0.000326  PC_STILL   INPUT_NONE    ← 时钟开始走，但 fade 还立着
+[01:30:53.494] [Streamline] DLSSG presented per real frame = 4               ← 0.36 秒后 4x 生效
+[01:30:54.373] paused=0 ld=0 fade=1 hrsD=0.006651  PC_MOVING  INPUT_NONE
+[01:30:55.379] paused=0 ld=0 fade=1 hrsD=0.005666  PC_STILL   INPUT_NONE
+[01:30:55.623] （日志结束 —— 您退出了游戏）</pre>
+
+<p><b>根因是 v1.22 那次"修复"的副作用。</b> v1.22 把闸门判据从
+<code>IsMenuOpen("Fader Menu")</code> 换成 <code>GameIsPaused()</code>，
+理由是 00:30 局的实测：<code>fade=1</code> 时时钟已经在走，说明世界是活的，fader 不算菜单证据。</p>
+
+<p>这个理由<b>对"游玩阶段"成立</b>（23:38 局 fade 卡了 40+ 秒，确实把 4x 永久parked住了）。
+但它顺手把<b>淡入阶段</b>也放过了 —— 而淡入正是屏幕上<b>还没有世界可以插帧</b>的那段窗口。
+v1.23 本局就是撞在这个窗口上。</p>
+
+<h2>4 · 本局您一次键都没按（这是坏消息）</h2>
+
+<p>26 条 <code>[CAM] PC</code> 输入见证，<b>全部</b>是 <code>INPUT_NONE</code>：</p>
+
+<pre>01:30:29.715 ... in(os=0x0 dc=0/0 fg=1) ... PC_STILL  INPUT_NONE
+01:30:31.734 ... in(os=0x0 dc=1957/1 fg=1) ... PC_STILL  INPUT_SEEN   ← 只有这一秒鼠标在动
+01:30:54.373 ... in(os=0x0 dc=0/0 fg=1) ... PC_MOVING INPUT_NONE
+01:30:55.379 ... in(os=0x0 dc=0/0 fg=1) ... PC_STILL  INPUT_NONE</pre>
+
+<p>⇒ <b>这一局无法回答"卡"是"世界冻了"还是"您没操作"</b>，因为见证器一次按下都没采到。
+（<code>GetAsyncKeyState</code> 采的是瞬时状态，1 Hz 采样 + 短按会漏；但 26 次全 0，只能说没持续按住。）</p>
+
+<p class="warn">这是下一局必须补上的一格：进世界后<b>按住 W 走 5 秒以上</b>，让见证器采到
+<code>INPUT_SEEN</code>。否则下次还是只能得出"画面在淡入"这一个结论。</p>
+
+<h2>5 · 您看到的"4 倍帧数"是算出来的，不是量出来的</h2>
+
+<pre>[FrameGen] FPS probe: real=37.1 | DLSSG | cap~=148.5 (=real*4, COMPUTED not measured) | hwMax=6 ask=4 accepted=4</pre>
+
+<p>覆盖层那一行自己写着 <code>COMPUTED not measured</code> —— 它是拿引擎帧率乘倍数算的。
+独立仪器（Transfusion）同期的读数是 <code>FPS: 43.8 (22.83ms) | 1% Low: 27.3 | Jitter: 8.70ms</code>，
+而它的逐帧 CSV 全程 <code>DeltaMs≈29.6ms</code>（引擎真实帧间隔，稳定）。
+两个口径不同，不能互相验证 —— <span class="warn">所以"屏幕上到底每秒呈现多少帧"至今没有实测值</span>。
+这一格留到 v1.25 再补（覆盖层改成数真实的 Present 次数）。</p>
+
+<h2>6 · v1.24 改了什么</h2>
+
+<div class="step a">
+<h3>A · fader 重新参与守卫，但带 8 秒上限 <span class="tag">Streamline.cpp</span></h3>
+<p><code>GameMenuOpenNow()</code> 末尾新增：fader 立起后 <b>8 秒内</b>一律返回 true（守住闸门）。
+8 秒一过就退回 v1.22 的行为。<br>
+⇒ 淡入期间 4x 不再打开；fader 永不落下（23:38 局那 40 秒）也照样不能把它永久 parked住。
+<br><span class="mut">计时器用 <code>std::atomic&lt;long long&gt;</code>，因为这条函数会被 present 线程和常量线程同时走到（本局 tid 2088 与 14480 都写过 MENU EDGE）。</span></p>
+</div>
+
+<div class="step b">
+<h3>B · 像素探针 1 Hz → 2 Hz，判据 10 秒 → 3 秒 <span class="tag">DX12SwapChain.cpp</span></h3>
+<p>v1.23 修好探针后，它出了历史上第一批样本（<code>[PIXEL] #1</code>…<code>#26</code>）。
+但 1 Hz + 连续 10 秒同哈希才喊 VERDICT —— 而最近三局闸门释放后分别只跑了
+2.5 / 6.1 / 2.6 秒。<b>判据永远够不到。</b><br>
+现在 2 Hz、6 个样本（3 秒）判定，且仍要求这 6 个样本里至少 4 个相机在动（同一条 L44 标准）。
+跨 API 拷贝仍是 <code>DO_NOT_WAIT</code> + 拿不到就丢，所以扫描更密只会让样本变少，<b>不会阻塞渲染线程</b>。</p>
+</div>
+
+<h2>7 · 诚实边界（未证的部分）</h2>
+
+<table>
+<tr><th>说法</th><th>状态</th><th>为什么</th></tr>
+<tr><td>fade 期间开 4x 是您看到"卡+闪"的原因</td><td class="bad">未证</td>
+<td>两者时间上确实同现（0.36 秒），但<b>同时 ≠ 因果</b>。而且没有 <code>INPUT_SEEN</code> 样本，连"卡"是什么都还没定住。</td></tr>
+<tr><td>画面内容陈旧（不是帧率低）</td><td class="warn">只有 1 秒的证据</td>
+<td><code>[PIXEL] #24</code>：<code>clipDev=3053</code>（相机在大幅移动）而哈希不变 ⇒ 这 1 秒确实陈旧。
+其余 <code>#18–#23</code> / <code>#25–#26</code> 相机近静止（<code>clipDev≈0</code>），按 L44 <b>不能</b>算陈旧证据。</td></tr>
+<tr><td>本局加载 23.3 s 比前两局（12–15 s）慢是 v1.23 引入的</td><td class="bad">未证</td>
+<td>只有一局样本；磁盘/场景大小都会影响。v1.23 的探针改动是<b>移除</b>每帧拷贝，方向上应该更快。</td></tr>
+<tr><td>4x 实际每秒呈现多少帧</td><td class="bad">无实测</td>
+<td>覆盖层是计算值；Transfusion 的 CSV 只记真实帧。</td></tr>
+<tr><td>进程里第二个 DLSS-G 驱动（Transfusion）与冻结有关</td><td class="bad">仍未证</td>
+<td>12/12 相关 + 一次毫秒级同现。<b>本局它没被隔离</b>（<code>dinput8.dll</code> 仍是 540,672 B 的 Transfusion）。</td></tr>
+</table>
+
+<h2>8 · 下一局的协议（请照着做，否则又是白跑）</h2>
+
+<div class="step c">
+<ol>
+<li>进游戏、进世界。</li>
+<li><b>先站住不动 15 秒</b>（让探针拿到一组静止基线）。</li>
+<li><b>按住 W 走 10 秒以上</b>（这是关键：让输入见证采到 <code>INPUT_SEEN</code>，
+把"世界冻了"和"我没动"分开）。</li>
+<li>松开，再站 10 秒。</li>
+<li>退出，告诉我一声。</li>
+</ol>
+<p class="mut">有了这些，日志里会出现三种结果之一：<br>
+① <code>[CAM] PC</code> 出现 <code>INPUT_SEEN</code> 且相机随之移动 ⇒ 游戏是活的，之前的"卡"是淡入/观感问题，A 项修复就够了。<br>
+② <code>INPUT_SEEN</code> 但 <code>eyeD≈0</code> ⇒ <b>世界真的冻了</b>，接下来去查输入到相机之间那一段。<br>
+③ <code>[PIXEL] VERDICT</code> ⇒ 屏幕确实显示同一张图，且相机在动 —— 铁证。</p>
+</div>
+
+<h2>9 · 构建与部署核验（第一遍·手脚）</h2>
+
+<table>
+<tr><th>检查</th><th>结果</th></tr>
+<tr><td>锚点唯一性（6 处编辑）</td><td class="ok">每处 count == 1，干跑通过后才写</td></tr>
+<tr><td>逐符号回读</td><td class="ok"><code>s_faderOpenSinceMs</code>×4、<code>8000</code>、<code>&lt; 500</code>、<code>== 6</code>、<code>&gt;= 4</code>、两处文案</td></tr>
+<tr><td>行尾</td><td class="ok">Streamline.cpp CRLF 2447 / lone_LF 0 / BOM 保留；DX12SwapChain.cpp lone_LF 2039 / CRLF 0</td></tr>
+<tr><td>构建</td><td class="ok">BUILD SUCCESS（12 s，无 error C/LNK）</td></tr>
+<tr><td>双份 md5</td><td class="ok"><code>f845e7654dd2cae4db57fe994cc5b034</code> · 1,369,088 B · build == MO2 mod 目录</td></tr>
+<tr><td>INI</td><td class="ok">源树 == 部署 <code>efce89119d840670e519d219749a6476</code>，纯 CRLF 358 行，8 键不变（v1.24 零新键）</td></tr>
+<tr><td>幂等</td><td class="ok">补丁脚本重跑 ⇒ <code>REFUSED, nothing written</code></td></tr>
+</table>
+
+<div class="foot">
+归档：<code>docs/runlogs/2026-09-20-0130-v1.23-loadscreen-freeze-4x-visible.{{log,watchdog.log,transfusion.log,transfusion.perf.csv}}</code><br>
+补丁：<code>tools/patch_v124_fade_guard.py</code>（干跑 + <code>--apply</code>，锚点 count 恰好 1）<br>
+账本：<code>MFG_MASTER_NOTES.md</code> 第 37 章
+</div>
+
+</div>
+</body>
+</html>

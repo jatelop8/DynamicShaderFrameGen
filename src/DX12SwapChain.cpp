@@ -1678,7 +1678,11 @@ namespace FrameGen
 		// counted, never retried inside the same second.
 		const auto nowMs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()).count());
-		if (pixelProbeLastMs != 0 && nowMs - pixelProbeLastMs < 1000)
+		// v1.24: 1 Hz could not reach the verdict threshold in the windows we actually
+		// get (three runs ended 2.5/6.1/2.6 s after the guard released). 2 Hz keeps the
+		// copy DO_NOT_WAIT and dropped-not-retried, so a tighter interval can only
+		// cost samples, never stall the render thread.
+		if (pixelProbeLastMs != 0 && nowMs - pixelProbeLastMs < 500)
 			return;
 		pixelProbeLastMs = nowMs;
 
@@ -1813,17 +1817,17 @@ namespace FrameGen
 
 				// The verdict. Every other witness this file owns can only say that a
 				// flip happened; this is the only one that can say the picture moved.
-				if (pixelProbeStreak == 10) {
-					if (pixelProbeMovedDuringStreak >= 5) {
-						SKSE::log::error("[PIXEL] VERDICT: the frame content is byte-identical for 10 "
+				if (pixelProbeStreak == 6) {
+					if (pixelProbeMovedDuringStreak >= 4) {
+						SKSE::log::error("[PIXEL] VERDICT: the frame content is byte-identical for 3 "
 							"consecutive seconds WHILE the camera was moving (clipDev > 0 on {} of them). "
 							"presents, presentAge, dsync and the presented-per-real-frame ratio all report "
 							"a healthy flip, so the swap chain is showing the SAME image: what the player "
 							"sees is stale.", pixelProbeMovedDuringStreak);
 					} else {
-						SKSE::log::warn("[PIXEL] 10 identical seconds, but the camera was still on {} of "
+						SKSE::log::warn("[PIXEL] 3 identical seconds, but the camera was still on {} of "
 							"them - a static camera makes interpolated frames legitimately identical, so "
-							"this is NOT a frozen-screen verdict. Move for 10 s to make the next streak "
+							"this is NOT a frozen-screen verdict. Move for 3 s to make the next streak "
 							"mean something.", pixelProbeMovedDuringStreak);
 					}
 				}

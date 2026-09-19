@@ -4853,3 +4853,198 @@ DLSS5 屏幕输出未证；RTX 20/30 一行未动。
    `diag.reqStepMax = max(1, a_hwMax)` 并**提前 return**，不越过硬件上报值。
    （INI 亦记：Ada 的 `numFramesToGenerateMax` 原生为 1 = 2x；本盘 12 局的 `hwMax=6` 是 Transfusion 抬上去的。）
 3. 之前 12 局的 `ask=4 accepted=4` 全部依赖 Transfusion 抬高上报值 ⇒ **「无 Transfusion 的 2x」这一配置从未跑过**。
+
+---
+
+# 第 37 章 · v1.24：4x 是在淡入（fade）还挂着的时候打开的
+
+归档 `docs/runlogs/2026-09-20-0130-v1.23-loadscreen-freeze-4x-visible.*`
+（`.log` / `.watchdog.log` / `.transfusion.log` / `.transfusion.perf.csv`）
+交付卡 `docs/diagnosis-20260920-0145-v124-the-4x-was-granted-under-the-fade.html`
+补丁 `tools/patch_v124_fade_guard.py`
+
+## 37.0 本局基本盘
+
+- **v1.23 首次真正运行**（`build Sep 20 2026 01:06:38`，`size=1368576B`，游戏实际加载
+  `D:\ENB-EJ\Skyrim Special Edition\data\SKSE\Plugins\DynamicShaderFrameGen.dll`，mtime 17:06）。
+  此前 36 章写「v1.23 尚未运行过任何一局」，本条成立前提已消失。
+- 时长 61 s：01:29:54.159 启动 → 01:30:13.805 D3D12 proxy active → 01:30:29.785 进加载
+  → **01:30:53.130 闸门释放** → 01:30:55.623 日志结束。
+- **加载 23.3 s，闸门释放后只跑了 2.5 s。**
+- **v1.23 的探针修复生效**：`[PIXEL] #1` … `#26`，**历史上第一批真实样本**（此前 0 个）。
+- 隔离实验（`DINPUT8.dll` → `.transfusion-off`）**仍未做**：`dinput8.dll` 仍是 540,672 B（Sep 18 19:44）。
+
+## 37.1 「4x 没成功」这条线判死：9-19 以来 11/13 局都有 presented=4
+
+同一口径数每一局的 `DLSSG presented per real frame = 4` 行数：
+
+| 局 | 加载 | 释放后跑了多久 | presented=4 |
+|---|---|---|---|
+| v1.11 14:55 | 12.1 s | 14.1 s | 2 |
+| v1.12 18:20 | 29.4 s | 30.6 s | 6 |
+| v1.13 19:39 | 119.3 s | 11.7 s | 3 |
+| v1.14 21:15 | 14.7 s | 3.4 s | 1 |
+| v1.15 22:02 | 15.2 s | 4.5 s | 1 |
+| v1.16 22:22 | 15.5 s | 2.2 s | 1 |
+| v1.17 22:38 | 13.6 s | 2.6 s | 2 |
+| v1.18b 22:54 | 13.7 s | 2.7 s | 2 |
+| v1.19 23:22 | 27.1 s | 2.9 s | 2 |
+| v1.19 FSR3 23:38 | （无 MENU EDGE） | — | **0**（Provider=0，DLSS-G 未启用）|
+| v1.21 00:31 | 14.9 s | 2.6 s | 1 |
+| v1.22 00:58 | 12.4 s | 6.1 s | 3 |
+| **v1.23 01:30** | 23.3 s | **2.5 s** | 2 |
+
+**⇒ 运行时从来没有拒绝过 4x。** 「请求没发出去」「倍数太高被拒」两条假设从 v1.11 起就不成立
+（22:54 局 `presented=1` 是闸门按住导致的，见 36 章）。
+**⇒ 用户看到的「帧数变 4 倍」是真实的请求结果。**
+
+★ 顺带纠正本轮的一个错误结论：我一度写「v1.23 首次 4x 上屏」。**错。** v1.11 起就有。
+这条是我只看了 v1.22/v1.23 两局就下的判断 —— 又一次「样本不足 + 结论先行」。
+
+## 37.2 游戏没死：三份互相独立的证据
+
+```
+[N] 01:30:55.637 frames=1237 silent=2ms stage=d3d11 Wait focus=1 fence=2463/2463
+    stim=237 queued=1 lastPr=1451 dsync=0 msg=1 alive=1 presentAge=14ms
+```
+
+1. **窗口是响应的**：`msg=1` 来自 `SendMessageTimeoutA(probe, WM_NULL, SMTO_ABORTIFHUNG, 200)`。
+   操作系统**没有**把窗口判为 hung。`alive=1 focus=1`。
+2. **没有崩溃**：Windows `Application` 事件日志（近 40 分钟）**无** `Application Error` /
+   `Application Hang` 记录 ⇒ 是正常退出，不是 crash。Transfusion 的 crash.log 只记
+   `FIRST_CHANCE_EXCEPTION`（3 处，first-chance = 多半被游戏/驱动处理掉）。
+3. **游戏时钟在走**：`hrsD=0.006651` / `0.005666`（timescale 下逐秒推进）⇒ 世界逻辑未冻。
+
+配套：`queued=1`（有 backpressure）、`dsync=0`、`lastPr` 1161→1451 单调增、`presentAge=5~28ms`。
+**⇒ 「引擎半死」「Present 不翻转」「DXGI 失步」三条都被本局读数否掉。**
+
+## 37.3 闸门释放的那一刻，fade 还立着（本局的核心异常）
+
+原始时间线（每条都可 grep 到）：
+
+```
+[01:30:53.130] [XRAY] MENU EDGE open=0 serial=1158 presentedBefore=1 consts(ok=0 fail=0)
+[01:30:53.130] [MFG] probe edge: menu guard released, SetDLSSGOptions resumes on this frame.
+[01:30:53.130] [W] [MFG] debug CHECK: Present skips SetDLSSGOptions even though the menu guard
+               is not engaged (menuBlock=0 frames=0 blocked=1156 unblocked=1)
+[01:30:53.365] [CAM] PC v1.19: ... paused=0 ld=0 fade=1 hrsD=0.000326 ... PC_STILL INPUT_NONE
+[01:30:53.494] [Streamline] DLSSG presented per real frame = 4 (status=0)
+[01:30:53.494] (Transfusion) DLSS-G actual presentation count: 4x (maximum generated frames=5)
+[01:30:54.373] [CAM] PC v1.19: ... paused=0 ld=0 fade=1 hrsD=0.006651 ... PC_MOVING INPUT_NONE
+[01:30:55.379] [CAM] PC v1.19: ... paused=0 ld=0 fade=1 hrsD=0.005666 ... PC_STILL INPUT_NONE
+[01:30:55.623] 日志结束（用户退出）
+```
+
+**释放的判据是 `GameIsPaused()`**（v1.22 改成 `return ui->GameIsPaused() && faderUpSec < 90;`，
+见 `src/Streamline.cpp:449`）。释放时：
+- `consts(ok=0)` ⇒ **一帧相机常量都还没喂过**；
+- `fade=1` ⇒ 屏幕上还是淡入遮罩；
+- 0.364 s 后 4x 生效 ⇒ **4x 开在了淡入上。**
+
+★ `faderUpSec` 是**从进程启动**算的（`static const auto s_faderT0`）。本局启动 01:29:54，
+90 秒上限要到 01:31:24 才可能触发，而用户在 01:30:55 就退了 ⇒ **那 90 秒上限在本局根本没起作用，
+释放是 `GameIsPaused()` 干的。**（避免把它当成"上限保护在起作用"。）
+
+★ v1.22 的推理本身没错：00:30 局实测 `fade=1` 时 `hrsD>0`，世界是活的，fader 不构成"菜单"证据；
+23:38 局 fade 卡 40+ 秒确实会把 4x 永久 parked 住。**但它顺手把"淡入阶段"也一起放过了** ——
+而淡入正是屏幕上**没有世界可插帧**的窗口。
+
+## 37.4 输入见证：26/26 全是 INPUT_NONE ⇒ 本局定不了"卡"的性质
+
+```
+01:30:29.715 ... in(os=0x0 dc=0/0    fg=1) plr=(0.0,0.0,0.0) plrD=0.00 PC_STILL  INPUT_NONE
+01:30:31.734 ... in(os=0x0 dc=1957/1 fg=1) plr=(0.0,0.0,0.0) plrD=0.00 PC_STILL  INPUT_SEEN
+01:30:52.362 ... eye=(-243.05,-415.31,118.62) eyeD=481.30 plr=(-250.3,-360.4,0.1) ... PC_MOVING INPUT_NONE
+01:30:54.373 ... eyeD=0.07  ... PC_MOVING INPUT_NONE
+01:30:55.379 ... eyeD=0.00  ... PC_STILL  INPUT_NONE
+```
+
+- 26 条全部 `INPUT_NONE`（`os=0x0`、`plrD=0.00`）⇒ **键盘（W/A/S/D/空格/Shift/LButton）一次都没采到按下。**
+- 只有 01:30:31.734 一条 `INPUT_SEEN`，靠 `dc=1957/1`（鼠标位移）触发。
+- `eyeD=0.07` 级别的 PC_MOVING ⇒ 相机只有毫米级抖动（静止）。
+
+**⇒ 本局无法区分「世界冻了」与「玩家没操作」。** 这正是 v1.18 提交信息里写过的那句话
+（"the camera cannot tell an idle player from a frozen world"），而复现它只需要用户<b>不按键</b>。
+
+★ 注意 1 Hz 采样 + 短按会漏：`INPUT_NONE` ≠ "用户从没碰键盘"，只能说"没有持续按住"。
+**⇒ 下一局的协议必须包含「按住 W 走 10 秒以上」，否则这一格永远空着。**
+
+## 37.5 覆盖层那行「4 倍帧数」是计算值，不是实测
+
+```
+[FrameGen] FPS probe: real=37.1 | DLSSG | cap~=148.5 (=real*4, COMPUTED not measured)
+           | hwMax=6 ask=4 accepted=4 | cfgProvider=1
+```
+
+- 代码自己标了 `COMPUTED not measured` ⇒ 覆盖层 = 引擎帧率 × 倍数。
+- 独立仪器同期：`[PERF] 4x | Kernel: Ada | FPS: 43.8 (22.83ms) | Jitter: 8.70ms | 1% Low: 27.3 FPS`；
+  而它的逐帧 CSV 全程 `DeltaMs≈29.6 ms`（1209 帧，稳定）。
+- **两个口径无法互相验证**（一个是"引擎真实帧间隔"，一个是"它自己 hook 的 present 速率"）。
+  ⇒ **"屏幕上每秒到底呈现多少帧"至今没有实测值。** 留到 v1.25（覆盖层改成数真实 Present 次数）。
+
+## 37.6 v1.24 改了什么（两处）
+
+### A. fader 重新参与守卫，带 8 秒上限 —— `src/Streamline.cpp` `GameMenuOpenNow()`
+
+```cpp
+static std::atomic<long long> s_faderOpenSinceMs{ 0 };
+...
+if (ui->IsMenuOpen("Fader Menu")) {
+    const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    long long t0 = s_faderOpenSinceMs.load();
+    if (t0 == 0) { s_faderOpenSinceMs.store(nowMs); t0 = nowMs; }
+    if (nowMs - t0 < 8000) return true;          // 守住：淡入期间不开 4x
+} else {
+    s_faderOpenSinceMs.store(0);
+}
+return ui->GameIsPaused() && faderUpSec < 90;    // v1.22 的原行为，超过 8 s 后回落到这里
+```
+
+- 计时器用 `std::atomic<long long>`：这条函数会被 present 线程与常量线程同时走到
+  （本局 tid 2088 与 14480 都写过 `MENU EDGE`）。**不用裸 static**（L41 的教训同类）。
+- 8 秒是**有界**的：fader 永不落下（23:38 局那 40 秒）不会把闸门永久 parked住。
+
+### B. 像素探针 1 Hz → 2 Hz，判据 10 s → 3 s —— `src/DX12SwapChain.cpp`
+
+- `pixelProbeLastMs` 门限 `1000` → `500`。
+- VERDICT 条件 `pixelProbeStreak == 10` → `== 6`（3 秒），`MovedDuringStreak >= 5` → `>= 4`。
+- 理由：v1.23 修好探针后判据是"连续 10 秒同哈希"，而最近三局闸门释放后只跑了
+  2.5 / 6.1 / 2.6 秒 ⇒ **判据永远够不到**。
+- 风险控制：跨 API 拷贝仍是 `DO_NOT_WAIT`、拿不到就 `++pixelProbeDropped` 丢弃、不重试。
+  **扫描更密只会让样本变少，不会阻塞渲染线程**（v1.22 那个"每帧拷贝"的教训）。
+
+## 37.7 未证清单（本轮新增）
+
+| 说法 | 状态 | 依据/缺口 |
+|---|---|---|
+| fade 期间开 4x 是"卡+闪"的原因 | **未证** | 同现 0.364 s ⇒ 同时≠因果；且没有 INPUT_SEEN 样本，连"卡"是什么都没定住 |
+| 画面内容陈旧 | **只有 1 秒证据** | `[PIXEL] #24`：`clipDev=3053.296631` 而 hash 不变（`6AD5178233020383`）；`#18–#23`/`#25–#26` `clipDev≈0` ⇒ 按 L44 **不算** |
+| 本局加载 23.3 s 比前两局慢是 v1.23 引入 | **未证** | 单局样本；v1.23 的改动是**移除**每帧拷贝，方向上更快 |
+| 4x 实际呈现帧率 | **无实测** | 覆盖层是计算值；CSV 只记真实帧 |
+| Transfusion 与冻结的关系 | **仍未证** | 12/12 相关 + 一次毫秒同现；**本局未隔离** |
+| `[MFG] debug CHECK: Present skips SetDLSSGOptions even though the menu guard is not engaged` | **未解释** | 释放那一帧出现一次（`blocked=1156 unblocked=1`），后续 `consts ok=60` 正常，暂无后果 |
+
+## 37.8 方法论增量（写进 L 表）
+
+- **L47（本轮最贵的一条）：换掉一个判据之前，先枚举它原来覆盖的<b>所有</b>窗口，逐个判断新判据是否也覆盖。**
+  v1.22 换掉 fader 判据时只论证了"游玩阶段 fader 不算菜单证据"，没有枚举"淡入阶段"。
+  结果 4x 被开在了淡入上。**判据不是布尔值，它是一张覆盖表。**
+- **L48：只看"最后两局"就下"首次发生"的结论 = 骗。**
+  本轮我一度写「v1.23 首次 4x 上屏」，实际 v1.11 起就有。**"首次"这类断言必须全归档扫描
+  （`grep -c` 每一局），不能靠相邻两局。** 这与 L0 的「反向假设」是同一件事的另一个切面。
+- **L49：判据里的时间常量要看它的零点在哪。**
+  `faderUpSec` 从**进程启动**算（函数内 `static s_faderT0`），不是从 fader 立起算。
+  本局启动→退出只有 61 s，所以"90 秒上限"这个保护<b>从未参与</b>。**写"有上限保护"之前先算零点。**
+
+## 37.9 收尾状态
+
+- 代码：`src/Streamline.cpp` + `src/DX12SwapChain.cpp`，补丁 `tools/patch_v124_fade_guard.py`。
+- 构建：`BUILD SUCCESS`（12 s）。DLL `f845e7654dd2cae4db57fe994cc5b034` · 1,369,088 B
+  · build == MO2 mod 目录（`E:/EJ/mod/mods/DynamicShaderFrameGen/SKSE/Plugins/`）。
+- INI：源树 == 部署 `efce89119d840670e519d219749a6476`，纯 CRLF 358 行，**8 键不变（v1.24 零新键）**。
+  关键值：`Provider=1` `MFGMaxFramesOverride=3` `MenuGuardFader=1` `PixelProbe=1` `InteropFenceWait=1`
+  `NRAllowWithFrameGen=0` `MenuDisableFrameGen=1` `DLSSGFramesToGenerate=3`。
+- 行尾：`Streamline.cpp` CRLF 2447 / lone_LF 0 / BOM 保留；`DX12SwapChain.cpp` lone_LF 2039 / CRLF 0。
+- 补丁幂等：重跑 ⇒ `REFUSED, nothing written`。
+- **下一局协议（必须照做，否则又是白跑）**：进世界 → 站 15 s → **按住 W 走 10 s 以上** → 松开站 10 s → 退出。

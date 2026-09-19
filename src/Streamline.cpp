@@ -430,6 +430,11 @@ namespace FrameGen
 			static const auto s_faderT0 = std::chrono::steady_clock::now();
 			const auto faderUpSec = std::chrono::duration_cast<std::chrono::seconds>(
 				std::chrono::steady_clock::now() - s_faderT0).count();
+			// v1.24: when the fader was FIRST seen, so the hold below can be bounded.
+			// atomic, not a plain static: this function is reached from the present path
+			// and the constants path, which are not the same thread (01:30 run: tid 2088
+			// and 14480 both wrote MENU EDGE lines).
+			static std::atomic<long long> s_faderOpenSinceMs{ 0 };
 			// v1.22 -- the fader guards ENTRY, not play. Measured on the 00:30 run,
 			// in-world (every field from the same [CAM] PC v1.19 line):
 			//   00:31:02.935  paused=0 ld=0 fade=1 hrsD=0.003807  ~1 present/frame
@@ -446,6 +451,25 @@ namespace FrameGen
 			// and the load fade -- every pre-world sample in the 00:30 log reads 1, so the
 			// v0.96 protection is untouched -- and 0 the moment the player camera takes
 			// over (the v1.16 TAKEOVER line lands on that same 00:31:02.935 sample).
+			// v1.24 -- the fader also covers the LOAD FADE, where the clock is already
+			// running (hrsD > 0, paused=0) but the screen still has no world on it.
+			// 01:30 run: guard released at 01:30:53.130 with fade=1 on every sample
+			// after it, and 'presented per real frame = 4' at 01:30:53.494 -- 4x was
+			// granted while the fade was still up. Bounded at 8 s so a fader that never
+			// drops (23:38 run: 40+ s) cannot park the guard the way it did before v1.22.
+			if (ui->IsMenuOpen("Fader Menu")) {
+				const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+					std::chrono::steady_clock::now().time_since_epoch()).count();
+				long long t0 = s_faderOpenSinceMs.load();
+				if (t0 == 0) {
+					s_faderOpenSinceMs.store(nowMs);
+					t0 = nowMs;
+				}
+				if (nowMs - t0 < 8000)
+					return true;
+			} else {
+				s_faderOpenSinceMs.store(0);
+			}
 			return ui->GameIsPaused() && faderUpSec < 90;
 		}
 
