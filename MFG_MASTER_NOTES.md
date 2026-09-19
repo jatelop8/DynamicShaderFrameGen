@@ -4162,3 +4162,159 @@ FAM[3] proj00=0.888889 arr=74  moved=0   stepSum=0.00
 **⇒ 上一局 `proj00=0.149184` 被我记作「WORLD 族（随玩家动）」，现在看这个标注站不住：**
 本局 `0.149184` 出现在 **`eye=(0.00,0.00,128.00)`**（加载期空相机）上，`best=603.99`（远离地面真值）。
 **⇒ 旧族标签需要重标，别再拿「0.149184 = 世界相机」当前提。**
+
+---
+
+# 33. v1.21 — 「4x 的请求从来没有被发出去过」
+
+一句话：**22:54 那局 4x 之所以没有出现，不是运行时拒绝了它，而是我们一帧都没往 DLSS-G 递。**
+两条独立机制，各自有自己的日志原文；外加一条把用户配置吃掉的写盘缺陷。
+
+## 33.1 先把提供者切开（本轮唯一的新对照）
+
+| 时间 | Provider | NR | 画面 | 插帧实测 |
+|---|---|---|---|---|
+| 22:54 | 1 DLSSG | chained | **完全定死** | 尾段 `presented per real frame = 4` |
+| 23:22 | 1 DLSSG | suppressed | **仍然定死** | `4x`（Transfusion 互证）|
+| 23:38 | **0 FSR3** | chained | **活了**（闪烁、~60 显示帧）| `numGeneratedFrames=1 outputsFilled=1/4` |
+
+⇒ **冻结是 DLSS-G 这条支线独有**，不是「帧生成」这件事本身的属性。
+⇒ 同时把上一章的头号嫌疑（NR↔DLSS-G 串联）和「引擎半死」两条线正式封棺。
+
+**23:38 局的第一手数字（v1.19 见证，全部只读）**：
+```
+hrsD=0.004220 → 0.005553 → 0.005707 → 0.005929 → 0.006657 …（每秒）
+paused=0 ld=0 fade=1  menuOpen 无
+[W] [DLSSNR] D3D12 command contexts saturated; applying CPU backpressure
+[FrameGen] DLSSNR: frames=179 → 359 → 539 → 719 → 899 …（每 180 帧一条，≈36/s）
+[FrameGen] FPS probe: real=27.8 | FSR3 | cap~=55.6 (=real*2, COMPUTED not measured)
+[FidelityFX] FG dispatch desc: numGeneratedFrames=1 outputsFilled=1/4 frameID=0,300,…,1500
+```
+- `hrsD×3600 = 19.8 游戏秒/真实秒` ⇒ **timescale 20，游戏在正常模拟**。
+- `frameID` 41 秒走 1500 ⇒ FSR3 **每个真实帧都 dispatch**，而 `numGeneratedFrames=1` 是**后端填的**，
+  我们只读不写（`FidelityFX.cpp:121-136` 的注释就是为这件事写的）⇒ **FSR3 天花板就是 2x，这是 API 事实不是 bug**。
+- `outputsFilled=1/4` 是 FidelityFX 后端只给了 1 个 output，与上一条同源。
+
+## 33.2 机制一：**菜单闸门被「淡出菜单」永久按住**（这是 4x 不出现的直接原因）
+
+22:54 局自己的日志，三行放在一起读：
+
+```
+[22:54:56.062] [MFG] stall governor: frame took 346 ms ... step held at 4x, accepted 4x
+[22:55:04.060] [MFG] probe edge: menu guard released, SetDLSSGOptions resumes on this frame
+[22:55:04.060] [MFG] debug CHECK: Present skips SetDLSSGOptions even though the menu guard
+               is not engaged (menuBlock=0 frames=0 blocked=571 unblocked=1)
+[22:55:04.324] [Streamline] DLSSG presented per real frame = 4 (status=0)
+```
+
+- **`blocked=571 / unblocked=1`** ⇒ `menuBlock` 在 572 帧里真了 **571** 帧。
+- 这条 `if` 链（`DX12SwapChain.cpp:1413-1429`）：`menuBlock==true` ⇒ **`SetDLSSGOptions` 与
+  `EvaluateDLSSG` 都不调用** ⇒ `dlssgOk=false` ⇒ 走「直通兜底」拷贝。
+- 结果是 `presented per real frame = 1`（全程）——**没有插帧**。
+- **闸门一放开，0.3 秒后同一份日报告诉我们 `4`。** 因果链就在这一行里。
+
+那到底是什么菜单？22:54 的 MENU PROBE：
+
+```
+[XRAY] MENU PROBE ... IsMenuOpen(is)=false/false/false IsMenuOpen(literal)=false/false/false
+[XRAY] MENU EDGE open=1 serial=2 presentedBefore=0 consts(ok=0 fail=0)
+[XRAY] MENU EDGE open=0 serial=573 …
+```
+⇒ **serial 2 那一刻，所有真实菜单都是关的**，而闸门是开的 ⇒
+`GameMenuOpenNow()`（`Streamline.cpp:386-405`）里唯一能成立的就是**最后那一项 `IsMenuOpen("Fader Menu")`**。
+
+而 23:38 局（v1.19 埋的 `fade`）证明**淡出菜单在玩家位于世界时全程为真**：
+`fade=1` 连续 40+ 秒，同时 `paused=0 ld=0` 且时钟在走。
+
+**⇒ 一句话结论：`MenuDisableFrameGen=1` + 把 `Fader Menu` 当菜单 ⇒ 在世界里闸门是永久的 ⇒
+DLSS-G 从来拿不到帧。** 用户那句「四倍帧生成感觉也没成功」——**在这一局里是准确的**。
+
+### 为什么不能直接把 `Fader Menu` 删掉
+账本 `v0.96` 记着：删掉它**进不去游戏**（已回退）。22:54 的 PROBE 解释了为什么：
+**它就是启动期的唯一保护**（serial 2 只有它在开）。
+⇒ v1.21 的规则：**淡出菜单只在「我们还不该在世界里」时算菜单**——
+`Loading Menu` 开着，或进程前 90 秒。真实菜单（Main/Loading/Journal/Pause/RaceSex）照旧照算。
+
+## 33.3 机制二：**v0.75 拆掉的那道跨 API 围栏**
+
+22:54 的看门狗尾部（每 0.2 秒一条）：
+
+```
+22:55:04.415 frames=581 … lastPr=584
+22:55:04.616 frames=586 … lastPr=604     ← 开始分叉
+22:55:05.017 frames=597 … lastPr=648
+22:55:06.858 frames=643 … lastPr=832     ← 68 个真实帧，多了 190 次 present
+dsync=0（全程）
+```
+- `lastPr` = DXGI 自己的 present 计数，`frames` = 我们的真实帧计数。
+  **差值在 2.5 秒内从 3 长到 189** ⇒ **4x 真的在上屏**（同时 `dsync=0`，说明后缓冲索引在推进）。
+- **可是画面不动。** ⇒ 推的是**同一张内容**。
+
+`DX12SwapChain.cpp:1289`：
+
+```cpp
+static constexpr bool kD3D12WaitsOnD3D11 = false;   // v0.75 拆掉的
+```
+- 被拆掉的是 `d3d11Context->Signal(d3d11Fence, v)` + `commandQueue->Wait(d3d12Fence, v)`。
+- 拆它的理由是「07:11 那局 fence 50 秒停在初值 1」——**而没有 Signal 的 fence 看上去就是这样。**
+- 代价：D3D12 队列读 `swapChainBufferWrapped` / `colorOutWrapped`（**都是 D3D11 写的**）时**没有任何定序**，
+  而 `DX12SwapChain.cpp:1248-1250` 的注释至今仍写着「必须在 fence 之前（D3D11 写 colorOut 完成后随
+  Signal/Wait 同步，D3D12 拷贝才能稳定读到）」⇒ **同一条注释依赖的定序被 v0.75 拿掉了。**
+- 更糟的是 v0.75 自己的注释写着：**「doodlum 的 ENBFrameGeneration 保留了这个双向等待并且工作正常……
+  把它当作待否证的假设，而不是从可用参照移植来的做法。」** ⇒ 现在有证据可以否证了：见 §33.1 的两局对照。
+
+**⇒ 症状吻合：present 一直在推进（`lastPr` 跑飞），内容却是陈旧的 ⇒ 就是「喂给 DLSS-G 的彩色缓冲是陈旧的」。**
+
+## 33.4 机制三：写盘路径——**用户的配置被菜单吃掉了**
+
+23:39 那局的日志：
+
+```
+[FrameGen] INI saved: Provider=1 DLSSGFramesToGenerate=3 MFGMaxFramesOverride=0 NR=1
+[FrameGen] Provider -> 1 (DLSSG) | INI saved. | RESTART REQUIRED
+```
+盘上结果：**`E:/EJ/mod/mods/.../DynamicShaderFrameGen.ini` 从 14,559 B 变成 517 B**（md5 `23071f…`）。
+- `SaveSettingsToIni`（`ImguiMenu.cpp:237-280`）写了 27 个键，**没有 `NRAllowWithFrameGen`**——
+  而 `LoadConfig`（`FrameGen.cpp:164`）**读它**。⇒ 按一次 Save，下次启动 NR 静默变回「与帧生成互斥」。
+- 这正是 `ImguiMenu.cpp:232-234` 注释里说已经修过一次的同一类缺陷，**回退了**。
+- **并且：构建即部署，`CMakeLists.txt:107-113` 的 POST_BUILD 把源树的
+  `SKSE/Plugins/DynamicShaderFrameGen.ini` 拷进 mod 目录。** ⇒ 23:52 那次编译把 517 B 那份直接盖回成模板。
+  **⇒ 要改的永久位置是源树那份模板，不是部署出来的那份。**
+
+## 33.5 v1.21 改了什么（四处）
+
+| # | 位置 | 改动 | 依据 |
+|---|---|---|---|
+| 1 | `Streamline.cpp` `GameMenuOpenNow()` | `Fader Menu` 只在 `Loading Menu` 开着或前 90 秒算菜单（INI `MenuGuardFader`，默认 1） | §33.2 |
+| 2 | `DX12SwapChain.cpp:1289` | `kD3D12WaitsOnD3D11` 从常量变成 `Get().settings.interopFenceWait`（默认 1 = 恢复定序） | §33.3 |
+| 3 | `FrameGen.h/.cpp` | 上面两个键的字段 + 读取 | — |
+| 4 | `ImguiMenu.cpp` | 补写 `NRAllowWithFrameGen`（本来漏了）+ 两个新键 | §33.4 |
+| 5 | `DX12SwapChain.cpp` `fgGeneratingNow` | 去掉 `dlssgMode &&` —— FSR3 路上 `NRAllowWithFrameGen` 以前**完全无效**，NR 无条件叠加 | 23:38 局 `command contexts saturated` + 满分辨率 NR 每帧跑，而 INI 明写着 0 |
+
+**第 5 条的边界（写死了，别忘）**：DLSSG 路上 `dlssgMode` 本来就为真，
+**去掉它对该路的表达式逐字等价** ⇒ 不可能污染 Provider=1 的实验。
+
+## 33.6 本轮实验的判据（下一局）
+
+INI = `Provider=1` + `DLSSGFramesToGenerate=3` + `MFGMaxFramesOverride=3`
++ `NRAllowWithFrameGen=0`（NR 先请出去）+ `MenuDisableFrameGen=1`（**保留**，闸门已经修好）
++ `MenuGuardFader=1` + `InteropFenceWait=1`。
+
+| 看到 | 结论 |
+|---|---|
+| **进世界就 `presented per real frame = 4`** | §33.2 成立：以前是**请求没发出去**，不是运行时拒绝 |
+| 画面继续动（走动时 `clipDev` 明显 >0、`plrD>0`） | §33.3 成立：围栏是根因 |
+| 还是定死，且 `LIVE hrsD` **仍在走** | 冻结在**呈现路径**，不在游戏逻辑；下一步做**像素探针**（读回 back buffer 几个像素并记录，这是唯一能把「世界在动」和「屏幕是陈旧的」分开的仪器）|
+| 还是定死，且 `hrsD==0` | 游戏时钟停了 ⇒ 冻结**在游戏里**（模态状态/输入死锁），插件不背这口锅 |
+| `MenuGuardFader=1` 反而进不去游戏 | v0.96 复现 ⇒ 改 `MenuGuardFader=0` 只测围栏，或把 90 秒改长 |
+| `InteropFenceWait=1` 卡住（`stage=` 停在 `d3d12 queue Wait`）| 拆围栏是必需 ⇒ 改回 0（两键都只需改 INI，不必重编译）|
+
+## 33.7 本轮的两条方法论
+
+- **L37：一个「开关」如果只在一条分支上被查询，它就不是开关，是装饰。**
+  `NRAllowWithFrameGen` 存在了两天、INI 里有专门注释写着「如果画面闪烁就设 0」，
+  而 FSR3 路上 `fgGeneratingNow` 恒假 ⇒ 那个 0 从来没被读过。
+  **判据：给一个配置项写文档之前，先 grep 它在几条路径上被消费。**
+- **L38：观测到「计数在涨」与「内容在变」是两件事，必须各有一个见证。**
+  `lastPr=832 vs frames=643` 证明 present 在发生，`clipDev/det3` 全部由相机派生
+  证明不了屏幕内容。**下一件仪器必须是直接读屏幕内容的东西（像素探针），不是又一个相机派生量。**

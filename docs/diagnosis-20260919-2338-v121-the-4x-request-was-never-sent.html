@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>23:38 那局（v1.19）：画面活了 —— 而 4x 之所以没出现，是请求根本没发出去</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#161a21; --panel2:#1c212a; --line:#2a313c;
+    --fg:#d8dee9; --dim:#8b95a5; --ok:#4ade80; --bad:#f87171; --warn:#fbbf24; --info:#60a5fa; --pur:#c084fc;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;}
+  .wrap{max-width:1000px;margin:0 auto;padding:34px 24px 60px}
+  h1{font-size:23px;line-height:1.4;margin:0 0 6px}
+  .sub{color:var(--dim);font-size:13.5px;margin-bottom:26px}
+  h2{font-size:17px;margin:34px 0 12px;padding-left:11px;border-left:3px solid var(--info)}
+  h2.ok{border-color:var(--ok)} h2.bad{border-color:var(--bad)} h2.warn{border-color:var(--warn)}
+  h2.pur{border-color:var(--pur)}
+  p{margin:9px 0}
+  code{font-family:"Cascadia Mono",Consolas,Menlo,monospace;font-size:12.6px;
+       background:#20262f;padding:1.5px 5px;border-radius:4px;color:#a5d6ff}
+  pre{background:#0b0e12;border:1px solid var(--line);border-radius:8px;padding:13px 15px;
+      overflow-x:auto;font-family:"Cascadia Mono",Consolas,Menlo,monospace;font-size:12.4px;
+      line-height:1.65;color:#c9d1d9;margin:12px 0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:15px 18px;margin:14px 0}
+  .card.hi{border-color:#2f4f3a;background:linear-gradient(180deg,#141d18,#131720)}
+  .card.al{border-color:#5a3b3b;background:linear-gradient(180deg,#1e1616,#131720)}
+  .card.wa{border-color:#6b5a2a;background:linear-gradient(180deg,#1d1a12,#131720)}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13.6px}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:#aab4c4;font-weight:600}
+  td code{font-size:12.2px}
+  .ok{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)} .info{color:var(--info)} .dim{color:var(--dim)}
+  ul{margin:8px 0 8px 4px;padding-left:20px} li{margin:5px 0}
+  .kv{display:grid;grid-template-columns:200px 1fr;gap:7px 14px;font-size:13.6px}
+  .kv b{color:#aab4c4;font-weight:600}
+  footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);
+         color:var(--dim);font-size:12.6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>23:38 那局：<span class="ok">画面活了</span> —— 而 4x 之所以没出现，<br>是<span class="bad">请求根本没有发出去</span></h1>
+<div class="sub">改动：4 个源文件 + INI 模板 · 两个新键可用 INI 单独回退，不必重编译 · 已编译并部署（双份 md5 一致）</div>
+
+<h2 class="ok">一、你那一局给出了我们等了两天的对照组</h2>
+<p>上一轮我只改了 INI 三行（<code>Provider 1→0</code>、<code>MFGMaxFramesOverride 3→0</code>、
+<code>NRAllowWithFrameGen 0→1</code>），把配置退回到「FSR3 两倍帧生成 + DLSS5」——你自己说过已经做到过的那一套。
+你说<b>「画面活了」</b>。于是三个提供者状态终于可以并排看了：</p>
+
+<table>
+<tr><th>时间</th><th>Provider</th><th>NR</th><th>画面</th><th>插帧实测</th></tr>
+<tr><td>22:54</td><td>1 DLSSG</td><td>chained</td><td class="bad">完全定死</td><td class="ok">尾段 <code>presented per real frame = 4</code></td></tr>
+<tr><td>23:22</td><td>1 DLSSG</td><td>suppressed</td><td class="bad">仍然定死</td><td class="ok">4x（Transfusion 互证）</td></tr>
+<tr><td>23:38</td><td><b>0 FSR3</b></td><td>chained</td><td class="ok">活了（闪烁、重）</td><td><code>numGeneratedFrames=1 outputsFilled=1/4</code></td></tr>
+</table>
+
+<div class="card hi">
+<p style="margin:0"><b>结论：冻结是 DLSS-G 这条支线独有的，不是「帧生成」这件事本身的属性。</b>
+上一轮的头号嫌疑（NR ↔ DLSS-G 串联）和「引擎半死 / 游戏暂停」两条线，到这里一起封棺。</p>
+</div>
+
+<p>你那句「只有 60 帧、双倍都没有了」也在这份日志里找到了出处。这是这一局的关键数字：</p>
+<pre>[FrameGen]  FPS probe: real=27.8 | FSR3 | cap~=55.6 (=real*2, COMPUTED not measured)
+[FidelityFX] FG dispatch desc: numGeneratedFrames=1 outputsFilled=1/4 frameID=0,300,600,900,1200,1500
+[W] [DLSSNR] D3D12 command contexts saturated; applying CPU backpressure
+[FrameGen]  DLSSNR: ... frames=179 -> 359 -> 539 -> 719 -> 899 ...   (~36 次/秒，满 4K 的 NR)
+[Streamline] 实测帧间隔 dt 23.73/25.54/30.10ms，最长帧 0</pre>
+<ul>
+<li><code>numGeneratedFrames=1</code> 是 <b>FSR3 后端自己填的</b>（我们只读不写，<code>FidelityFX.cpp:121-136</code> 的注释就是为这件事写的）
+⇒ <b>FSR3 的天花板就是 2x，这是 API 事实，不是 bug。</b></li>
+<li>右上角那个数字 = <b>真实帧率 × 倍数</b>。FSR3 路上倍数被硬编码成 2（<code>ImguiMenu.cpp:204-206</code>）
+⇒ 你看到的大约 60 = <b>真实 30 × 2</b>。数字在翻倍，但<b>基数掉了</b>：NR 以满 4K 每帧跑一遍 + 命令队列饱和 + CPU 背压，
+把真实帧率从 ~50 压到了 28。</li>
+<li><b>闪烁的出处也在这里</b>：<code>NRAllowWithFrameGen=0</code> 那一局<b>根本没被读到</b>（见第三节），
+所以 DLSS5 和插帧在 FSR3 路上无条件叠在一起 —— 两个时序处理器为同一帧写历史，这是项目里记了很久的闪烁源。</li>
+</ul>
+
+<h2 class="bad">二、4x 没出现，因为<b>我们一帧都没往 DLSS-G 递</b></h2>
+<p>这是本轮最重要的发现，证据全部来自 22:54 那一局自己的日志。四行放在一起读：</p>
+<pre>[22:54:56.062] [MFG] stall governor: frame took 346 ms ... step held at 4x, accepted 4x
+[22:55:04.060] [MFG] probe edge: menu guard released, SetDLSSGOptions resumes on this frame
+[22:55:04.060] [MFG] debug CHECK: Present skips SetDLSSGOptions even though the menu guard is
+               not engaged (menuBlock=0 frames=0 blocked=571 unblocked=1)
+[22:55:04.324] [Streamline] DLSSG presented per real frame = 4 (status=0)</pre>
+<ul>
+<li><b><code>blocked=571 / unblocked=1</code></b> ⇒ 菜单闸门在 572 帧里真了 <b>571</b> 帧。
+那条 <code>if</code> 链（<code>DX12SwapChain.cpp:1413-1429</code>）在闸门为真时<b>既不调 <code>SetDLSSGOptions</code> 也不调 <code>EvaluateDLSSG</code></b>。</li>
+<li>于是全程 <code>presented per real frame = 1</code> —— <b>一个插帧都没有</b>。</li>
+<li><b>闸门一放开，0.3 秒后同一份日报告诉我们「4」。</b> 因果就写在这一行里：
+<b>4x 的请求不是被运行时拒绝的，是从来没被发出去。</b></li>
+<li>你上一轮说的「四倍帧生成感觉也没成功」——<b>在那一局里是准确的。</b></li>
+</ul>
+
+<p>那到底是什么菜单？22:54 的菜单探针说得很清楚：</p>
+<pre>[XRAY] MENU PROBE ... IsMenuOpen(is)=false/false/false  IsMenuOpen(literal)=false/false/false
+[XRAY] MENU EDGE open=1 serial=2   presentedBefore=0
+[XRAY] MENU EDGE open=0 serial=573</pre>
+<p><b>serial 2 那一刻，所有真实菜单都是关的</b>，而闸门是开的。菜单判定里唯一还能成立的就是最后那一项
+<code>IsMenuOpen("Fader Menu")</code>（<code>Streamline.cpp:386-405</code>）。而这一局（23:38）新加的见证证明
+<b>淡出菜单在玩家位于世界时是常开的</b>：<code>fade=1</code> 连续 40+ 秒，同时 <code>paused=0 ld=0</code>，
+而你<b>肯定在世界里</b>（我让你站了 15 秒）。</p>
+
+<div class="card al">
+<p style="margin:0"><b>⇒ <code>MenuDisableFrameGen=1</code> 加上「把淡出菜单当菜单」= 在世界里闸门永久为真 = DLSS-G 永远拿不到帧。</b></p>
+<p style="margin:9px 0 0" class="dim">为什么不直接把 <code>Fader Menu</code> 删掉：账本 v0.96 记着删掉它<b>进不去游戏</b>（已回退）。
+探针解释了为什么 —— <b>它就是启动期的唯一保护</b>（serial 2 只有它在开）。
+所以这一版的规则是：<b>淡出菜单只在「我们还不该在世界里」时算菜单</b>（Loading Menu 开着，或进程前 90 秒），
+真实菜单（Main / Loading / Journal / Pause / RaceSex）照旧照算。</p>
+</div>
+
+<h2 class="bad">三、第二条机制：v0.75 拆掉的那道跨 API 围栏</h2>
+<p>同一天 22:54 的看门狗，每 0.2 秒一条：</p>
+<pre>22:55:04.415  frames=581  ...  lastPr=584
+22:55:04.616  frames=586  ...  lastPr=604     &lt;-- 从这里开始分叉
+22:55:05.017  frames=597  ...  lastPr=648
+22:55:06.858  frames=643  ...  lastPr=832     &lt;-- 68 个真实帧，多了 190 次 present
+              dsync=0（全程）</pre>
+<ul>
+<li><code>lastPr</code> 是 DXGI 自己的 present 计数，<code>frames</code> 是我们的真实帧计数。差值 2.5 秒内从 3 长到 189
+⇒ <b>4x 真的在上屏</b>（<code>dsync=0</code> 说明后缓冲索引在推进）。<b>可是画面不动 ⇒ 推的是同一张内容。</b></li>
+<li><code>DX12SwapChain.cpp:1289</code>：<code>static constexpr bool kD3D12WaitsOnD3D11 = false;</code>
+—— 这是 v0.75 拆掉的。被拆掉的是 <code>d3d11 Signal</code> + <code>d3d12 queue Wait</code>。</li>
+<li>拆它的理由是「07:11 那局 fence 50 秒停在初值 1」。<b>而没有 Signal 的 fence 看上去就是这样。</b></li>
+<li>代价：D3D12 队列读 <code>swapChainBufferWrapped</code> / <code>colorOutWrapped</code>（<b>都是 D3D11 写的</b>）时
+<b>没有任何定序</b>，而 <code>DX12SwapChain.cpp:1248-1250</code> 的注释至今还写着「必须在 fence 之前（D3D11 写 colorOut
+完成后随 Signal/Wait 同步，D3D12 拷贝才能稳定读到）」—— <b>同一条注释依赖的定序，被 v0.75 拿掉了。</b></li>
+<li>更要紧的是 v0.75 自己的注释写着：「doodlum 的 ENBFrameGeneration 保留了这个双向等待并且工作正常……
+把它当成<b>待否证的假设</b>，而不是从可用参照移植来的做法。」<b>现在有证据可以否证了。</b></li>
+</ul>
+
+<h2 class="warn">四、还有一条：你的配置被菜单吃掉了</h2>
+<pre>[23:39:49] [FrameGen] INI saved: Provider=1 DLSSGFramesToGenerate=3 MFGMaxFramesOverride=0 NR=1
+[23:39:49] [FrameGen] Provider -> 1 (DLSSG) | INI saved. | RESTART REQUIRED</pre>
+<p>盘上结果：<code>E:/EJ/mod/mods/.../DynamicShaderFrameGen.ini</code> 从 <b>14,559 B 变成 517 B</b>。</p>
+<ul>
+<li><code>SaveSettingsToIni</code> 写了 27 个键，<b>漏了 <code>NRAllowWithFrameGen</code></b> —— 而读取端读它。
+⇒ 按一次 Save，下次启动 NR 就静默变回「与帧生成互斥」，而且注释模板整份没了。</li>
+<li>这正是 <code>ImguiMenu.cpp:232-234</code> 注释里说已经修过一次的同一类缺陷 —— <b>回退了</b>。</li>
+<li><b>而且：构建即部署。</b> <code>CMakeLists.txt:107-113</code> 的 POST_BUILD 会把源树的
+<code>SKSE/Plugins/DynamicShaderFrameGen.ini</code> 拷进 mod 目录 —— 那次编译已经把 517 B 那份盖回成模板了。
+<b>所以：要改的永久位置是源树那份模板，不是部署出来的那份。</b></li>
+</ul>
+
+<h2 class="pur">五、v1.21 改了什么（五处，全部有上文作依据）</h2>
+<table>
+<tr><th>#</th><th>位置</th><th>改动</th><th>依据</th></tr>
+<tr><td>1</td><td><code>Streamline.cpp</code> 菜单判定</td><td>淡出菜单只在 Loading 开着 / 前 90 秒算菜单（<code>MenuGuardFader</code>，默认 1）</td><td>第二节</td></tr>
+<tr><td>2</td><td><code>DX12SwapChain.cpp:1289</code></td><td><code>kD3D12WaitsOnD3D11</code> 从常量改为读 INI（<code>InteropFenceWait</code>，默认 1）</td><td>第三节</td></tr>
+<tr><td>3</td><td><code>FrameGen.h/.cpp</code></td><td>上面两个键的字段 + 读取</td><td>—</td></tr>
+<tr><td>4</td><td><code>ImguiMenu.cpp</code></td><td>补写漏掉的 <code>NRAllowWithFrameGen</code> + 两个新键</td><td>第四节</td></tr>
+<tr><td>5</td><td><code>fgGeneratingNow</code></td><td>去掉 <code>dlssgMode &amp;&amp;</code>：FSR3 路上 <code>NRAllowWithFrameGen</code> 以前<b>完全无效</b></td><td>第一节的闪烁</td></tr>
+</table>
+<p class="dim">第 5 条的边界写死在这里：DLSSG 路上 <code>dlssgMode</code> 本来就为真，
+<b>去掉它对该路的表达式逐字等价</b> ⇒ 不可能污染 Provider=1 的实验。</p>
+
+<h2>六、下一局怎么跑，看什么</h2>
+<p>INI 已经是：<code>Provider=1</code> + <code>DLSSGFramesToGenerate=3</code> + <code>MFGMaxFramesOverride=3</code>
++ <code>NRAllowWithFrameGen=0</code>（先只测 4x）+ <code>MenuDisableFrameGen=1</code> + <code>MenuGuardFader=1</code>
++ <code>InteropFenceWait=1</code>。</p>
+<table>
+<tr><th>看到</th><th>结论</th></tr>
+<tr><td>进世界就 <code>presented per real frame = 4</code></td><td class="ok">机制①成立：以前是请求发不出去，不是运行时拒绝</td></tr>
+<tr><td>走动时画面活（<code>plrD&gt;0</code>、<code>clipDev</code> 明显 &gt;0）</td><td class="ok">机制②成立：围栏是根因 → 再开 <code>NRAllowWithFrameGen=1</code> 冲你的总目标</td></tr>
+<tr><td>仍定死，但 <code>LIVE hrsD</code> <b>仍在走</b></td><td class="warn">冻结在呈现路径 → 下一步做<b>像素探针</b>（读回 back buffer 像素，这是唯一能把「世界在动」与「屏幕陈旧」分开的仪器）</td></tr>
+<tr><td>仍定死，且 <code>hrsD==0</code></td><td class="warn">游戏时钟停了 ⇒ 冻结在游戏里，插件不背这口锅</td></tr>
+<tr><td><code>stage=</code> 停在 <code>d3d12 queue Wait</code></td><td class="warn">围栏不可用 → 改 INI <code>InteropFenceWait=0</code>（不用重编译）</td></tr>
+</table>
+<p><b>操作：① 进世界站着不动 15 秒；② 按住 W 走 5 秒以上；③ 再退。</b>
+<code>[CAM] PC v1.19</code> 每秒一行，日志停在哪一秒都不影响。</p>
+
+<h2>七、L0 两遍自检</h2>
+<p><b>第一遍·手脚</b>：DLL <code>build/NINJA</code> 与 MO2 部署<b>双份 md5 一致</b>
+<code>60378778d6171d3e2651ff3758b47fcb</code>（1,358,336 B）；INI 源树与部署一致
+<code>4dabf3bdee6633400ff4cccff70871e4</code>（19,761 B、CRLF 343 / 裸 LF 0、30 个键）；
+三份补丁脚本先 <code>ast.parse</code> 再干跑再落盘，锚点 <code>count==1</code>，重跑一律 <code>REFUSED</code>，
+行尾逐文件实测（<code>DX12SwapChain.cpp</code> 是纯 LF，其余 CRLF）并把裸 LF 计数打到 0；
+<code>git status --short</code> = 0，HEAD <code>741fbe8</code>，tag <code>v1.21</code>。</p>
+<p><b>第二遍·脑子</b>：① 机制①不是推断 —— 「闸门放开」与「报 4」在同一份日志里相隔 0.3 秒，
+而且 <code>blocked=571 unblocked=1</code> 是程序自己的计数器；② 机制②是<b>症状吻合</b>，
+present 在涨而内容不变，我把它当<b>头号嫌疑</b>而不是结论；③ 我<b>没有</b>把 <code>Fader Menu</code> 直接删掉 ——
+v0.96 的教训摆在那里，所以加了「只在前 90 秒 / Loading 开着时算」这条保底；
+④ 会不会白跑：两个新键都能<b>只改 INI</b> 回退，且六种结果每一种都有明确的下一步。</p>
+<p><b>诚实边界</b>：我跑不了游戏，机制②仍未上机验证；DLSS5 只证了「在跑」没证「上屏」；
+RTX 20/30 一行未写。本轮我自己还踩了一个错：INI 补丁第一版只插了文档、<b>没插 <code>InteropFenceWait=1</code> 那一行</b>，
+而那时 post-condition 查的是裸字符串，被头部提到它的散文满足了 —— 当场改成带换行的<b>值行锚定</b>并重做，
+这条已写进方法论（L37 的一半：断言只能由真东西满足）。</p>
+
+<footer>
+DynamicShaderFrameGen v1.21 · commit <code>741fbe8</code> · tag <code>v1.21</code> ·
+账本第 33 章 / 当日记录 §6.29 ·
+归档 <code>docs/runlogs/2026-09-19-2338-v1.19-fsr3-alive-dlssg-frozen.*</code> 与
+<code>docs/runlogs/2026-09-19-2254-v1.18b-hard-freeze-from-world-entry.*</code>
+</footer>
+
+</div>
+</body>
+</html>
