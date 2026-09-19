@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>铁律总表 L0–L25 · DynamicShaderFrameGen</title>
+<style>
+  :root{
+    --bg:#f4f0e6; --card:#fffdf8; --ink:#2b2723; --dim:#6b645c;
+    --line:#ddd5c6; --rust:#8c4a32; --slate:#4a5b6b; --sand:#a8894f;
+    --ok:#3f6b47; --bad:#9c3a2e;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:28px 20px 60px;
+    background:var(--bg); color:var(--ink);
+    font:15px/1.75 "Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+  }
+  .wrap{max-width:1000px;margin:0 auto}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:.4px}
+  .sub{color:var(--dim);font-size:13.5px;margin-bottom:22px;line-height:1.9}
+  .sub code{background:#eae3d6;padding:1px 5px;border-radius:3px;font-size:12.5px}
+  h2{
+    font-size:18px;margin:34px 0 12px;padding-bottom:7px;
+    border-bottom:2px solid var(--line);
+  }
+  h2 .tag{font-size:12.5px;color:var(--dim);font-weight:400;margin-left:8px}
+  .card{
+    background:var(--card);border:1px solid var(--line);border-radius:6px;
+    padding:16px 18px;margin-bottom:14px;
+  }
+  .l0{border:2px solid var(--rust);background:#fdf7f3}
+  .l0 h3{margin:0 0 10px;font-size:17px;color:var(--rust)}
+  blockquote{
+    margin:10px 0 14px;padding:10px 14px;border-left:3px solid var(--rust);
+    background:#f6efe8;color:#43372e;font-size:14.5px;
+  }
+  .pill{
+    display:inline-block;background:var(--slate);color:#fff;font-size:11.5px;
+    padding:2px 8px;border-radius:10px;margin-right:8px;letter-spacing:.3px;
+  }
+  .pill.p1{background:var(--sand)}
+  .pill.p2{background:var(--rust)}
+  ol,ul{margin:8px 0 4px;padding-left:22px}
+  li{margin:4px 0}
+  table{width:100%;border-collapse:collapse;margin:6px 0 2px;font-size:14px}
+  th,td{text-align:left;vertical-align:top;padding:8px 10px;border-bottom:1px solid var(--line)}
+  th{background:#eee7da;font-weight:600;font-size:13px;color:#4a423a}
+  td.n{white-space:nowrap;font-weight:700;color:var(--rust);width:52px;font-family:Consolas,monospace}
+  td.src{width:150px;color:var(--dim);font-size:12.5px;line-height:1.6}
+  code{font-family:Consolas,"Courier New",monospace;font-size:12.8px;
+       background:#eee7da;padding:1px 4px;border-radius:3px}
+  .key{color:var(--rust);font-weight:700}
+  .foot{
+    margin-top:34px;padding-top:14px;border-top:2px solid var(--line);
+    color:var(--dim);font-size:13px;line-height:1.95;
+  }
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:760px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>铁律总表 · L0–L25</h1>
+  <div class="sub">
+    工程 <code>D:/Modding/DynamicShaderFrameGen</code> · 权威账本 <code>MFG_MASTER_NOTES.md</code>（第 0 章之前）<br>
+    由原来散在 <b>六处</b>的旧铁律收编而成（1.3 / 第 6 章 / 13.1 / 13.4 / 15.1 / 16.11–16.16 / 18.3）。
+    <b>原文一律不动</b>，此表为收编与升级；两处冲突以此表为准。<br>
+    每条后面是它换来的<b>代价</b>——没有代价的条目不该进来。
+  </div>
+
+  <div class="card l0">
+    <h3>L0 · 元铁律 —— 交付前必须自我检查两遍</h3>
+    <blockquote>
+      用户 2026-09-19 09:40 原话：<br>
+      「每次你看完日志改完要自我检查两遍 再给我 不要每次骗我 这个是铁律 记住 每次照做」
+    </blockquote>
+    <p>
+      <b>「骗」的判据不是"有没有撒谎"，而是"手里有没有证据"。</b>
+      未经证实的断言，在用户那里与欺骗等价——他要花时间去跑、去试、去发现是空的。
+      <span class="key">没有证据只能写「未证」；不确定必须说「不确定」。先给结论、后补验证 = 骗。</span>
+    </p>
+    <div class="grid">
+      <div>
+        <p><span class="pill p1">第一遍 · 手脚</span>我改的东西真的落盘/生效了吗</p>
+        <ol>
+          <li>逐符号 <code>grep</code> 回读</li>
+          <li><b>逆操作还原 → 逐字节相同</b>（纯增量证明）</li>
+          <li>行尾 CRLF/LF 计数 + stray = 0</li>
+          <li>构建通过（便宜，但<b>不是唯一</b>验证器）</li>
+          <li>双份 md5（构建 == 部署）+ 二进制内版本字符串</li>
+          <li>锚点 <code>count==1</code>；<code>post-condition</code> 查<b>结果文本</b></li>
+        </ol>
+      </div>
+      <div>
+        <p><span class="pill p2">第二遍 · 脑子</span>我说的结论真的站得住吗</p>
+        <ol>
+          <li>★ <b>反向假设</b>：若结论是反的，日志长什么样？<b>我看到的能否排除它？</b></li>
+          <li>这个量有没有写者 / 配置有没有 override / 注释是否过期</li>
+          <li>这条代码路径<b>真的会被走到</b>吗</li>
+          <li>「改 A 为 B」前证明 <b>A ≠ B</b></li>
+          <li><b>同时发生 ≠ 因果</b>（分不开就写「未证」）</li>
+          <li>空集 / 异常值会不会被静默当成「健康」</li>
+          <li><b>用户会不会因此白跑一趟</b></li>
+        </ol>
+      </div>
+    </div>
+    <p style="margin-bottom:0">
+      <b>交付时逐条列出两遍的结果</b>，不写"我已检查过"——用户要的是能据此行动的信息。
+    </p>
+  </div>
+
+  <h2>A 组 · 读数 <span class="tag">判断一个数能不能用</span></h2>
+  <table>
+    <tr><th>#</th><th>铁律</th><th>出处 / 代价</th></tr>
+    <tr><td class="n">L1</td><td><b>只有实测字段能当结论。</b><code>dlssgMaxFramesToGenerate</code>（STOCK 上报）、<code>dlssgEffectiveMax</code>（我的请求）、<code>mult(pres)</code> 全是<b>声明</b>；事实只有 <code>dlssgAcceptedFrames</code> 与 <code>mult(acc)</code>。</td><td class="src">1.3、13.1</td></tr>
+    <tr><td class="n">L2</td><td><b>读任何量之前三问</b>：① 有没有写者（<code>grep</code>）② INI 有没有 override 键 ③ 注释是否过期。<b>不能变的量是仪表或配置，不是数据。</b></td><td class="src">16.11 → 16.16 升级</td></tr>
+    <tr><td class="n">L3</td><td><b>解析器对无法解析的输入必须尖叫。</b>打 <code>NO DATA</code> / 静默跳过 = 把异常翻译成"健康"，而空集在判读层和健康长得一样。</td><td class="src"><code>clipDev</code> 正则无负号；横幅正则被 <code>(probe build, compiled</code> 打破</td></tr>
+    <tr><td class="n">L4</td><td><b>名字会骗人，必须读定义。</b><code>stage=</code> 是"最后写入的名字"不是"卡住的位置"；<code>camPrev(ok/used)</code> 的 ok 是<b>布尔</b>不是计数器；<code>CameraProj</code>(c8) ≠ <code>CameraProjUnjittered</code>(c40)。</td><td class="src">13.4、19、20 章</td></tr>
+    <tr><td class="n">L5</td><td><b>「这是个死仪表」的判定本身要复核。</b><code>move=0.0000</code> 曾被我判为死字段，实为<b>相机真没动</b>（<code>move</code> = <code>snapAcceptDist</code> 瞬量，实测非零）。</td><td class="src">19–20 章订正，一度误导</td></tr>
+  </table>
+
+  <h2>B 组 · 判据 <span class="tag">判断一条判据会不会响</span></h2>
+  <table>
+    <tr><th>#</th><th>铁律</th><th>出处 / 代价</th></tr>
+    <tr><td class="n">L6</td><td><b>判据必须会变化。</b>拿僵死常量当门 = 空操作。</td><td class="src">v1.02c（<code>sameCamera</code> 恒真 ⇒ 每帧 identity）</td></tr>
+    <tr><td class="n">L7</td><td><b>证明它是你读它那一刻所代表的那一帧。</b>会被覆盖的变量先快照，并把顺序写成索引断言。</td><td class="src">18.3（750 被覆盖 → 757 先快照）</td></tr>
+    <tr><td class="n">L8</td><td><b>累计量不能做窗口边界。</b><code>path&gt;0</code> 一旦涨上去就恒真 ⇒ 窗口盖满全局、<b>结论反向</b>。窗口边界必须是瞬量。</td><td class="src">19 章（错报 <code>8 of 8</code>，正确是 <code>0 of 8</code>）</td></tr>
+    <tr><td class="n">L9</td><td><b>回归必须在合成样本上自证会分歧</b>；最有力的是"两份样本只差一个变量，判据必须给相反结论"。</td><td class="src">CASE F / G</td></tr>
+    <tr><td class="n">L10</td><td><b>判读代码自己也要被测。</b>回归脚本的真正价值常常不是验证新判据，而是对判读层做对抗测试。</td><td class="src">一个"必须报 (b)"的样本逼出了负号 bug</td></tr>
+  </table>
+
+  <h2>C 组 · 动代码之前</h2>
+  <table>
+    <tr><th>#</th><th>铁律</th><th>出处 / 代价</th></tr>
+    <tr><td class="n">L11</td><td><b>改 A→B 之前先证明 A≠B。</b>空操作修复 = 白干一轮 <b>+ 让用户白跑一趟游戏</b>。</td><td class="src">第 17 章（把过期注释当代码，两构造器 sha1 相同）</td></tr>
+    <tr><td class="n">L12</td><td><b>插桩之前先证明那条路径会被走到。</b></td><td class="src">探针三连空：<code>mvecScale</code>、<code>path</code>、<code>[MOTION]</code>（0 行）</td></tr>
+    <tr><td class="n">L13</td><td><b>修一个真实错误 ≠ 修的是正在追的问题。</b>修复生效而症状照旧 ⇒ 另有根因，不许收工。</td><td class="src">v1.04（<code>capMult</code> 真修好，冻结照旧）</td></tr>
+    <tr><td class="n">L14</td><td><b>「锚点唯一」与「只跑一次」是两件事。</b>插入型补丁天然不消耗锚点，必须另有幂等守卫。</td><td class="src">两次重复插入</td></tr>
+    <tr><td class="n">L15</td><td><b>改后逐符号回读</b>；<code>post-condition</code> 检查<b>结果文本</b>，不是输入文本。</td><td class="src">曾因检查输入而误报成功</td></tr>
+  </table>
+
+  <h2>D 组 · 下结论之前</h2>
+  <table>
+    <tr><th>#</th><th>铁律</th><th>出处 / 代价</th></tr>
+    <tr><td class="n">L16</td><td><b>「输出被计数证明是通的」≠「这个状态机不是故障点」。</b>发布计数是最便宜的反证。</td><td class="src">15.1</td></tr>
+    <tr><td class="n">L17</td><td><b>跨进程独立证据 &gt; 自证。</b>别的程序在 hook 点看到的同一份数据，比我的日志硬。</td><td class="src">第 20 章（Transfusion <code>[MOTION]</code>）</td></tr>
+    <tr><td class="n">L18</td><td><b>同时发生 ≠ 因果。</b>分不开就写「未证」，不许升格成结论。</td><td class="src">4x 启动 ⊥ <code>CameraPosAdjust</code> 变值（差约 900 单位、无过渡帧）</td></tr>
+    <tr><td class="n">L19</td><td><b>一行未做的东西不许说做了。</b>第 0 章的诚实表就是为此存在。</td><td class="src">20/30 系一行未写；DLSS5 代码在、未上机</td></tr>
+  </table>
+
+  <h2>E 组 · 与用户的接口 <span class="tag">最贵的一组</span></h2>
+  <table>
+    <tr><th>#</th><th>铁律</th><th>出处 / 代价</th></tr>
+    <tr><td class="n">L20</td><td><b>先把手上的可玩状态还给用户，再谈诊断。</b></td><td class="src">09:05 改 INI（<code>Provider=0</code>，带备份）</td></tr>
+    <tr><td class="n">L21</td><td><b>用户的症状描述是最高优先级证据，不许用我的假设覆盖它。</b>「画面是来回循环的」「进不去游戏、只有音乐」两次把案子整个翻过来。</td><td class="src">第 16 章、第 20 章</td></tr>
+    <tr><td class="n">L22</td><td><b>让用户进游戏之前，先离线证明这趟运行有信息量。</b>否则就是白跑：v1.07c 那次功能为空操作；07:37 那次心跳全落在停下之后。<br>先决条件：<code>heartbeats inside the moving window: N of M</code>，<b><code>N=0</code> 即白跑</b>。</td><td class="src">第 17、19 章</td></tr>
+  </table>
+
+  <h2>F 组 · 环境 <span class="tag">正文见第 6 章</span></h2>
+  <table>
+    <tr><th>#</th><th>铁律</th></tr>
+    <tr><td class="n">L23</td><td><b>行尾逐文件实测</b>（改前实测、改后核对）。本工程：<code>Streamline.cpp</code>/<code>.h</code> 纯 CRLF；账本 / 技能 / 工具脚本纯 LF；<code>FrameGen.h</code>、<code>main.cpp</code> 混合。</td></tr>
+    <tr><td class="n">L24</td><td><b><code>core.autocrlf=true</code> 且无 <code>.gitattributes</code></b> ⇒ 任何 <code>git checkout / reset / stash</code> 会把纯 LF 文件翻成 CRLF。<b>修法已写（18.9 E），未落地。</b></td></tr>
+    <tr><td class="n">L25</td><td><b>构建即部署</b>；改后核<b>双份 md5</b>（build == MO2 部署）+ 二进制内版本字符串 + 确认游戏本体 <code>data/</code> 无残留副本。</td></tr>
+  </table>
+
+  <div class="foot">
+    <b>写在哪：</b>
+    <code>MFG_MASTER_NOTES.md</code>（131828 B，第 0 章之前）·
+    <code>~/.workbuddy/MEMORY.md</code>（第 3 行，跨项目）·
+    工作区 <code>memory/MEMORY.md</code>（压成三行）·
+    技能 <code>framegen-diagnosis</code> §48（可执行版）<br>
+    <b>本轮提交：</b><code>f0296aa</code>（铁律与总表）、<code>3023879</code>（当日日志 §5）·
+    工作树干净 · <b>本轮未改 src/，无需用户上机</b><br>
+    <b>纯增量机器证明：</b><code>tools/verify_law0_insertion.py</code> —— 账本删除插入块后<b>与 git HEAD 逐字节相同</b>（123605 B），13/13 通过。
+  </div>
+
+</div>
+</body>
+</html>
