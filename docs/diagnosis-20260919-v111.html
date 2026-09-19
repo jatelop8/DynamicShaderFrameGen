@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DFG v1.11 诊断 —— 门被它要检测的故障清零</title>
+<style>
+  :root{
+    --bg:#f6f3ee; --card:#fffdf9; --ink:#2c2823; --dim:#6b635a;
+    --line:#ded6c9; --warn:#9c4a2f; --ok:#4a6b4a; --accent:#8a6d3b;
+    --mono:"Cascadia Mono","Consolas","SFMono-Regular",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.75 "Microsoft YaHei","PingFang SC",system-ui,sans-serif;}
+  .wrap{max-width:1000px;margin:0 auto;padding:30px 22px 60px;}
+  h1{font-size:23px;margin:0 0 4px;letter-spacing:.3px;}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:24px;}
+  h2{font-size:17px;margin:32px 0 10px;padding-left:10px;
+     border-left:3px solid var(--accent);}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:6px;
+        padding:16px 18px;margin:12px 0;}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13.5px;}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top;}
+  th{background:#efe9df;font-weight:600;}
+  code{font-family:var(--mono);font-size:12.5px;background:#efe9df;
+       padding:1px 5px;border-radius:3px;word-break:break-all;}
+  pre{font-family:var(--mono);font-size:12.5px;background:#2f2b26;color:#e8e2d8;
+      padding:13px 15px;border-radius:5px;overflow-x:auto;line-height:1.6;}
+  .k{color:var(--warn);font-weight:700;}
+  .g{color:var(--ok);font-weight:700;}
+  .badge{display:inline-block;font-size:11.5px;padding:1px 8px;border-radius:10px;
+         border:1px solid var(--line);background:#efe9df;color:var(--dim);
+         margin-right:6px;font-family:var(--mono);}
+  ul{margin:8px 0;padding-left:22px;}
+  li{margin:4px 0;}
+  .q{font-size:16px;font-weight:700;margin:0 0 6px;}
+  .small{font-size:12.5px;color:var(--dim);}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>v1.11 &mdash; 「门」被它要检测的故障本身清零</h1>
+  <div class="sub">
+    2026-09-19 14:20 那局 · 日志 653,545 B · DLL md5 <code>75e38aa7…</code>
+    · commit <code>dbf278f</code> · tag <code>v1.11</code>
+  </div>
+
+  <h2>一、直答</h2>
+  <div class="card">
+    <p class="q">1. 是「卡死」吗？</p>
+    <p><b>不是。</b>watchdog 最后一行为 <code>alive=1</code>、帧号仍在涨、<code>presentAge=102ms</code>
+       —— 进程活着。<span class="k">真实帧率掉到 ~10 fps，而且画面完全静止</span>，
+       所以体感和卡死一样。</p>
+
+    <p class="q">2. 4x 和 DLSS5 同时在跑吗？</p>
+    <p><b>都在跑。</b><code>DLSSNR CHAINED with frame generation</code> 出现；
+       <code>hwMax=6 ask=4 accepted=4</code>；世界中每次 present 各出 4 个 flip。</p>
+
+    <p class="q">3. 那为什么画面不动？</p>
+    <p><b>因为插进去的 3 帧和上一帧一模一样。</b>发布给 DLSS-G 的相机被冻结在一台
+       <span class="k">场景固定的假相机</span>上（<code>pos=(-243.05,-415.31,118.56)</code>），
+       于是 <code>clipToPrevClip</code> = 单位阵 ⇒ DLSS-G 认为「相机没动」⇒ 复制上一帧。</p>
+
+    <p class="q">4. 找到根因了吗？</p>
+    <p><b>找到了，而且是代码层可复现地推出来的：</b>
+       v1.10 的接管门的计数器 <code>snapLockStill</code>，
+       <span class="k">被它要检测的那个故障自己清零</span>，所以门永远打不开。</p>
+  </div>
+
+  <h2>二、这局到底发生了什么</h2>
+  <table>
+    <tr><th style="width:110px">时刻</th><th>日志原文 / 事实</th></tr>
+    <tr><td>14:20:33</td><td>v1.10 构建载入，<code>Provider=1</code>，
+        <code>DLSSNR CHAINED with frame generation</code> ✓（4x + DLSS5 同时）</td></tr>
+    <tr><td>14:21:03</td><td><code>MENU EDGE open=1 serial=2</code> —— 进主菜单；
+        <code>LONG FRAME 20206.7ms</code>（载入存档）</td></tr>
+    <tr><td>14:21–14:28</td><td><b>在主菜单待了 7 分 11 秒</b>，稳定
+        <code>real=39.0</code>、<code>accepted=4</code></td></tr>
+    <tr><td>14:28:11.97</td><td><code>#181702 FOREIGN TAKEOVER (v1.10)</code> —— v1.10 的接管
+        <b>唯一一次成功触发</b>，<code>matChanges</code> 由 2 → <b>542</b>（3 秒内）</td></tr>
+    <tr><td>14:28:14.27</td><td><code>MENU EDGE open=0 serial=16308</code> —— 终于进世界，
+        <b>世界内只有 34 帧</b></td></tr>
+    <tr><td>14:28:14.28</td><td><code>lock RELEASED on the reset edge</code>（第 1 次）</td></tr>
+    <tr><td>14:28:14.35</td><td><code>[MOTION] clipToPrevClip[3].w=-195.222366 (must be 1)</code>
+        —— 冻结签名</td></tr>
+    <tr><td>14:28:14.41</td><td><code>lock RELEASED on the reset edge</code>（第 2 次，
+        <span class="k">134 ms 后</span>）⇒ 中间的 acquire 抓到了假相机 0.8391</td></tr>
+    <tr><td>14:28:15→18</td><td><code>matChanges</code> <b>冻结在 542</b>、
+        <code>move=0.0000</code>、<code>clipDev=0.000061</code>，直到日志结束</td></tr>
+  </table>
+  <p class="small">期间 <code>famRej</code> 从 34276 涨到 34681 —— 真正的活相机一直在到达、
+     一直以 ~100 次/秒被拒。</p>
+
+  <h2>三、根因：门被故障清零</h2>
+  <div class="card">
+    <p>v1.10 的接管条件写的是 <code>snapLockStill &gt;= 30</code>。而
+       <code>snapLockStill</code> 在<b>每一次 accept</b> 时都被置 0：</p>
+<pre>FrameGen.cpp:1073   } else { snapLockStill = 0; }     // `continues` 分支
+FrameGen.cpp:1069   snapLockStill = 0;                // same-family step break
+FrameGen.cpp: 933   snapLockStill = 0;                // acquire</pre>
+    <p>冻结的假相机<b>以 <code>d2 == 0</code> 到达自己的上一个到达点</b> ⇒
+       <code>continues</code> 为真 ⇒ 被接受 ⇒ <b>计数归零</b>。</p>
+    <p>实测印证：<code>still</code> 全程只在 <b>3 ~ 8</b> 之间徘徊，
+       而 <code>famRej</code> 涨到 <b>34681</b>。<span class="k">门永远打不开。</span></p>
+    <p class="small">唯一那次成功接管能触发，是因为一次 release 刚把
+       <code>snapHaveLast</code> 清掉；而它<b>证明了机制本身有效</b> ——
+       <code>matChanges</code> 3 秒内从 2 冲到 542。</p>
+  </div>
+
+  <h2>四、v1.11 改了什么：只有一处行为改动</h2>
+  <table>
+    <tr><th style="width:130px">位置</th><th>改动</th></tr>
+    <tr><td><code>FrameGen.h</code></td>
+        <td>新增 <code>std::uint64_t snapPubStale = 0;</code>
+            —— 连续多少次发布出去的矩阵<b>逐字节相同</b></td></tr>
+    <tr><td>发布点</td>
+        <td><code>if (!same) { ++snapMatChanges; snapPubStale = 0; } else { ++snapPubStale; }</code>
+            —— <b>全文唯一的清零点</b>，落在「矩阵真的变了」这一健康分支上</td></tr>
+    <tr><td>常数</td>
+        <td><code>kCamForeignMinRej = 30</code> → <code>kCamPubStaleTol = 200</code>
+            （200 ≈ 1.3 秒的<b>可证死</b>发布流）</td></tr>
+    <tr><td>接管门</td>
+        <td>改为 <code>snapPubStale &gt;= kCamPubStaleTol &amp;&amp; snapForeignMove &gt;= 200</code>
+            —— <b>第二条件一个字没动</b></td></tr>
+    <tr><td>心跳</td>
+        <td><code>[CAM] pub … fMove={} takeover={} stalePub={} | {}</code>；
+            <code>stalePub</code> 超阈时 verdict 直接写
+            「the published camera has been byte-identical for a long run」</td></tr>
+  </table>
+  <p><b>为什么第二条件不能改：</b>它才是安全性的来源。停住的族贡献不了位移，
+     所以「玩家本来就站着不动」（此时单位阵的 <code>clipToPrev</code> <b>是对的</b>）永远夺不走 anchor。</p>
+  <p><b>没做什么：</b>锁状态机、族指纹、release 路径、step-break 逻辑<b>一行未改</b>。</p>
+
+  <h2>五、L0 两遍自检</h2>
+  <div class="card">
+    <p><b>第一遍 · 手脚</b></p>
+    <ul>
+      <li>DLL 双份 md5 一致：<code>75e38aa7…</code>，1,337,856 B（build == 部署）</li>
+      <li>DLL 内新串各 1 次；旧串「has not moved for … arrivals」= <b>0</b></li>
+      <li>行尾：<code>FrameGen.cpp</code> 1599 CRLF / 裸 LF <b>0</b>；
+          <code>FrameGen.h</code> 409 / <b>0</b>（基线 1560/0、397/0，增量 = 新增行数）</li>
+      <li>INI 五键齐、两份 md5 一致 <code>a19307d4…</code>（L27：仓库那份才是部署源）</li>
+      <li>补丁脚本 7/7 锚点 <code>count == 1</code>；幂等守卫重跑 <code>REFUSED</code>(exit=1)</li>
+    </ul>
+    <p><b>第二遍 · 脑子（这一遍抓到 3 个我自己的错）</b></p>
+    <ul>
+      <li>★ <b>后置条件断言错</b>：断言「旧常量名不得出现」，而新注释里正当地点了旧常量名 ⇒ 误报 FAIL。
+          <b>要断言的是「声明消失」，不是「标识符消失」。</b></li>
+      <li>★ <b>子串匹配不是行首匹配</b>：<code>"### 49.1"</code> <b>包含</b> <code>"## 49.1"</code>
+          （匹配从下标 1 开始）⇒ <code>"## 49.1" in text</code> 对刚生成的标题误报。
+          标题检查必须<b>逐行锚定</b>。</li>
+      <li>★ <b>替换后没补行尾</b>，两条语句粘连 ⇒ <code>SyntaxError</code>。这就是 MEMORY.md 铁律第 4 条。</li>
+      <li>反向假设：<code>stalePub</code> 会不会在菜单里爆表、把 anchor 交给菜单相机？
+          理论可能，但需「被拒族自己走出 ≥200 单位」同时成立 —— 菜单里玩家相机本身在动。
+          <span class="badge">未证 · 残余风险</span></li>
+      <li>用户会不会白跑一趟：已核 INI 五键 + DLL 双份 md5；
+          但这趟仍可能因为残余风险没修好 ⇒ 判据写清楚（见下）。</li>
+    </ul>
+  </div>
+
+  <h2>六、下一局只看这几处</h2>
+  <table>
+    <tr><th style="width:44%">看到什么</th><th>结论</th></tr>
+    <tr><td><code>FOREIGN TAKEOVER (v1.11)</code> 出现后 <code>matChanges</code> 持续涨</td>
+        <td><span class="g">自愈路径生效</span>，发布相机跟着玩家动</td></tr>
+    <tr><td>走动时 <code>clipDev</code> 明显 &gt; 0（不再恒 <code>0.000061</code>）</td>
+        <td><span class="g">插帧开始有内容</span></td></tr>
+    <tr><td><code>stalePub=</code> 一直很小</td><td>发布流活着，正常</td></tr>
+    <tr><td><code>stalePub=</code> 涨到 200 却<b>不</b>接管</td>
+        <td><code>snapForeignMove</code> 没到 200 ⇒ 被拒族没有平滑路径，需要第三种判据</td></tr>
+    <tr><td>又冻结，但日志有 <code>[CAM] pub</code> 与 <code>stalePub=</code></td>
+        <td><b>第一次能定性的复现</b>，这一跑就够下结论</td></tr>
+  </table>
+
+  <h2>七、诚实边界</h2>
+  <div class="card">
+    <ul>
+      <li><b>「为什么接管前会锁到那台假相机」仍未证。</b>v1.11 只保证锁能<b>自愈</b>（~1.3 秒内），
+          不解释它怎么锁错的。</li>
+      <li><b>世界内 10 fps 的成因未证。</b>嫌疑：<code>RenderResolutionScale=0.44</code>
+          （渲染 1689×950）而 <code>NRRenderScale=1.00</code> ⇒ 每个真实帧做一遍 3840×2160
+          的 DLSS5 神经渲染。<b>没测过</b>，改一个 INI 值就能界定 —— 代价是 DLSS5 清晰度，
+          要不要试由你定。</li>
+      <li>我跑不了游戏。「能不能跑通」这句话只能由你那一趟的日志来定。</li>
+    </ul>
+    <p class="small">改前存档点 <code>src/backup-v1.11-20260919-143345/</code>。
+       立刻回到可玩（只改 INI）：<code>Provider=0</code> + <code>MFGMaxFramesOverride=0</code>。</p>
+  </div>
+
+</div>
+</body>
+</html>
