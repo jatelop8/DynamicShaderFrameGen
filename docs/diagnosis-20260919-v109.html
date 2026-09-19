@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DFG v1.09-diag — 冻结根因进度与下一步</title>
+<style>
+  :root{--bg:#14171c;--panel:#1c2027;--line:#2c323c;--fg:#e6e9ee;--dim:#9aa3b0;
+        --red:#e0564a;--grn:#4fb477;--amb:#d8a13a;--blu:#5b9bd5;}
+  *{box-sizing:border-box}
+  body{margin:0;padding:28px 22px 60px;background:var(--bg);color:var(--fg);
+       font:14px/1.7 "Segoe UI",system-ui,-apple-system,"Microsoft YaHei",sans-serif;}
+  .wrap{max-width:980px;margin:0 auto}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:22px}
+  h2{font-size:15px;margin:26px 0 10px;padding-left:9px;border-left:3px solid var(--blu)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin:10px 0}
+  .ans{border-left:4px solid var(--red)}
+  .ok{border-left:4px solid var(--grn)}
+  code,.mono{font-family:ui-monospace,Consolas,"Cascadia Mono",monospace;font-size:12.5px}
+  code{background:#0e1116;border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+  pre{background:#0e1116;border:1px solid var(--line);border-radius:6px;
+      padding:11px 13px;overflow-x:auto;font-size:12.5px;line-height:1.55;margin:8px 0}
+  table{border-collapse:collapse;width:100%;margin:8px 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+  th{background:#222833;color:var(--dim);font-weight:600}
+  .r{color:var(--red)} .g{color:var(--grn)} .a{color:var(--amb)} .b{color:var(--blu)}
+  ul{margin:6px 0 6px 18px;padding:0} li{margin:3px 0}
+  .tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:10px;
+       border:1px solid var(--line);color:var(--dim);margin-right:6px}
+  .big{font-size:15px}
+  .foot{margin-top:26px;padding-top:14px;border-top:1px solid var(--line);color:var(--dim);font-size:12px}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>DynamicShaderFrameGen — 冻结根因进度</h1>
+<div class="sub">v1.09-diag &nbsp;·&nbsp; 2026-09-19 11:25（含 INI 三键复核）&nbsp;·&nbsp; DLL 1,335,296 B &nbsp;·&nbsp; md5 <span class="mono">57122e95…</span>（build == 部署）&nbsp;·&nbsp; commit <span class="mono">506b5b4</span> / tag <span class="mono">v1.09</span></div>
+
+<div class="card ans">
+<div class="big"><span class="tag">直答</span>机制已确证，根因未定；<b class="r">跑通还没有发生</b> —— 因为切回 4x 后游戏一次都没启动。</div>
+<div style="margin-top:8px;color:#cfd6e0">
+日志 mtime <span class="mono">10:04:39</span> &lt; INI 落盘 <span class="mono">11:25:07</span>。
+本轮所有结论都来自 09:55 那局（<span class="mono">Provider=0</span>），而那一局<b>没有复现冻结</b>。</div>
+</div>
+
+<h2 style="border-left-color:var(--amb)">零、★ L0 第二遍·脑子拦下的一次白跑：DLSS5 的开关被关着</h2>
+<div class="card" style="border-left:4px solid var(--amb)">
+<b>切 4x 要三个键，线上 INI 只落了两个。</b>我用 <code>tools/patch_ini_4x_run.py</code>
+<b>自己声明的后置条件</b>复核线上文件，结果是 False：
+<pre>count(Provider=1)              = 1   ok
+count(MFGMaxFramesOverride=3)  = 1   ok
+count(NRAllowWithFrameGen=1)   = 0   FAIL  &lt;-- 它自己的脚本要求恰好 1
+PATCH-POSTCONDITION SATISFIED: False
+md5 = ed9655ad...  (14525 B)  ==  ini.bak_20260919_090521 逐字节相同
+                              ==&gt; 11:17:57 被回退过，不是"一直没改对"</pre>
+后果链（全部带行号，<span class="mono">DX12SwapChain.cpp</span>）：
+<code>Provider=1</code> + <code>FrameGeneration=1</code>
+=&gt; <code>fgGeneratingNow=true</code>(<code>:1161</code>)
+=&gt; <code>nrSuppressed=true</code>(<code>:1179</code>)
+=&gt; <code>if (neuralRenderingEnabled &amp;&amp; !nrSuppressed)</code>(<code>:1203</code>) <b>整段跳过</b>。
+<br>⇒ 那样起游戏：<b class="r">4x 会跑，DLSS5 一定不跑</b> —— 正好是目标的反面，又是一趟白跑。
+<br><b class="g">已修：</b><code>NRAllowWithFrameGen 0 → 1</code>。断言脚本、锚点 count==1、先备份
+<code>.bak_before_nrchain_20260919_112507</code>、等长替换（14525 B 不变）、
+纯 CRLF 259 / 裸 LF 0 保住、新 md5 <span class="mono">a19307d4…</span>。
+</div>
+<div class="card" style="border-left:4px solid var(--red)">
+<b>但「INI 写对了」≠「DLSS5 真跑了」。</b>唯一判据是日志里这一行：
+<pre>[FrameGen] DLSSNR CHAINED with frame generation (v1.01, NRAllowWithFrameGen=1)</pre>
+它不出现 ⇒ 开关没生效，后面都不用读了。<b>INI 的值不是代码执行过的证据，这是两件事。</b>
+</div>
+
+<h2>一、冻结机制（确证，非推断）</h2>
+<div class="card">
+<code>clipToPrevClip</code> = 单位阵 ⇒ DLSS-G 判定「相机没动」⇒ 生成的插帧 = 上一帧复制 ⇒ 画面静止、逻辑与音频照跑。
+<pre>Transfusion 自 dump  07:37:57.364
+[MOTION] clipToPrev rows=[1 0 0 0][0 1 0 0][0 0 1 0][0 0 0 1]  cameraPos=(0,0,1.00001001)</pre>
+<div style="color:#cfd6e0">⇒ 上游只要让「连续两次 <code>CheckFrameConstants</code> 拿到的 <code>a_fb</code> 逐字节相同」，<code>clipToPrev</code> 就必然塌成单位阵。</div>
+</div>
+
+<h2>二、★ 为什么两天读不出结论 —— 三条都是结构性的</h2>
+
+<div class="card">
+<b>E1 心跳只在 DLSSG 路，Provider=0 时零仪器输出。</b><br>
+<code>mapHit</code> / <code>lock(...)</code> / <code>clipDev</code> / <code>frozen</code> 的唯一执行点在 <code>CheckFrameConstants</code>，
+它在 <code>EvaluateDLSSG</code>（<span class="mono">Streamline.cpp:2027</span>），而 <code>EvaluateDLSSG</code> 只在
+<code>featureDLSSG</code> 为真时被调用（<span class="mono">DX12SwapChain.cpp:1419</span>）。
+<pre>实测 09:55 那局：mapHit = 0 条   XRAY 心跳 = 0 条
+⇒ 我前几轮的「三个候选」是在零仪器输出上推理出来的。</pre>
+</div>
+
+<div class="card">
+<b>E2 闸门窗口太窄，而且数错了量。</b><br>
+闸门本身两条路都跑（在 Map/Unmap hook 里），但 <code>[CAM] acc</code> 有 <b>200 行上限 × 0.25 s 节流</b>＝只覆盖前 50 秒；
+更糟的是 <code>snapAccept</code> 数的是<b>发布次数</b>而不是<b>变化次数</b>：
+<pre>[CAM] acc  #1        pos=(-50.00,600.00,80.00)  move=0.0000  path=0.00  devVP=15.011  detVP=-79.9373
+[CAM] acc  #19288    pos=(-50.00,600.00,80.00)  move=0.0000  path=0.00  devVP=15.011  detVP=-79.9373
+                     ↑ 19,288 次连续发布，矩阵逐字节相同 —— 看起来却像「很健康的忙碌捕获层」</pre>
+</div>
+
+<div class="card">
+<b>E3 ★ 证据被我销毁。</b><br>
+SKSE 的 spdlog sink 开档即截断。唯一复现冻结的 <b>07:36</b> 那局日志，在 09:55 那局启动时被覆盖；
+SKSE 目录里<b>没有任何轮转副本</b>（已 <code>ls</code> 确认）。
+⇒ 我无法再回看那一局。<b>这是本轮必须修掉的第一个问题</b>（见第四节 A）。
+</div>
+
+<h2>三、三个确定的代码缺陷（都有行号 + 日志数字）</h2>
+<table>
+<tr><th style="width:76px">编号</th><th>缺陷</th><th style="width:300px">证据</th></tr>
+<tr>
+  <td class="r">D1</td>
+  <td><b>到达率标定错 8.2 倍。</b>所有「连续 N 次到达」阈值都按 <b>60 次/秒</b>写注释，
+      而钩子实际被调用 <b>~495 次/秒</b>。</td>
+  <td><code>Δ612 arrivals / 1.22 s = 502/s</code>（另有 493/s）；<code>FPS real=41.4</code>
+      ⇒ <b>~12 次 Map/Unmap 每渲染帧</b>。<br>
+      <code>kCamStillTol=90</code> 注释写「~1.5 s at 60 Hz」→ 实际 <b>0.18 s</b>；
+      <code>kCamFrozenTol=600</code> 实际 <b>1.2 s</b>（注释写 10 s）。</td>
+</tr>
+<tr>
+  <td class="r">D2</td>
+  <td><b><code>kCamStillTol</code> 是死常量。</b>注释承诺「锁住的流连续 90 次未继续就释放」，
+      但全工程<b>没有任何比较点</b>。</td>
+  <td>grep 全工程：只有 定义(<code>:621</code>)、注释(<code>:814/904/926/935</code>)、日志参数(<code>:921/976</code>)。<br>
+      日志 <code>still=2/90</code> 从头到尾<b>不增长</b>（每次 accept 在 <code>:986</code> 被清零）；
+      <code>lock RELEASED</code> 行 = 0。<br>
+      v1.07b 注释自称「reset edge 是<b>唯一</b>释放路径」⇒ <b>锁到手后没有自己的释放路径</b>。</td>
+</tr>
+<tr>
+  <td class="r">D3</td>
+  <td><b><code>continues</code> 绕过族指纹。</b>族判定只在 <code>!continues</code> 分支里被使用，
+      而 <code>continues</code> 直接走接受分支。</td>
+  <td>族判定 <code>:855–889</code> 只在 <code>:898</code> 分支生效；
+      <code>continues</code>(<code>:891</code>, d2≤50²) 直接落到 <code>:985</code> 的 <code>else</code> 接受。<br>
+      ⇒ <b>静止相机 d2=0 天然「继续」自己、可永久占锁</b>，并把 <code>snapLockProj00</code> 刷成自己(<code>:994</code>)。</td>
+</tr>
+</table>
+<div class="card" style="border-left:4px solid var(--amb)">
+<b>⇒ 修锁之前必须先有 <code>[CAM] pub</code> 数据。</b>v1.09 已把它加上；<b>锁状态机一行未改</b> —— 这是上一轮「盲目修改」的直接纠正。
+</div>
+
+<h2>四、本轮做了什么（只加读数，零行为改动）</h2>
+<div class="card ok">
+<ul>
+<li><b>A 日志归档</b>：<code>main.cpp</code> 新增 <code>ArchivePreviousLog()</code>，在 <code>SKSE::Init</code> 截断之前把上一局日志复制为
+    <code>DynamicShaderFrameGen.&lt;YYYYMMDD&gt;-&lt;HHMMSS&gt;.log</code>；按 <b>7 天龄</b>清理，只匹配
+    <code>DynamicShaderFrameGen.20*.log</code>（不会碰 watchdog 日志、不会碰别的插件）。<b>证据不再被下一局销毁。</b></li>
+<li><b>B 被发布相机可见</b>：新增 <code>snapMatChanges</code>（发布矩阵与上一次发布不同的次数）；
+    <code>[CAM] acc</code> 去掉 200 行上限、节流 0.25 s → <b>1.0 s</b>（全程）；新增 <code>[CAM] pub</code> 行。</li>
+<li><b>C 仅注释</b>：D1 / D2 写进 <code>kCamStillTol</code> / <code>kCamFrozenTol</code> 处。</li>
+</ul>
+<pre>[CAM] pub #&lt;n&gt; pos=(x,y,z) move=… path=… matChanges=… arrivalsPerSec=…
+         | lock(pub/hold/re/still)=…/…/…/… proj00=… famRej=… frozenRep=… ident/diff=…/… | ok</pre>
+</div>
+
+<h2>五、下一步：判据（可玩配置下即可定性）</h2>
+<div class="card">
+运行 <b>30 秒以上，并且在游戏里走动</b>（别站着不动，否则这一跑就白费）。<br>
+<div style="margin-top:8px">看 <code>[CAM] pub</code> 一行：</div>
+<table>
+<tr><th style="width:330px">观测</th><th>结论</th></tr>
+<tr><td><code>matChanges</code> 持续增长，且 <code>pos</code> 跟随玩家</td>
+    <td>捕获 / 发布层是活的 ⇒ 冻结在 DLSSG 路的 <code>clipToPrev</code> 构造与历史 ⇒ 下一跑上 <code>Provider=1</code>，此时心跳才第一次可达</td></tr>
+<tr><td><code>pos</code> 不跟玩家 / <code>matChanges</code> 停滞而人在走</td>
+    <td>捕获层（字段偏移）是根因；<code>FrameGen.h:284–289</code> 已记录过「mis-offset read of the perFrame constant buffer, not a camera」</td></tr>
+<tr><td><code>arrivalsPerSec</code></td><td>顺便实测确认 D1</td></tr>
+</table>
+<div style="margin-top:10px;color:#cfd6e0">
+<b>两条路都能出这个数据</b>（闸门在 Map/Unmap hook，与 provider 无关）：
+<ul>
+<li><b class="b">Provider=0</b> —— 可玩、不冻结，能正常玩着录。此时只能拿到 <code>[CAM] pub</code>，拿不到心跳。</li>
+<li><b class="b">Provider=1</b>（当前 INI 状态）—— 想验 4x 就走这条；<b>即使冻结，这一跑也会第一次产生心跳</b>
+    （<code>mapHit</code> / <code>lock(...)</code> / <code>clipDev</code> / <code>frozen</code>），这是之前所有跑都没有的东西。冻住就 Alt+F4，20 秒足够。</li>
+</ul>
+</div>
+</div>
+
+<h2>六、L0 双检（逐条，不写「已检查」）</h2>
+<div class="card">
+<b>第一遍 · 手脚</b>
+<ul>
+<li>编译：<code>BUILD SUCCESS</code>，<code>error C*</code> / <code>LNK</code> = 0。</li>
+<li>双份 md5 一致：build <code>57122e95…</code> == MO2 部署 <code>57122e95…</code>，均 1,335,296 B。</li>
+<li>DLL 内字符串：<code>[CAM] pub #{} pos=</code> 1、<code>arrivalsPerSec=</code> 1、<code>matChanges=</code> 1、<code>frozenRep=</code> 1；
+    <code>accLogs &lt; 200u</code> = 0（已删）。</li>
+<li>行尾：<code>FrameGen.cpp</code> 裸 LF <b>0</b>、<code>FrameGen.h</code> 裸 LF <b>0</b>、<code>main.cpp</code> 裸 LF <b>7</b>（原有值，未变）。</li>
+<li>两处插入段已逐行回读，作用域正确（<code>matChanges</code> 在函数体、<code>[CAM] pub</code> 在 acc 的同一 <code>if</code> 内）。</li>
+<li>幂等：去掉 <code>--apply</code> 重跑 → <code>REFUSED, nothing written</code>。</li>
+</ul>
+<b>第二遍 · 脑子</b>
+<ul>
+<li><b>★ 反向假设</b>：若「发布层是死的」是假的会怎样？本局我用 <code>dist=</code> 反推被接受位置，发现 10:02 之后它变成会漂移的活相机
+    ⇒ <b>前 3 分钟静止是加载期，不是缺陷；这局没复现冻结。</b>（这是我本轮第二次自我推翻，标记为「未证」而不是结论。）</li>
+<li><b>A≠B</b>：<code>snapAccept</code>（发布次数）≠ <code>snapMatChanges</code>（变化次数）—— 混了就是两天的病根之一。</li>
+<li><b>这条路径真会走到吗</b>：游戏本体 <code>Data\SKSE\Plugins\</code> 下没有 INI/DLL，日志报的是 MO2 虚拟路径 ⇒ 改 mod 目录的 INI 确实生效（否则下一跑会白费）。</li>
+<li><b>同时≠因果</b>：<code>cameraPos</code> 变 <code>(0,0,1)</code> 与 4x 同时，因果仍未证。</li>
+<li><b>空集≠健康</b>：<code>mapHit</code>=0 不是「一切正常」，是「没有仪器」。</li>
+<li><b>用户会不会白跑</b>：这一跑不会再白费 —— 归档机制保证日志留存，<code>[CAM] pub</code> 保证判据一定打出来。</li>
+</ul>
+</div>
+
+<div class="foot">
+权威账本 <code>D:/Modding/DynamicShaderFrameGen/MFG_MASTER_NOTES.md</code> 第 22 章（本轮追写）；今日日记 §6.10。
+本轮未改任何锁行为；<code>src/</code> 的改动仅为诊断读数与注释。
+</div>
+
+</div></body></html>

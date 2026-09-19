@@ -2378,3 +2378,246 @@ c80(cur) 与 c82(prev) **不同** ⇒ 位置是活的。
 
 **本文件维护规则**：每次改动后追写「本轮改动 / 验证结果 / 新证据 / 新错误」，
 **不覆盖历史章节**，只在第 9 章与末尾追加。
+
+## 21. 冻结的完整因果链（2026-09-19 10:59，全部来自源码行号 + 日志原文）
+
+### 21.1 机制（已确证，非推断）
+DLSS-G 收到 `clipToPrevClip` = 单位矩阵 ⇒ 它判定「相机没动」
+⇒ 生成帧 = 上一帧复制 ⇒ 屏幕冻结、逻辑与音频照跑。
+证据：Transfusion 自己的 dump `07:37:57.364 [MOTION] clipToPrev rows=[1 0 0 0][...] cameraPos=(0,0,1.00001001)`。
+
+### 21.2 生产链（每一环都有行号）
+```
+引擎 perFrame 缓冲
+  │ Map/Unmap hook           src/FrameGen.cpp:540-592（tlsMappedFB 407）
+  ├─ AcceptCameraSnapshot     src/FrameGen.cpp:636  ← 族锁闸门，拒绝时 return false
+  │    └─ frameBufferCopy = a_src    src/FrameGen.cpp:991  ← **唯一写入点**
+  └─ SetMappedFrameBuffer(&frameBufferCopy)  src/FrameGen.cpp:587  ← 仅在 586 返回真时
+       │
+GetFrameBuffer()            src/FrameGen.h:236   ⇐ 返回 mappedFrameBuffer（即 &frameBufferCopy）
+  │
+EvaluateDLSSG(..., *fg.GetFrameBuffer())   src/DX12SwapChain.cpp:1428
+  │
+CheckFrameConstants(a_fb, ...)             src/Streamline.cpp:2027
+  ├─ c.cameraPos = a_fb.CameraPosAdjust      src/Streamline.cpp:553   ← cameraPos 唯一来源
+  └─ c.clipToPrevClip = inv(camCurVP) @ camPrevVP   src/Streamline.cpp:1109
+       │
+slSetConstants(c, ...)                     src/Streamline.cpp:1578
+```
+`s_prevCam*` 推进在 src/Streamline.cpp:752-766（无条件，只需 camCurOk）。
+
+### 21.3 两个断点候选（各有证据，尚未分辨）
+
+**断点 A —— 族锁闸门 latch 后世界帧再不通过**
+- 日志实测：`family rejected` = **238** 次，**全部**是 `proj00=1`（正交/阴影相机）被 `locked=0.149184`（世界族）拒绝，`ratio=6.7031`。
+- `pos=(-160.0,160.0,128.0) dist=456.1` 在 238 次里**逐字节相同** ⇒ 同一块从不更新的缓冲。
+- `lock RELEASED` = **0** 次。
+- `proj00` 全部取值：`1`×123、`0.8391`×99（菜单族）、`0.888889`×16、**`0.149184`×1** ⇒ **世界相机整个会话只到达过 1 次**。
+
+**断点 B —— 跳线程 Map/Unmap 不配对**
+- `tlsMappedFB` 是 `thread_local`（src/FrameGen.cpp:407）。
+- 同一处注释自己写着：「这个钩子实测被不止一个线程命中
+  （Transfusion [MOTION] 的 tid 在 40760 / 3508 之间交替），共享成员会被交叉覆盖。」
+- ⇒ Map 在 A 线程、Unmap 在 B 线程时，B 的 tls 为 nullptr ⇒ `AcceptCameraSnapshot` 不被调用
+  ⇒ `SetMappedFrameBuffer` 不装配 ⇒ frameBufferCopy 不更新。
+- v0.65 为何选 thread_local：为了修「共享成员被交叉覆盖」。**两难**：
+  共享会交叉覆盖，thread_local 会跳线程漏配。**唯一正确的第三种做法：按缓冲地址配对**。
+
+### 21.4 ★ 为什么两天读日志读不出东西（本轮新发现，也是本人失职）
+心跳（`mapHit(perFrame/unmap)`、`lock(pub/hold/re/still)`、`clipDev`）的唯一执行点在
+`CheckFrameConstants` 内（src/Streamline.cpp:1325-1540），而它**只在 DLSSG 路（Provider=1）被调用**
+（调用点 src/Streamline.cpp:2027，在 EvaluateDLSSG 内）。
+**实测：09:55 那份日志（Provider=0 / FSR3）`mapHit` = 0 条。**
+⇒ **那份日志根本没有仪器输出**，两天的「三个候选」是在无数据下推理出来的。
+
+### 21.5 判据（不需要走动、不需要判断画面、30 秒必出答案）
+`Provider=1` 下跑一次，心跳自动打印（每 30 帧或每 2 秒，
+src/Streamline.cpp:1341），看一个字段：
+
+    mapHit(perFrame/unmap)=N/M
+
+| 观测 | 结论 |
+|---|---|
+| N 涨、M 不涨（或 M << N） | **断点 B**：跳线程漏配 |
+| N、M 同步涨 | **断点 A**：族锁闸门 latch |
+
+### 21.6 两个断点的修法（预告，待 21.5 定性后再落盘）
+- **B**：`tlsMappedFB` 改为**按缓冲地址配对**（以 `pMappedResource->pData` 为键）。
+  既不交叉覆盖、也不跳线程漏配 —— 这是唯一正确的第三种做法。
+- **A**：同族 + 不再运动应允许 re-acquire；或在入口就把 `proj00=1`（正交/阴影）排除在闸门计数之外。
+
+### 21.7 本轮未改任何代码
+DLL 仍 `0a10b4b6...b613`（v1.08-probe）。INI 已切 `Provider=1 + MFGMaxFramesOverride=3 + NRAllowWithFrameGen=1`
+（备份 `.bak_before_4x_20260919_1015`）。待上机取 `mapHit` 判据。
+
+## 22. 第 22 章  v1.09-diag：为什么两天读不出结论（2026-09-19 11:1x）
+
+### 22.1 直接回答「跑通了吗」
+没有，而且现在连「跑过」都还没发生：
+DFG 日志 mtime = **10:04:39**，INI 落盘 mtime = **10:56:31**
+⇒ 切回 4x 之后游戏从未启动。本轮所有结论都来自 09:55 那局（Provider=0）。
+
+### 22.2 冻结机制（确证，非推断）
+`clipToPrevClip` = 单位阵 ⇒ DLSS-G 判定相机未动 ⇒ 插帧 = 复制上一帧。
+证据：Transfusion 自己 dump `07:37:57.364 [MOTION] clipToPrev rows=[1 0 0 0][0 1 0 0][0 0 1 0][0 0 0 1] cameraPos=(0,0,1.00001001)`。
+
+### 22.3 本轮新增：被发布相机是「死的」的直接证据（以及一次自我推翻）
+`[CAM] raw` 全矩阵转储，`#1`（09:55:50）与 `#86401`（09:58:55）**逐字节相同**：
+
+```
+ViewProjUnj | -6.70312 0 0 0 | 0 -1.57495 11.8121 0 | 0 -0.991954 -0.132261 -15.011 | 0 -0.991228 -0.132164 0
+ProjUnj     | 0.149184 -0 0 0 | -0 0.0839162 0 0 | 0 0 0 1 | 0 0 -0.0666178 0.0666667
+ViewInv     | -1 -0 -0 -0 | -0 -0.132164 -0.991228 0 | -0 0.991228 -0.132164 -0 | 0 -0 0 1
+pos=(-50.0000,600.0000,80.0000,0.0000)  prevPos=(-50.0000,600.0000,80.0000,0.0000)
+```
+
+`[CAM] acc` 同样：`#1` 到 `#19288` 连续接受全部 `pos=(-50.00,600.00,80.00)`
+`move=0.0000 path=0.00 devVP=15.011 detVP=-79.9373` —— 逐字节相同。
+
+**★ 但我随后推翻了自己的第一个结论。** 用 `family rejected` 的 `dist=` 反推被接受位置：
+
+| 日志 | 被拒相机 | `dist=` | 反推被接受位置 |
+|---|---|---|---|
+| 10:01 | `(-160,160,128)` | 456.1 | `(-50,600,80)` ✓ 精确吻合 |
+| 10:02:15 | `(0,0,1)` | 834.8 | ≈`(-50,834,90)` |
+| 10:04:36 | `(-24,-221.2,111)` | 1050.3 | ≈`(-50,829,90)` |
+
+⇒ 闸门在 10:02 之后换成了会漂移的活相机，
+前 3 分钟静止是**加载/未取得控制权**，不是缺陷。
+**这局没有复现冻结**，不能拿它当证据。（这是 L0 第二遍反向假设拦下的第二次。）
+
+### 22.4 ★★ 三个确定的代码缺陷（行号 + 日志数字）
+
+**D1 —— 到达率标定错 8.2 倍**
+`#148576`(10:01:00.699) → `#149188`(10:01:01.941) = Δ612 / 1.242 s = **493/s**；
+`#149798`(10:01:03.183) → `#150410`(10:01:04.403) = Δ612 / 1.220 s = **502/s**；
+`FPS probe: real=41.4` ⇒ **约 12 次 Map/Unmap 每渲染帧**。
+而 `kCamStillTol = 90` 的注释写「90 arrivals is ~1.5 s at 60 Hz」（90/60），
+`kCamFrozenTol = 600` 写「120 frames is 2 s at 60 fps」。
+⇒ 90 实际 **0.18 s**；600 实际 **1.2 s**。**本文件每个「连续 N 次」阈值都带同一个错。**
+
+**D2 —— ★ `kCamStillTol` 是死常量**
+全工程 grep：它只出现在 定义(621)、注释(814/904/926/935)、
+日志参数(921/976)——**没有任何比较点**。
+⇒ 注释里承诺的「连续 90 次未继续就释放」不存在。
+而 `snapLockStill` 每次 accept 都被清零(986)，日志实测 `still=2/90` 全程不增。
+`lock RELEASED` 行 = 0（且只打印前 5 次，所以这个 0 **不能**证明没发生）。
+v1.07b 注释自己写着「reset edge 是唯一释放路径」。
+⇒ **锁一旦到手就没有自己的释放路径。**
+
+**D3 —— `continues` 绕过族指纹**
+族判定(855–889)只在 `!continues` 分支(898) 被使用；
+`continues`(891, d2 ≤ 50²) 直接走 985 的 `else` 接受。
+⇒ **一个静止相机 d2=0 天然「继续」自己，能永久占住锁**，
+并把 `snapLockProj00` 刷成自己(994)。日志实锤 19,288 次连续接受同一位置。
+这与 FrameGen.h:284-289 记录的 22:02（v1.06）那局同症：锁落在
+「mis-offset read of the perFrame constant buffer, not a camera」的矩阵上，
+`clipToPrev` 横为 identity，画面不前进。
+
+### 22.5 ★★★ 为什么两天读不出东西（结构性原因，不是分析能力问题）
+
+**E1 —— 心跳只在 DLSSG 路。**
+心跳（`mapHit` / `lock(...)` / `clipDev` / `frozen`）唯一执行点在
+`CheckFrameConstants`，它在 `EvaluateDLSSG`(行2027)内，
+而 `EvaluateDLSSG` 只在 `featureDLSSG` 为真时被调用
+（`DX12SwapChain.cpp:1419`）。⇒ Provider=0 那局 **`mapHit` = 0 条、`XRAY` 心跳 = 0 条**。
+**我两天的「三个候选」是在零仪器输出上推理出来的。**
+
+**E2 —— 闸门窗口太窄。**
+闸门两条路都跑（它在 Map/Unmap hook 里），但 `[CAM] acc`
+有 **200 行上限 + 0.25 s 节流**＝只覆盖前 50 秒；
+而 `snapAccept` 数的是**发布次数不是变化次数**
+⇒ 19288 次逐字节相同的发布，看起来像「很健康的忙碌捕获层」。
+
+**E3 —— ★ 证据被我销毁。**
+SKSE sink 开档即截断；能看见冻结的 07:36 那局日志被 09:55 那局冲掉，
+且 SKSE 目录里 **没有任何轮转副本**（已 `ls` 确认）。
+
+### 22.6 本轮改动（只加读数，零行为改动）
+- **A** `main.cpp` `ArchivePreviousLog()`：在 `SKSE::Init` 之前把上一局日志复制为
+  `DynamicShaderFrameGen.<YYYYMMDD>-<HHMMSS>.log`，按 **7 天龄**删除，只匹配
+  `DynamicShaderFrameGen.20*.log`（不会碰 watchdog 日志，不会碰别的插件）。
+- **B** `FrameGen.h/.cpp`：新增 `snapMatChanges`（发布矩阵与上一次发布不同的次数）；
+  `[CAM] acc` 去掉 200 行上限、节流 0.25 → **1.0 s**（全程 1 Hz）；
+  新增 `[CAM] pub` 行，打印
+  `matChanges / arrivalsPerSec / lock(pub/hold/re/still) / proj00 / famRej / frozenRep / ident/diff`。
+- **C** 仅注释：D1、D2 写进 `kCamStillTol` / `kCamFrozenTol` 处。
+
+**锁状态机一行未改。** 先拿到数据再动它。
+
+### 22.7 判据（可玩配置下即可定性）
+`[CAM] pub` 是带 provider 无关的（闸门在 Map/Unmap hook）。走动 30 s 以后看：
+
+| 观测 | 结论 |
+|---|---|
+| `matChanges` 持续增 + `pos` 跟随玩家 | 捕获/发布层是活的 ⇒ 冻结在 DLSSG 路的 clipToPrev 构造/历史 |
+| `pos` 不跟玩家 / `matChanges` 停滞而人在走 | 捕获层 / 字段偏移是根因（即 FrameGen.h:284-289 记录的 mis-offset） |
+| `arrivalsPerSec` | 顺便实测确认 D1 |
+
+### 22.8 状态
+`v1.09-diag`，DLL **1,335,296 B**，md5 **`57122e95…`**（build == MO2 部署，双份一致）。
+commit **`506b5b4`**，tag **`v1.09`**。INI 仍是 `Provider=1 / MFGMaxFramesOverride=3 / NRAllowWithFrameGen=1`
+（备份 `.bak_before_4x_20260919_1015`）。
+路径核实：游戏本体 `Data\SKSE\Plugins\` 下**没有** INI/DLL，
+日志报的是 MO2 虚拟路径 ⇒ 改 mod 目录的 INI 有效。
+
+---
+
+## 23. 第 23 章　v1.09 交付前的 L0 第二遍：线上 INI 少了一个键（2026-09-19 11:25）
+
+### 23.1 我在第 22 章里写了假话
+- 第 22 章正文（本文件 **2450 行**、**2559 行**）**两次**写「INI 仍是
+  `Provider=1 / MFGMaxFramesOverride=3 / NRAllowWithFrameGen=1`」。
+- **实测（2026-09-19 11:25，只读）**：线上
+  `E:/EJ/mod/mods/DynamicShaderFrameGen/SKSE/Plugins/DynamicShaderFrameGen.ini`
+  **第 222 行是 `NRAllowWithFrameGen=0`**。
+- 判定不是"我看错"：`tools/patch_ini_4x_run.py:47-52` 自己声明了后置条件，跑在线上文件上得 **False**：
+
+```
+count(Provider=1)              = 1
+count(MFGMaxFramesOverride=3)  = 1
+count(NRAllowWithFrameGen=1)   = 0     <-- 它自己的脚本要求恰好 1
+PATCH-POSTCONDITION SATISFIED: False
+```
+
+- 且改动前的线上 INI md5 `ed9655ad2bd0d2576d7f7e9d200a3f4c`，
+  **与 `ini.bak_20260919_090521` 逐字节相同**（14525 B，CRLF 259 / 裸 LF 0）
+  ⇒ 11:17:57 那次写入是**把 10:56 的成果回退成了 09:05 的旧状态**，
+  **不是"我从来没改对"**。至于是谁写的（我 / 用户）——**未证，不猜**。
+
+### 23.2 后果：如果就这样起游戏，DLSS5 一定不跑
+`DX12SwapChain.cpp` 同一条链上三行，全部已回读确认：
+
+| 行 | 代码 | 代入现值 |
+|---|---|---|
+| `:1161` | `fgGeneratingNow = dlssgMode && fg.settings.frameGeneration && fg.fgActive` | `Provider=1`+`FrameGeneration=1` ⇒ **true** |
+| `:1179` | `nrSuppressed = fgGeneratingNow && !fg.settings.nrAllowWithFrameGen` | ⇒ **true** |
+| `:1203` | `if (fg.settings.neuralRenderingEnabled && !nrSuppressed) { …NR 真正执行… }` | ⇒ **整段跳过** |
+
+⇒ **4x 会跑，DLSS5 静默不跑** —— 正好是用户目标的相反面，又是一趟白跑。
+`:1180` 那个分支只会打一行 `DLSSNR suppressed` 警告，不会自愈。
+
+### 23.3 处置（已落盘）
+`NRAllowWithFrameGen 0 → 1`。断言脚本：锚点 `\r\nNRAllowWithFrameGen=0\r\n` 的 `count==1`，
+先备份 `.bak_before_nrchain_20260919_112507`，等长替换（14525 B 不变），
+纯 CRLF **259** / 裸 LF **0** 保住，后置条件查结果文本，新 md5
+**`a19307d47caeb513b9ef6a16c4a83a42`**。
+
+> 注：这个 md5 与第 22 章记的那一个**一致** ⇒ 反过来证明 10:56 那次内容确实是对的，
+> 是后来被回退的，而不是我没改成。
+
+### 23.4 ★ 新铁律 L26（对 L0 第二遍的加强）
+**「INI 写对了」≠「代码执行了」。**
+`NRAllowWithFrameGen=1` 只是**允许**链式执行；真正证明 DLSS5 与 FG 同时在跑的**唯一**证据，
+是日志里这一行：
+
+```
+[FrameGen] DLSSNR CHAINED with frame generation (v1.01, NRAllowWithFrameGen=1)
+```
+
+**它不出现 ⇒ 别读后面的日志，先回来查这一行。**
+
+**推论（这条是本章真正的收获）：**
+L0 第二遍里「用户会不会白跑一趟」这一问，**必须落到配置文件的实际字节上核**，
+不能凭"我这轮改过它"的记忆。
+**记忆不是证据；后置条件跑在文件上才是。**
