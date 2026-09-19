@@ -411,12 +411,24 @@ namespace FrameGen
 	std::uint64_t snapPcMatch = 0;
 	std::uint64_t snapPcAdopt = 0;
 	std::uint64_t snapPcAdoptSec = 0;
-	std::uint64_t snapPcReject = 0;   // v1.16b: refused because it is not the camera
-	bool snapPcEverMatched = false;   // v1.16b: the reference proved itself
+	std::uint64_t snapPcReject = 0;   // v1.17: refused because it is not the camera
+	bool snapPcEverMatched = false;   // the reference proved itself at least once
 	float snapPcBestDist = 1.0e38f;
 	float snapPcBestProj = 0.0f;
 	float snapPcLast[3] = {};
 	bool snapPcSawAny = false;
+	// ---- v1.17: the reference as authority, not only as a selector ---------
+	// snapPcRefSeen is a latch measured in seconds: set to kPcRefHoldSec on
+	// every match, decremented once per second by the [CAM] PC dump. While it is
+	// non-zero the reference is demonstrably arriving, so a non-camera arrival
+	// may neither anchor nor be published. If the reference stops matching the
+	// latch expires and the pre-v1.17 behaviour returns, which is what keeps this
+	// gate from being able to wedge the lock.
+	std::uint32_t snapPcRefSeen = 0;
+	// v1.17: the motion witness, printed as eyeD on the [CAM] PC line.
+	float snapPcEyeStep = 0.0f;
+	float snapPcPrevEye[3] = {};
+	bool snapPcEyeHave = false;
 	// ---- v1.16: census detail, per family, per second ----------------------
 	std::uint32_t snapFamArrSec[kSnapFamMax] = {};
 	std::uint32_t snapFamSpanN[kSnapFamMax] = {};
@@ -432,6 +444,19 @@ namespace FrameGen
 	// (-125.7,210.8,188.4) -> (255.0,804.7,-94.4) and was refused ~90 times a
 	// second, so frameBufferCopy stayed frozen (matChanges 168 for nine seconds,
 	// path 65.41, move 0.0000, still 1570/90) and clipToPrevClip collapsed to I.
+	//
+	// CORRECTION (v1.17, 22:22 run): "the real camera (proj00=1)" above is
+	// WRONG and was never measured -- it was inferred from travel, which is the
+	// same inference the whole v1.00..v1.15 line rested on. The v1.16 ground
+	// truth settled it: RE::PlayerCamera::cameraRoot->world.translate reads
+	// (-243.049,-415.315,118.624) while the proj00=0.8391 arrival reads
+	// (-243.0493,-415.3115,118.5582) -- 0.00 units apart, 397 times a second.
+	// 0.8391 IS the player camera. proj00=1 sits at (-126.2,211.5,189.2) with
+	// span (974.8,901.5,86.7) and stepSum 542149, i.e. a bucket of at least two
+	// writers ~1000 units apart -- an offscreen/orthographic pass, not a walking
+	// camera. Every conclusion v1.10..v1.15 drew from "the refused arriving
+	// family is the camera" is therefore inverted. Kept as the record of how the
+	// inversion happened; the v1.17 guard above does not depend on it.
 	//
 	// So the refused stream is allowed to take the anchor -- but only after it
 	// has demonstrated travel of its own. kCamStillTol, the threshold v0.94

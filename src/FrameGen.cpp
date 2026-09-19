@@ -714,6 +714,20 @@ namespace FrameGen
 	// 2%, which merged distinct writers and made their interleaved positions read
 	// as motion (FAM[1]: moved=765 stepSum=318990 with nothing moving).
 	constexpr float kSnapFamKeyTol = 1.0e-4f;
+	// ---- v1.17: the reference is the authority, not only a selector -------
+	// v1.16 used RE::PlayerCamera only to DROP a lock that sat on another
+	// family. Two paths still let a non-camera arrival take the anchor after
+	// that: the free-slot acquire, which is what gave the 22:02 run its
+	// proj00=0.149184 lock at the reset edge, and v1.00g's same-family step
+	// break, which re-anchors on ANY same-family arrival over kCamStepTol.
+	// Bucket proj00=1 of the 22:22 run shows how reachable that is: span
+	// (974.8,901.5,86.7) and stepSum 542149, so it can satisfy
+	// kCamForeignMoveTol (200) with no camera motion at all.
+	//
+	// While the reference is demonstrably arriving it alone may anchor or be
+	// published. The latch below expires if the reference stops matching, so
+	// the gate cannot wedge the lock.
+	constexpr std::uint32_t kPcRefHoldSec = 2;
 	}
 
 	bool FrameGen::AcceptCameraSnapshot(const FrameBuffer& a_src)
@@ -1046,6 +1060,13 @@ namespace FrameGen
 		// (which refreshes snapLockProj00) sits after the block has closed.
 		const float proj00 = a_src.CameraProjUnjittered.data[0][0];
 		const bool projOk = (proj00 == proj00) && (proj00 > 1.0e-6f);
+		// v1.17: written by the ground-truth block below and read by the accept
+		// path. pcIsThis -- THIS arrival is the live camera; pcKnown -- the
+		// reference matched at least once within the last kPcRefHoldSec seconds.
+		// pcKnown is sampled before the block, so the very arrival that
+		// establishes the reference is itself published normally.
+		bool pcIsThis = false;
+		const bool pcKnown = snapPcRefSeen > 0u;
 		// v1.03: one line the first time the magnitude-class escape is used, so
 		// "the escape fired" can be told apart from "the ratio test passed".
 		static bool snapLockAltFamilyLogged = false;
@@ -1111,6 +1132,9 @@ namespace FrameGen
 				if (pcDist <= kPcMatchTol) {
 					++snapPcMatch;
 					snapPcEverMatched = true;
+					// v1.17: latch the reference as live for the next few seconds
+					snapPcRefSeen = kPcRefHoldSec;
+					pcIsThis = true;
 					const bool lockOnOther =
 					    !(snapLockProjValid &&
 					      std::fabs(proj00 - snapLockProj00) <=
@@ -1130,17 +1154,14 @@ namespace FrameGen
 						}
 					}
 				}
-			} else if (snapPcEverMatched && snapLockHave &&
-			           !(snapLockProjValid &&
-			             std::fabs(proj00 - snapLockProj00) <=
-			                 std::fabs(snapLockProj00) * kSnapFamKeyTol + 1.0e-6f)) {
-				// v1.16b: the reference has proved itself, so an arrival that is far
-				// from the live camera AND in a different family than the lock may
-				// not take the lock. Without this, a parked pass arriving right after
-				// a takeover would be published once per camera arrival -- the v0.93
-				// interleaved-source stream that crashed the game.
-				++snapPcReject;
-				return false;
+			// v1.16b put its refusal HERE, hanging off the "no PlayerCamera" arm of
+			// the block above, so it could only ever run while the reference was
+			// UNAVAILABLE -- and snapPcReject stayed 0 through the whole 22:22 run,
+			// which is how the mistake was caught. It also duplicated the
+			// !sameFamily refusal two blocks down, which returns false for a
+			// foreign family unconditionally. Removed. v1.17 refuses instead at
+			// the one place a non-camera arrival could still take the anchor:
+			// the guard in front of the acquire, just below.
 			}
 		}
 
@@ -1185,6 +1206,18 @@ namespace FrameGen
 				sameFamily = (ratio > 0.98f) && (ratio < 1.02f);
 			}
 
+			// ---- v1.17: while the reference is live, only the camera may publish ----
+			// This single guard covers all three ways an arrival can take the
+			// anchor: the free-slot acquire, the foreign-family fall-through, and
+			// v1.00g's same-family step break. Any of them handing the anchor to a
+			// writer that is not the camera is the freeze -- the published
+			// clipToPrevClip then reprojects against the wrong view. Returning
+			// false leaves snapLastPos / snapHaveLast untouched, so the next
+			// arriving camera continues the stream without a discontinuity.
+			if (pcKnown && !pcIsThis) {
+				++snapPcReject;
+				return false;
+			}
 			const bool continues = snapLockHave && snapHaveLast && (d2 <= kCamStepTol2);
 			if (!snapLockHave) {
 				// First arrival, or the locked stream died: acquire.
@@ -1471,20 +1504,39 @@ namespace FrameGen
 						snapFamArrSec[fi] = 0;
 						snapFamSpanN[fi] = 0;
 					}
-					// v1.16: the ground-truth comparison, per second. If `best` stays in the
-					// hundreds through the world, no arrival is the camera and the source
-					// has to change; if it drops to a few units, PC TAKEOVER above fired.
-					SKSE::log::info("[CAM] PC v1.16: read={} match={} adopt={}/{} best={:.2f} "
-						"at proj00={:.6g} eye=({:.2f},{:.2f},{:.2f})",
-						snapPcRead, snapPcMatch, snapPcAdoptSec, snapPcAdopt,
+					// v1.17: the motion witness. eyeD is how far the LIVE player camera
+					// travelled during the last second. Without it "the player is standing
+					// still" and "the lock is on a parked writer" are the same shape in the
+					// log, which is exactly why the 22:22 run could not be settled: world
+					// segment 2.2 s, eye byte-identical at 2 decimals, family span 0.07
+					// units (idle sway only).
+					if (snapPcEyeHave) {
+						const float pdx = snapPcLast[0] - snapPcPrevEye[0];
+						const float pdy = snapPcLast[1] - snapPcPrevEye[1];
+						const float pdz = snapPcLast[2] - snapPcPrevEye[2];
+						snapPcEyeStep = std::sqrt(pdx * pdx + pdy * pdy + pdz * pdz);
+					}
+					SKSE::log::info("[CAM] PC v1.17: read={} match={} adopt={}/{} rej={} ref={} "
+						"best={:.2f} at proj00={:.6g} eye=({:.2f},{:.2f},{:.2f}) eyeD={:.2f} {}",
+						snapPcRead, snapPcMatch, snapPcAdoptSec, snapPcAdopt, snapPcReject,
+						snapPcRefSeen,
 						snapPcSawAny ? snapPcBestDist : -1.0f, snapPcBestProj,
-						snapPcLast[0], snapPcLast[1], snapPcLast[2]);
+						snapPcLast[0], snapPcLast[1], snapPcLast[2], snapPcEyeStep,
+						snapPcEyeStep <= kCamMoveEps
+							? "PC_STILL - the live camera did not move: an unchanged picture is CORRECT here"
+							: "PC_MOVING - the live camera is walking");
 					snapPcRead = 0;
 					snapPcMatch = 0;
 					snapPcAdoptSec = 0;
 					snapPcBestDist = 1.0e38f;
 					snapPcBestProj = 0.0f;
 					snapPcSawAny = false;
+					snapPcPrevEye[0] = snapPcLast[0];
+					snapPcPrevEye[1] = snapPcLast[1];
+					snapPcPrevEye[2] = snapPcLast[2];
+					snapPcEyeHave = true;
+					if (snapPcRefSeen > 0u)
+						--snapPcRefSeen;
 				}
 
 			}
