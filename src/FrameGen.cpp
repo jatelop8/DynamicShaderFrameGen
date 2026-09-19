@@ -1582,7 +1582,13 @@ namespace FrameGen
 								const float qx = s_plrPos[0] - s_plrPrev[0];
 								const float qy = s_plrPos[1] - s_plrPrev[1];
 								const float qz = s_plrPos[2] - s_plrPrev[2];
-								s_plrStep = std::sqrt(qx * qx + qy * qy + qz * qz);
+								// v1.18b: +=, not =. This runs on every arrival (~400/s), so an
+								// assignment here would make plrD the distance travelled in the ~2.5 ms
+								// between two arrivals (about 7 mm for a walking player) under a name
+								// that says "this second". The yes/no criterion survives that; the
+								// number does not, and this project has already lost two runs to a field
+								// that measured something other than its label.
+								s_plrStep += std::sqrt(qx * qx + qy * qy + qz * qz);
 							}
 							s_plrHave = true;
 							s_plrPrev[0] = s_plrPos[0];
@@ -1613,6 +1619,7 @@ namespace FrameGen
 					s_inKeys = 0u;
 					s_inDist = 0.0f;
 					s_inMoves = 0u;
+					s_plrStep = 0.0f;
 					snapPcRead = 0;
 					snapPcMatch = 0;
 					snapPcAdoptSec = 0;
