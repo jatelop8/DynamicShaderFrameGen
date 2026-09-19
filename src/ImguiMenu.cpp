@@ -233,8 +233,32 @@ namespace FrameGen
 		// comes from the runtime rather than from us.
 		static bool s_worldSeen = false;
 		static steady_clock::time_point s_worldSince{};
+		// v1.28 -- the clock drawn below was never logged, so 'did the overlay
+		// actually appear' could not be answered from any artefact. The 03:17 run
+		// released the menu guard at 03:17:24.708 and the player still never pressed
+		// a movement key (os=0x0 on all 20 [CAM] PC samples), so before the protocol
+		// can be blamed the overlay itself has to be visible in the log. Three edges
+		// only: this function runs every frame and must not write a line per frame.
+		static bool s_worldLogged20 = false;
 		if (mult > 1.0f) {
-			if (!s_worldSeen) { s_worldSeen = true; s_worldSince = now; }
+			if (!s_worldSeen) {
+				s_worldSeen = true;
+				s_worldSince = now;
+				s_worldLogged20 = false;
+				SKSE::log::info("[OVERLAY] world clock started - the runtime just reported "
+					"mult={:.1f} for the last real frame, so 4x is running now. The second "
+					"overlay line reads 'KEEP PLAYING, hold W for 10 s'.",
+					static_cast<double>(mult));
+			} else {
+				const double s =
+					duration_cast<duration<double>>(now - s_worldSince).count();
+				if (!s_worldLogged20 && s >= 20.0) {
+					s_worldLogged20 = true;
+					SKSE::log::info("[OVERLAY] world clock reached {:.1f} s - the second overlay "
+						"line now reads 'enough - you can exit now'. This is the point the run "
+						"becomes usable.", s);
+				}
+			}
 		} else {
 			s_worldSeen = false;
 		}

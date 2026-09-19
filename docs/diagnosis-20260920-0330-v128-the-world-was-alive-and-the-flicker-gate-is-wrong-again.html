@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DFG v1.28 —— 世界第一次真的活了（4x 实测 4.00）；而我的闪烁判据第二次误报，同一个环里藏着两个 bug</title>
+<style>
+  :root{
+    --bg:#14161a; --panel:#1b1f26; --panel2:#21262f; --line:#2c333d;
+    --fg:#e6eaf0; --dim:#98a3b3; --dim2:#6f7b8c;
+    --red:#ff6b6b; --amber:#ffb454; --green:#5ddc8a; --blue:#63b3ff; --purple:#b48cff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1080px;margin:0 auto;padding:34px 26px 80px}
+  h1{font-size:25px;margin:0 0 6px;letter-spacing:.4px;line-height:1.45}
+  h2{font-size:19px;margin:38px 0 12px;padding-left:11px;border-left:4px solid var(--blue)}
+  h3{font-size:16px;margin:24px 0 8px;color:var(--amber)}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:26px}
+  .lead{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--amber);
+    border-radius:8px;padding:16px 18px;margin:22px 0}
+  .lead b{color:var(--amber)}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+    padding:15px 18px;margin:14px 0}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:var(--dim);font-weight:600}
+  td.n{font-variant-numeric:tabular-nums;white-space:nowrap}
+  .ok{color:var(--green);font-weight:600}
+  .bad{color:var(--red);font-weight:600}
+  .warn{color:var(--amber);font-weight:600}
+  .mut{color:var(--dim)}
+  code{background:#0e1014;border:1px solid var(--line);border-radius:4px;
+    padding:1px 6px;font:13px/1.5 Consolas,"Courier New",monospace;color:var(--blue)}
+  pre{background:#0e1014;border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+    overflow-x:auto;font:13px/1.65 Consolas,"Courier New",monospace;color:#cfe0f5}
+  ul{margin:8px 0 8px 20px;padding:0} li{margin:5px 0}
+  .kv{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}
+  .kv div{background:var(--panel2);border:1px solid var(--line);border-radius:6px;
+    padding:7px 12px;font-size:13px}
+  .kv span{color:var(--dim2);margin-right:6px}
+  .step{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+    padding:14px 18px;margin:12px 0;border-left:4px solid var(--green)}
+  .step.a{border-left-color:var(--blue)}
+  .step.b{border-left-color:var(--amber)}
+  .big{font-size:30px;font-weight:700;color:var(--green);font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>世界第一次真的活了 —— 4x 实测 4.00、相机链路打通<br>
+而我的闪烁判据第二次误报，同一个环里藏着两个 bug</h1>
+<div class="sub">2026-09-20 03:16:37 → 03:17:30 那一局 &nbsp;·&nbsp; 跑的是 v1.27 &nbsp;·&nbsp; 本轮产出 v1.28
+&nbsp;·&nbsp; 归档 <code>docs/runlogs/2026-09-20-0317-v127-first-live-world-4x-measured.*</code></div>
+
+<div class="lead">
+<b>本局最重要的一件事：世界是活的。</b> 15 局里第一次，相机链路（<code>read=512 match=480 adopt=1/1</code>）、
+世界时钟（<code>hrsD=0.0047→0.0057</code>）、4x（<code>FLIPS per real frame = 4.00</code>）
+三件事<strong>同时</strong>在工作。之前所有局都是 <code>read=0 / paused=1 / ld=1 / eye=(0,0,0)</code>。
+<br><br>
+<b>但也有两件不好听的：</b>① 我上一轮（v1.27）的闪烁判据<strong>第二次误报</strong>，两次窗口都是
+加载屏幕的<strong>单向</strong>亮度渐变；② 同一个环形缓冲的读取里<strong>还藏着一个顺序 bug</strong>，
+它把 <code>switches</code> 抬高，正是误报的直接原因。
+</div>
+
+<h2>一、15 局里第一次：世界、时钟、相机、4x 同时是活的</h2>
+
+<table>
+<tr><th>量</th><th>之前所有局（含 FSR3 活局）</th><th>本局</th></tr>
+<tr><td><code>[CAM] PC</code> 的 <code>read=</code></td><td class="bad">0（读不到相机）</td><td class="ok n">512 / 528 / 608 / 672</td></tr>
+<tr><td><code>match=</code> / <code>adopt=</code></td><td class="bad">0 / 0</td><td class="ok n">480 / <code>1/1</code>（rej=267）</td></tr>
+<tr><td><code>eye=</code> / <code>proj00=</code></td><td class="bad">(0,0,0) / 0</td><td class="ok n">(-243.05,-415.31,118.56) / 0.8391</td></tr>
+<tr><td><code>plr=</code></td><td class="bad">(0,0,0) 或占位 (2048,2048,0)</td><td class="ok n">(-250.3,-360.4,-0.0)</td></tr>
+<tr><td><code>paused= / ld=</code></td><td class="bad">1 / 1 全程</td><td class="ok">0 / 0（第 13 条起）</td></tr>
+<tr><td><code>hrsD</code>（游戏时钟）</td><td class="bad">0.000000（不动）</td><td class="ok n">0.004723 → 0.005799</td></tr>
+<tr><td><code>presented all=</code></td><td class="mut">几乎只有 2x 槽</td><td class="ok n">0/14/0/0/<b>292</b>/0/0/0</td></tr>
+<tr><td><code>mult(acc/pres)</code></td><td class="mut">4/1</td><td class="ok">4/4</td></tr>
+</table>
+
+<h3>4x 是实测的，不是算出来的</h3>
+<pre>[FrameGen] FLIPS per real frame = 1.00  (DXGI 673 -> 926, our Present 674 -> 738)  03:17:26.972
+[FrameGen] FLIPS per real frame = 4.00  (DXGI 926 -> 1178, our Present 738 -> 801)  03:17:28.976</pre>
+<p class="mut">加载期是 1.00，闸门放开后是 4.00 —— 用的是 <b>DXGI 自己的 <code>GetLastPresentCount</code></b>，
+不是运行时的自报，也不是 <code>real × mult</code>。旁证：Transfusion
+<code>[PERF] 4x | Kernel: Ada | FPS: 34.1</code>、<code>DLSS-G actual presentation count: 4x</code>。</p>
+
+<div class="panel">
+<b>世界段健康（watchdog 尾行）：</b>
+<code>frames=846 silent=18ms stage=d3d11 Wait fence=1680/1680 lastPr=1362 presentAge=1ms alive=1</code><br>
+整段 <code>silent</code> 都在 3~35 ms，<code>presentAge</code> 个位数~35 ms，围栏和 DXGI 计数一路涨。
+<span class="ok">这是历次最健康的世界段。</span>
+</div>
+
+<p class="mut">v1.25 的两处修复继续成立：Transfusion 全档 <code>[OPTIONS]</code> <b>只有 1 条</b>（闸门放开那一毫秒）；
+<code>[MOTION]</code> 里 <b>没有再出现 <code>-195.222366</code></b>（第一条 reset 是 identity，其后 3 条是近单位阵）。</p>
+
+<h2>二、闪烁判据第二次误报 —— 而且两个 bug 叠在一起</h2>
+
+<p>v1.27 的判据（<code>switches &gt;= 3</code>）本局触发 <b>2 次</b>，窗口逐字是：</p>
+<pre>[3D2ED0A433B46771 96.6] [AEAB5E65C0210DFE 96.6] [6AD5178233020383 43.0] x6
+[6AD5178233020383 43.0] x4 [5F9EB3FEDCEF8383 63.8] x3 [7DDF048D32FCE9A5 73.4]</pre>
+<p><span class="bad">两条都是单向亮度渐变</span>（加载屏由亮转暗 / 由暗渐亮），<b>一次回返都没有</b>，
+而且都发生在世界进入前后。</p>
+
+<div class="step b">
+<b>bug 1 · 环形缓冲被当成普通数组扫描。</b>
+样本写在 <code>pixelProbeRingHash[pixelProbeRingAt]</code>，槽位顺序 = 写入顺序被 <code>ringAt</code> 旋转过。
+<code>distinct</code> 侥幸没坏（与顺序无关），<code>switches</code>/<code>maxRun</code> <b>全错</b>。
+<br>铁证：<code>#21</code> 打出 <code>sw=3 maxRun=5</code>，而该窗口尾部是
+<b>6 个完全相同的样本</b> ⇒ <code>maxRun</code> 只能是 <b>6</b>。
+</div>
+
+<div class="step b">
+<b>bug 2 · "数变化次数"不是"回返"的正确表达。</b>
+一个渐变序列同样能让变化次数很高；而 bug 1 又把这个数抬高，于是单向转变被抬过了 <code>&gt;=3</code> 的闸门。
+</div>
+
+<h3>v1.28 的判据：折叠后看有没有回到已经出现过的状态</h3>
+<pre>单向渐变   [a b c c c c c c] -> 折叠 [a b c]             rev=0    不触发
+加载亮起   [a a b b b b b b] -> 折叠 [a b]               rev=0    不触发
+真振荡     [a b a b a b a b] -> 折叠 [a b a b a b a b]   rev=12   触发</pre>
+<p>阈值：<code>fill&gt;=8 &amp;&amp; distinct&lt;=3 &amp;&amp; <b>revisits&gt;=1</b></code>。
+一个单向转变<b>在构造上</b>就不满足它 —— 这正是 v1.26 / v1.27 都缺的那一条。</p>
+
+<p>同时新增 <code>shape=[...]</code>：把窗口按状态编号打印，<b>肉眼可读</b>，不必再拿哈希去推：</p>
+<pre>#N ... shape=[0 1 2 2 2 2 2 2]   <- 单向，一眼是单向
+#N ... shape=[0 0 1 1 1 1 1 1]   <- 亮起，一眼是单向
+#N ... shape=[0 1 0 1 0 1 0 1]   <- 振荡</pre>
+<p class="mut">`shape` 是给下一轮的<b>校准</b>用的：判据第一次跑不能当证据读，但形状可以当校准读。</p>
+
+<h2>三、那 20.8 秒停顿第四次以同样的四重读数出现（15/15 局）</h2>
+<pre>03:16:50.575  frames=1  silent=519ms   stage=d3d11 Wait  fence=2/2  lastPr=1  presentAge=523ms
+03:16:56.398  frames=1  silent=6342ms  stage=d3d11 Wait  fence=2/2  lastPr=1  presentAge=6346ms
+   ...                                                                    （一路涨到）
+03:17:10.861  frames=1  silent=20789ms stage=d3d11 Wait  fence=2/2  lastPr=1  presentAge=20789ms</pre>
+<ul>
+<li><code>frames</code> <b>恒为 1</b>、<code>lastPr</code>（<b>DXGI 自己的</b>）<b>恒为 1</b>、<code>fence</code> <b>恒为 2/2</b>、<code>presentAge</code> 涨到 <b>20789 ms</b>。</li>
+<li>独立佐证：XRAY <code>dt min/avg/max=17.46/52.04/<b>20827.56</b>ms</code>；我方日志 <b>20.8 秒零输出</b>；
+<code>[PIXEL]</code> 从 armed(03:16:50.032) 到第一个样本(03:17:10.862) <b>中间一个采样都没有</b>。</li>
+<li>与第 40 章那 27.8 s <b>逐字同形</b>，只是短了 7 秒。</li>
+<li class="ok">停顿结束后一切正常 —— 所以<b>停顿</b>和"世界是死的"<b>不是同一件事</b>。</li>
+</ul>
+
+<h2>四、v1.27 的覆盖层计时，在任何归档里都不存在</h2>
+<div class="panel">
+v1.27 给覆盖层加了世界段计时（<code>KEEP PLAYING, hold W for 10 s</code> / <code>enough - you can exit now</code>）。
+本局 <code>mult=4</code> 从 03:17:26 起成立，按代码它<b>应该</b>在屏幕上。<br>
+但 <code>grep -F "KEEP PLAYING"</code> 在整份日志里 <b>0 条</b> —— 因为那段代码<b>只画不打日志</b>。
+<br>于是"你到底看没看到提示"这个问题，<b>用现有归档无法回答</b>；而本局 20 条 <code>[CAM] PC</code> 仍然
+<code>os=0x0</code>（一个移动键都没按过）。
+</div>
+<p class="mut">在把"玩家没照协议做"当成解释之前，得先能证明提示出现过 —— v1.28 已经把它写进日志。</p>
+
+<h2>五、v1.28 三处改动</h2>
+<table>
+<tr><th>#</th><th>文件</th><th>改动</th><th>针对</th></tr>
+<tr><td>A</td><td><code>src/DX12SwapChain.cpp</code></td>
+<td>像素窗口改按<b>环序</b>读取（修顺序 bug）；判据换成 <code>revisits&gt;=1</code>；
+PIXEL 行新增 <code>shape=[...]</code> / <code>rev=</code>；FLICKER 文案改写</td>
+<td>第二节的两次误报</td></tr>
+<tr><td>B</td><td><code>src/DX12SwapChain.cpp</code></td>
+<td>watchdog 行新增 <b><code>cpuD=</code></b>（本进程 user+kernel 时间在这 200 ms 里的增量）</td>
+<td>第三节那 20.8 s：<b>第一个不来自我们、也不来自 DXGI 的读数</b></td></tr>
+<tr><td>C</td><td><code>src/DX12SwapChain.cpp</code></td>
+<td><code>[MFG] debug CHECK</code> 文案 <code>menuBlock=0 frames={}</code> → <code>dlssgOk={}</code></td>
+<td>文案名实不符：<code>menuBlock=0</code> 是写死的字面量，<code>frames=</code> 印的其实是 <code>debugOk</code></td></tr>
+<tr><td>D</td><td><code>src/ImguiMenu.cpp</code></td>
+<td>世界段计时打日志（上升沿 / 跨 20 s / 下降沿各一条，边沿触发不刷屏）</td>
+<td>第四节的可验证性缺口</td></tr>
+</table>
+
+<h3><code>cpuD=</code> 怎么读（这是关键）</h3>
+<div class="kv">
+<div><span>cpuD ≈ 0</span>进程在<b>阻塞</b>（IO / 锁 / 驱动等待）——没有线程在烧 CPU</div>
+<div><span>cpuD ≈ 200</span>有<b>一个</b>线程正烧满一个核</div>
+<div><span>cpuD &gt; 200</span>多个线程在跑，或这一片超时了</div>
+</div>
+<p class="mut"><code>GetProcessTimes</code> 只读，不可能扰动进程。</p>
+
+<h2>六、下一局请照做（否则仍然白跑）</h2>
+<div class="step">
+1. 进世界 → 站着不动 <b>15 秒</b><br>
+2. <b>按住 W 走 10 秒以上</b>（这是唯一能回答"世界响应输入吗"的动作）<br>
+3. 松开 → 再站 10 秒<br>
+4. <b>等到覆盖层第二行写 <code>enough - you can exit now</code></b> 再退
+</div>
+<div class="panel">
+本局世界段只有 <b>5.7 秒</b>，20 条相机记录里 <code>os=0x0</code> —— <b>一个移动键都没按过</b>。<br>
+最近 6 局的世界段：<b>2.1 / 3.0 / 3.2 / 2.5 / 6.1 / 5.7 秒</b>。全部白跑。<br>
+<span class="warn">如果看到闪烁：站着盯 20 秒以上不要动</span> —— 新判据不需要你按键、不需要相机移动，
+8 个样本（4 秒）就够判一次，而且<b>现在要求它"真的回来"才算数</b>。
+</div>
+
+<h3>下一局我会先看这几行</h3>
+<table>
+<tr><th>看到</th><th>结论</th></tr>
+<tr><td><code>[PIXEL] #N ... shape=[...] rev=</code></td><td>仪器活着。形状一眼可读：单向 = 不是闪烁</td></tr>
+<tr><td><code>shape=[0 1 0 1 0 1 0 1]</code> 或触发 <code>FLICKER</code></td><td class="bad"><b>画面真的在振荡 = 闪烁被测到了</b>（第一次）</td></tr>
+<tr><td>每次采样都是 <code>rev=0</code>、形状单调</td><td class="mut">500 ms 采样下看不到回返 ⇒ 要么没有闪烁，要么它比 2 Hz 快</td></tr>
+<tr><td><code>[OVERLAY] world clock started</code> / <code>reached 20.0 s</code></td><td class="ok">覆盖层那句提示确实走到了（v1.28 新增，本局无法验证）</td></tr>
+<tr><td>停顿期间 <code>cpuD=</code> ≈ 0</td><td>那 20.8 s 进程在<b>阻塞</b>，不是死循环</td></tr>
+<tr><td>停顿期间 <code>cpuD=</code> ≈ 200</td><td>有线程在<b>烧核</b>，下一步取它的栈</td></tr>
+<tr><td><code>[FrameGen] FLIPS per real frame = 4.00</code></td><td class="ok">4x 实测生效</td></tr>
+<tr><td><code>[CAM] PC</code> 里 <code>os=0x0</code></td><td class="bad"><b>本局作废</b>（没按过 W/A/S/D/空格/Shift/鼠标键）</td></tr>
+</table>
+
+<h2>七、诚实边界</h2>
+<ul>
+<li><b>闪烁是否真实存在 —— 仍未证。</b>v1.26 的两次报告是假阳性，v1.27 的两次<b>也是</b>。v1.28 的判据<b>还没跑过</b>。</li>
+<li><b>500 ms 采样率够不够 —— 未证。</b>若闪烁是"整屏闪黑一帧"（16 ms 量级），2 Hz <b>抓不到</b>，
+本局没有任何证据能排除它。下一轮若要动，<b>只动这一个变量（提频）</b>。</li>
+<li><b>那 20.8 秒里进程在做什么 —— 未证</b>，<code>cpuD=</code> 就是为它准备的第一步。</li>
+<li><b>4x + DLSS5 同时</b>（总目标）—— 未成功。本局 <code>presented</code> 里只有 2x / 4x 槽有数。</li>
+<li><b>Transfusion 隔离实验</b>（<code>DINPUT8.dll</code> → <code>DINPUT8.dll.transfusion-off</code>，<b>不能用 <code>.disabled</code></b>，那个名字被另一个 5.9 MB dll 占了）—— <b>仍然一次都没跑</b>。</li>
+</ul>
+
+<div class="kv">
+  <div><span>构建</span>BUILD SUCCESS · 0 error</div>
+  <div><span>DLL</span>1,382,400 B · <code>4184e1c898c1a188a3899358857d7194</code></div>
+  <div><span>部署</span>build == MO2 mod 目录（双份 md5 一致）</div>
+  <div><span>INI</span>未动 · 8 键 · 零新键 · <code>efce8911…</code></div>
+  <div><span>补丁</span><code>tools/patch_v128_flicker_revisit_and_cpu.py</code>（11 锚点各 count==1，重跑 REFUSED）</div>
+  <div><span>账本</span>第 41 章（纯 LF，+9,091 B）</div>
+  <div><span>tag</span>v1.28</div>
+</div>
+
+</div>
+</body>
+</html>

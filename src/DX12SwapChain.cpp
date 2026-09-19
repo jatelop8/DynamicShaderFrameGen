@@ -751,6 +751,32 @@ namespace FrameGen
 					// (Present stopped providing backpressure); dsync=1 = our
 					// frameIndex no longer matches DXGI's; lastPr not climbing =
 					// Present returns success without flipping.
+					// v1.28 -- the first reading of this stall that does not come from us
+					// or from DXGI. frames/fence/lastPr/presentAge all freeze together
+					// (03:17 run: 03:16:50.575 -> 03:17:10.861, 20789 ms) which proves
+					// the render thread was not inside our code, but says nothing about
+					// what the process was doing instead. cpuD is that process's own
+					// user+kernel time over this 200 ms slice:
+					//   cpuD ~ 0    -> the process is BLOCKED (IO, a lock, a driver
+					//                  wait). Nothing is spinning and no stack is hot.
+					//   cpuD ~ 200  -> one thread is burning a full core right now.
+					//   cpuD > 200  -> more than one thread is, or the slice overran.
+					// GetProcessTimes only reads; it cannot perturb the process.
+					unsigned long long cpuMs = 0;
+					{
+						FILETIME c{}, e{}, k{}, u{};
+						if (::GetProcessTimes(::GetCurrentProcess(), &c, &e, &k, &u)) {
+							const auto toMs = [](const FILETIME& ft) {
+								return (static_cast<unsigned long long>(ft.dwHighDateTime) << 32)
+									| static_cast<unsigned long long>(ft.dwLowDateTime);
+							};
+							cpuMs = (toMs(k) + toMs(u)) / 10000ull;   // 100 ns ticks -> ms
+						}
+					}
+					static unsigned long long s_lastCpuMs = 0;
+					const unsigned long long cpuDelta =
+						(cpuMs >= s_lastCpuMs) ? (cpuMs - s_lastCpuMs) : 0ull;
+					s_lastCpuMs = cpuMs;
 					const unsigned long long queued = g_queuedDepth.load();
 					const unsigned long long lastPr = g_lastPresentCount.load();
 					const unsigned long long dsync = g_flipDesync.load();
@@ -779,7 +805,7 @@ namespace FrameGen
 					}
 					std::fprintf(f, "[%lld] %02d:%02d:%02d.%03d frames=%llu silent=%lldms "
 						"stage=%s focus=%d fence=%s stim=%llu queued=%llu lastPr=%llu dsync=%llu "
-						"msg=%d alive=%d presentAge=%lldms%s\n",
+						"msg=%d alive=%d presentAge=%lldms cpuD=%llums%s\n",
 						nowMs, wtc.wHour, wtc.wMinute, wtc.wSecond, wtc.wMilliseconds,
 						static_cast<unsigned long long>(frames), silent,
 					g_inSetOptions.load() ? "d3d11 SetDLSSGOptions" : self.lastStage(),
@@ -788,6 +814,7 @@ namespace FrameGen
 						(g_presentEnteredMs.load() > 0)
 							? (nowMs - g_presentEnteredMs.load())
 							: 0LL,
+						cpuDelta,
 						(stalled && (tick % 5) == 0) ? "   <== RENDER THREAD STALLED" : "");
 					std::fflush(f);
 					std::fclose(f);
@@ -1476,8 +1503,12 @@ namespace FrameGen
 			const bool debugOk = dlssgOk || menuBlock;
 			if (!debugOk && fgOn && fg.streamline.featureDLSSG) {
 				if ((++mfgWarned % 600u) == 1u) {
+					// v1.28: the old text printed `menuBlock=0` as a literal and labelled the
+					// next argument `frames=`, but that argument is debugOk, not a frame
+					// count -- the line named a quantity it was not printing. This branch is
+					// only reachable with menuBlock false, so debugOk here IS dlssgOk.
 					SKSE::log::warn("[MFG] debug CHECK: Present skips SetDLSSGOptions even though the menu "
-						"guard is not engaged (menuBlock=0 frames={} blocked={} unblocked={}) - the ladder "
+						"guard is not engaged (dlssgOk={} blocked={} unblocked={}) - the ladder "
 						"cannot be calibrated while this lasts",
 						debugOk ? 1u : 0u, menuBlockedFrames, menuUnblockedFrames);
 				}
@@ -1854,15 +1885,29 @@ namespace FrameGen
 				pixelProbeRingAt = (pixelProbeRingAt + 1u) % 8u;
 				if (pixelProbeRingFill < 8u)
 					++pixelProbeRingFill;
+				// v1.28 -- read the window in RING ORDER.  Samples are written at
+				// pixelProbeRingHash[pixelProbeRingAt], so slot order is write order
+				// rotated by ringAt.  `distinct` survived that mistake because it is
+				// order-free; switches/maxRun did not, and the 03:17 run printed
+				// maxRun=5 for a window whose tail is six identical samples.
+				std::uint64_t ord[8] = {};
+				for (std::uint32_t i = 0; i < pixelProbeRingFill; ++i)
+					ord[i] = pixelProbeRingHash[(pixelProbeRingAt + i) % 8u];
+
+				// shapeIdx[i] is the index of the first sample in this window that
+				// showed the same image, i.e. the state number of sample i.  Printed
+				// as shape=[...] so the window's shape needs no arithmetic to read.
 				std::uint32_t distinct = 0;
+				std::uint32_t shapeIdx[8] = {};
 				{
 					std::uint64_t seenHash[8] = {};
 					for (std::uint32_t i = 0; i < pixelProbeRingFill; ++i) {
-						bool dup = false;
-						for (std::uint32_t j = 0; j < distinct; ++j)
-							if (seenHash[j] == pixelProbeRingHash[i]) { dup = true; break; }
-						if (!dup)
-							seenHash[distinct++] = pixelProbeRingHash[i];
+						std::uint32_t k = 0;
+						for (; k < distinct; ++k)
+							if (seenHash[k] == ord[i]) break;
+						if (k == distinct)
+							seenHash[distinct++] = ord[i];
+						shapeIdx[i] = k;
 					}
 				}
 				float lumLo = 1.0e9f;
@@ -1873,27 +1918,55 @@ namespace FrameGen
 				}
 				const float lumSwing = (pixelProbeRingFill >= 8u) ? (lumHi - lumLo) : 0.0f;
 
-				// v1.27 -- how many times the window changed state, and the longest run of
-				// one state. `distinct <= 3` plus a wide brightness swing is NOT enough on
-				// its own, and the 02:39 run proved it: the first two FLICKER reports of
-				// v1.26 both saw [0.0] [0.0] [104.0] x6 -- black, black, then lit for the
-				// rest of the window. That is a single transition (the loading screen
-				// lighting up), it lands on 2 distinct images, it swings 104/255, and it
-				// is not an oscillation. An oscillation has to come BACK, so require the
-				// state to change at least three times inside the window (A->B->A->B).
-				// The swing is printed but no longer gates: a flicker between two nearly
-				// equally bright images is still a flicker.
+				// v1.28 -- counting state changes is still the wrong question, and the
+				// 03:17 run proved it twice.  v1.27 required >=3 changes and fired on
+				// [96.6][96.6][43.0]x6 and on [43.0]x4[63.8]x3[73.4] -- both ONE-WAY
+				// brightness ramps of the loading screen, both with switches=2 in ring
+				// order.  (They only fired because the scan was reading the ring out of
+				// order, see above.)  The question is not "did it change", it is "did it
+				// come BACK".  Collapse the window to its run-length sequence and count
+				// how many times a state reappears non-adjacently:
+				//   a ramp            [a b c c c c c c] -> [a b c]              -> 0
+				//   a light-up        [a a b b b b b b] -> [a b]                -> 0
+				//   a flicker         [a b a b a b a b] -> [a b a b a b a b]    -> 12
+				// (12 = every non-adjacent pair of equal states in that collapse,
+				//  counted by the loop below; a ramp and a light-up both give 0.)
+				// rev >= 1 is the gate.  A one-way move can never satisfy it, which is
+				// the property v1.26 and v1.27 both lacked.
 				std::uint32_t switches = 0;
 				std::uint32_t maxRun = 0;
 				std::uint32_t runLen = 0;
 				for (std::uint32_t i = 0; i < pixelProbeRingFill; ++i) {
-					if (i > 0u && pixelProbeRingHash[i] != pixelProbeRingHash[i - 1u]) {
+					if (i > 0u && ord[i] != ord[i - 1u]) {
 						++switches;
 						runLen = 0;
 					}
 					++runLen;
 					if (runLen > maxRun)
 						maxRun = runLen;
+				}
+				std::uint32_t trLen = 0;
+				std::uint32_t trIdx[8] = {};
+				for (std::uint32_t i = 0; i < pixelProbeRingFill; ++i) {
+					if (trLen == 0u || trIdx[trLen - 1u] != shapeIdx[i])
+						trIdx[trLen++] = shapeIdx[i];
+				}
+				std::uint32_t revisits = 0;
+				for (std::uint32_t i = 0; i + 2u < trLen; ++i)
+					for (std::uint32_t j = i + 2u; j < trLen; ++j)
+						if (trIdx[i] == trIdx[j])
+							++revisits;
+				char shapeTxt[40] = {};
+				{
+					int off = 0;
+					for (std::uint32_t i = 0; i < pixelProbeRingFill; ++i) {
+						const int wrote = std::snprintf(shapeTxt + off,
+							static_cast<std::size_t>(40 - off), (i == 0u) ? "%u" : " %u",
+							shapeIdx[i]);
+						if (wrote <= 0 || 40 - off - wrote < 4)
+							break;
+						off += wrote;
+					}
 				}
 
 				// v1.23: a streak of identical frames only means "frozen" if the camera
@@ -1908,12 +1981,12 @@ namespace FrameGen
 
 				SKSE::log::info("[PIXEL] #{} hash={:016X} chg={} streak={} clipDev={:.6f} movedThisStreak={} "
 					"changed={} unchanged={} maxStreak={} dropped={} "
-					"lum={:.2f} seen={}/{} swing={:.1f} sw={} maxRun={}",
+					"lum={:.2f} seen={}/{} swing={:.1f} sw={} maxRun={} shape=[{}] rev={}",
 					pixelProbeSamples, h, changed ? 1 : 0, pixelProbeStreak, static_cast<double>(cd),
 					pixelProbeMovedDuringStreak, pixelProbeChanged, pixelProbeUnchanged,
 					pixelProbeMaxStreak, pixelProbeDropped,
 					static_cast<double>(lum), distinct, pixelProbeRingFill,
-					static_cast<double>(lumSwing), switches, maxRun);
+					static_cast<double>(lumSwing), switches, maxRun, shapeTxt, revisits);
 
 				// The verdict. Every other witness this file owns can only say that a
 				// flip happened; this is the only one that can say the picture moved.
@@ -1943,23 +2016,24 @@ namespace FrameGen
 				// depends on the player walking has never once been reachable. What the
 				// player actually reports is a picture that flickers, and a picture that
 				// flickers is exactly what the change counter scores as healthy.
-				if (pixelProbeRingFill >= 8u && distinct <= 3u && switches >= 3u &&
+				if (pixelProbeRingFill >= 8u && distinct <= 3u && revisits >= 1u &&
 					pixelProbeFlickerFired < 4u) {
 					++pixelProbeFlickerFired;
 					SKSE::log::error("[PIXEL] FLICKER: the last 8 samples ({:.1f} s) hold only "
-						"{} distinct images AND changed state {} times (longest run {}), so the "
-						"image is coming BACK to what it already showed rather than advancing. "
-						"Brightness swings {:.0f}/255 (min {:.0f} max {:.0f}); the swing is "
+						"{} distinct images and the image RETURNED to a state it had already "
+						"shown {} times (shape=[{}], {} state changes, longest run {}). That is the "
+						"one thing a picture that merely advances can never do: it came back. "
+						"Brightness spans {:.0f}/255 (min {:.0f} max {:.0f}); the swing is "
 						"reported, not required -- a flicker between two equally bright images "
 						"is still a flicker. A picture that CHANGES is not the same as one that "
 						"ADVANCES, and the change counter cannot tell them apart: every sample "
 						"differs from the previous one while the image cycles a handful of "
-						"states. This is the flicker, measured (v1.27: a one-way transition "
-						"such as the loading screen lighting up does NOT qualify -- it has to "
-						"come back).",
-						static_cast<double>(pixelProbeRingFill) * 0.5, distinct, switches,
-						maxRun, static_cast<double>(lumSwing), static_cast<double>(lumLo),
-						static_cast<double>(lumHi));
+						"states. This is the flicker, measured (v1.28: the gate is a revisit, "
+						"so a one-way transition such as the loading screen lighting up or a "
+						"brightness ramp is rejected by construction).",
+						static_cast<double>(pixelProbeRingFill) * 0.5, distinct, revisits,
+						shapeTxt, switches, maxRun, static_cast<double>(lumSwing),
+						static_cast<double>(lumLo), static_cast<double>(lumHi));
 					SKSE::log::info("[PIXEL] FLICKER window (oldest first): "
 						"[{:016X} {:.1f}] [{:016X} {:.1f}] [{:016X} {:.1f}] [{:016X} {:.1f}] "
 						"[{:016X} {:.1f}] [{:016X} {:.1f}] [{:016X} {:.1f}] [{:016X} {:.1f}]",
