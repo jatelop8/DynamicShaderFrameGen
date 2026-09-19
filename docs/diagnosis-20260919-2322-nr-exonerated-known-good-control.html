@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>23:22 那局（v1.19）：NR 被排除，4x 被证实，然后我回去跑了两天前就该跑的那一步</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#161a21; --panel2:#1c212a; --line:#2a313c;
+    --fg:#d8dee9; --dim:#8b95a5; --ok:#4ade80; --bad:#f87171; --warn:#fbbf24; --info:#60a5fa; --pur:#c084fc;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;}
+  .wrap{max-width:1000px;margin:0 auto;padding:34px 24px 60px}
+  h1{font-size:23px;line-height:1.4;margin:0 0 6px}
+  .sub{color:var(--dim);font-size:13.5px;margin-bottom:26px}
+  h2{font-size:17px;margin:34px 0 12px;padding-left:11px;border-left:3px solid var(--info)}
+  h2.ok{border-color:var(--ok)} h2.bad{border-color:var(--bad)} h2.warn{border-color:var(--warn)}
+  h2.pur{border-color:var(--pur)}
+  p{margin:9px 0}
+  code{font-family:"Cascadia Mono",Consolas,Menlo,monospace;font-size:12.6px;
+       background:#20262f;padding:1.5px 5px;border-radius:4px;color:#a5d6ff}
+  pre{background:#0b0e12;border:1px solid var(--line);border-radius:8px;padding:13px 15px;
+      overflow-x:auto;font-family:"Cascadia Mono",Consolas,Menlo,monospace;font-size:12.4px;
+      line-height:1.65;color:#c9d1d9;margin:12px 0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:15px 18px;margin:14px 0}
+  .card.hi{border-color:#2f4f3a;background:linear-gradient(180deg,#141d18,#131720)}
+  .card.al{border-color:#5a3b3b;background:linear-gradient(180deg,#1e1616,#131720)}
+  .card.wa{border-color:#6b5a2a;background:linear-gradient(180deg,#1d1a12,#131720)}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13.6px}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:#aab4c4;font-weight:600}
+  td code{font-size:12.2px}
+  .ok{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--warn)} .info{color:var(--info)} .dim{color:var(--dim)}
+  ul{margin:8px 0 8px 4px;padding-left:20px} li{margin:5px 0}
+  .kv{display:grid;grid-template-columns:200px 1fr;gap:7px 14px;font-size:13.6px}
+  .kv b{color:#aab4c4;font-weight:600}
+  footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);
+         color:var(--dim);font-size:12.6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>23:22 那局：<span class="bad">NR 被排除</span>、<span class="ok">4x 被证实</span>，<br>然后我回去跑了两天前就该跑的那一步</h1>
+<div class="sub">改动：只动 INI 三行（<code>Provider</code> / <code>MFGMaxFramesOverride</code> / <code>NRAllowWithFrameGen</code>）· 一行还原 · 未改任何代码</div>
+
+<h2 class="bad">一、我上一轮的头号嫌疑，被你这一次运行杀掉了</h2>
+<p>上一轮我说「NR 写 <code>swapChainBufferWrapped</code>，DLSS-G 读的就是它」是头号嫌疑，并且把
+<code>NRAllowWithFrameGen</code> 从 <code>1</code> 改成了 <code>0</code> 来做实验。</p>
+
+<div class="card al">
+<p style="margin:0"><b>这一局的日志证明那个开关真的生效了：</b></p>
+<pre style="margin:10px 0 0">[23:23:04.966] [FrameGen] DLSSNR suppressed: frame generation is active -
+              NR and DLSS-G are two temporal processors and stacking them is a
+              direct flicker source</pre>
+<p style="margin:10px 0 0"><b>NR 整个被关掉了 —— 而你说「还是老样子」。</b>
+⇒ <b>NR ↔ DLSS-G 那条串联不是冻结原因。我的头号嫌疑是错的，这一条现在结案。</b></p>
+</div>
+
+<h2 class="ok">二、这一局同时证实了三件（好事）</h2>
+<table>
+<tr><th style="width:150px">事实</th><th>日志原文</th><th style="width:200px">含义</th></tr>
+<tr><td><b>游戏时钟在走</b></td>
+    <td><code>LIVE ... hrs=12.31644 hrsD=0.005342</code> → <code>0.005466</code> → <code>0.005376</code> → <code>0.005613</code> → <code>0.005609</code></td>
+    <td class="ok">0.0055 游戏小时/秒 × 3600 = <b>每秒 19.8 游戏秒 = timescale 20</b>。游戏在<b>正常模拟</b>，没暂停、没卡加载</td></tr>
+<tr><td>同一秒的三个开关</td>
+    <td><code>paused=0 ld=0 fade=0 menuOpen=0</code></td>
+    <td class="ok">不在暂停、不在 Loading Menu、黑屏淡入淡出也结束了</td></tr>
+<tr><td><b>渲染循环健康</b></td>
+    <td><code>real=25.51ms</code>、<code>dt min/avg/max=23.73/25.54/30.10ms</code>、<code>longFrames=0</code>、无崩溃转储</td>
+    <td class="ok">~39 真实帧/秒，没有任何一次长帧</td></tr>
+<tr><td><b>4x 真的在产出</b></td>
+    <td>DFG：<code>presented per real frame = 4 (status=0)</code>、<code>mult(acc/pres)=4/4</code><br>
+        Transfusion：<code>DLSS-G actual presentation count: 4x (maximum generated frames=5, status=0)</code></td>
+    <td class="ok"><b>两个独立插件互相印证 4x 成立</b></td></tr>
+<tr><td>解锁器在工作</td>
+    <td><code>Intercepted slDLSSGSetOptions</code>、<code>Active DLSS-G wrapper provider: patched=1</code>、arch gates <code>0x1b0 -&gt; 0x190 (Ada)</code>、<code>Kernel: Ada</code></td>
+    <td class="ok">Transfusion 的 hook 是活的</td></tr>
+</table>
+<p class="dim">⇒ 你说「四倍帧生成感觉也没成功」—— 这一条现在有硬证据，<b>4x 是成功的</b>。感觉不到，是因为画面本身不动。</p>
+
+<h2 class="warn">三、这一局同时证实了两件（坏事）</h2>
+<table>
+<tr><th style="width:200px">事实</th><th>日志原文</th></tr>
+<tr><td><b>进世界后相机一帧都没动</b></td>
+    <td><code>frozen=30/30</code> → <code>60/60</code> → <code>90/90</code>、<code>clipDev=0.000061</code>、<code>eyeD=0.00</code>、<code>pos == prevPos</code></td></tr>
+<tr><td><b>玩家坐标也没动</b></td>
+    <td><code>plr=(-250.3,-360.4,-0.0) plrD=0.00</code>，秒秒逐字相同</td></tr>
+<tr><td><b>而且这件事有两个独立证人</b></td>
+    <td>Transfusion 自己的运动追踪：<code>[MOTION] route=slSetConstants call=1..3 clipToPrev=identity prevToClip=identity</code><br>
+        ⇔ DFG 的 <code>clipDev=0.000061</code>。<b>两个插件各自算出「什么都没动」。</b></td></tr>
+<tr><td><b>世界段只有 4.5 秒</b></td>
+    <td>进世界 <code>23:23:30.518</code>，日志断在 <code>23:23:34.948</code>（句中截断，无 shutdown 行）</td></tr>
+<tr><td><b>这 4.5 秒里 OS 层面一个键都没按下</b></td>
+    <td><code>in(os=0x0 dc=0/0 fg=1)</code> 全程</td></tr>
+</table>
+
+<div class="card wa">
+<p style="margin:0"><b>所以现在有一句必须摆在桌面上的矛盾：</b><br>
+日志说「游戏在跑、渲染健康、4x 成功」，你说「画面完全定死、动不了」。</p>
+<p style="margin:9px 0 0"><b>而 <code>frozen</code> / <code>clipDev</code> 是从相机推出来的 —— 它们
+分不出「相机静止」和「画面不刷新」。相机真的静止时，画面本来就该静止。
+这一局的数据没法把这两种情况分开。我不会假装它能。</b></p>
+</div>
+
+<h2 class="pur">四、我这次回去跑了那一步：账本自己写着的「一秒回到可玩」</h2>
+<p>账本（<code>MFG_MASTER_NOTES.md</code> / <code>MEMORY.md</code>）从两天前就写着这一行，我<b>一直没让你试过</b>：</p>
+<pre>&gt; 一秒回到可玩：Provider=0 + MFGMaxFramesOverride=0（只改 INI，不改代码）</pre>
+<p>而现在 INI 自己的注释也写着 <code>Provider</code> 的语义：</p>
+<pre>; 0 = FSR3 tech - universal, works on ALL GPUs (NVIDIA &amp; AMD) - default, most stable
+; 1 = DLSSG (NVIDIA only) - multi-frame generation.</pre>
+
+<div class="card hi">
+<p style="margin:0"><b>已经改好（三行，全部只改数值）：</b></p>
+<div class="kv" style="margin-top:10px">
+<b>Provider</b><span><code>1</code> → <code>0</code>（DLSS-G → FSR3）</span>
+<b>MFGMaxFramesOverride</b><span><code>3</code> → <code>0</code>（<code>0 = off, follow the hardware report exactly (default, always safe)</code>）</span>
+<b>NRAllowWithFrameGen</b><span><code>0</code> → <code>1</code>（把 DLSS5 让回来）</span>
+</div>
+<p style="margin:12px 0 0"><b>⇒ 现在这一套 = 你自己说过「之前已经做到了」的那套：FSR3 两倍帧生成 + DLSS5。</b>
+这是一次<b>已知良好配置的复现</b>，不是新的猜测。</p>
+</div>
+
+<h2 class="ok">五、这一次运行的结果怎么读（一刀两半）</h2>
+<table>
+<tr><th style="width:330px">看到</th><th>结论</th><th style="width:230px">下一步</th></tr>
+<tr><td><b>画面活过来了、能走了</b></td><td class="ok">冻结是 <b>DLSS-G / 多倍</b> 这条支线独有的（与账本「v0.39–v0.50 正常，MFG 引入故障」完全吻合）</td><td>回到 <code>Provider=1</code>，只在 MFG 分支里逐项二分</td></tr>
+<tr><td><b>还是定死</b></td><td class="warn">冻结<b>不在</b>帧生成这条路上 —— 是插件之外的东西（ENB / 其他模组 / 存档 / 驱动）</td><td>停手改插件，转去查外部</td></tr>
+<tr><td><code>os=0x</code> 有值 且 <code>plrD&gt;0</code>、画面动</td><td class="ok">输入通路是通的，之前的「卡」是 4 秒的印象</td><td>正常继续玩下去看极限</td></tr>
+<tr><td><code>os=0x</code> 有值 但 <code>plrD=0.00</code>、画面不动</td><td class="bad"><b>键按到了 OS，游戏不收</b> —— 输入被谁拦住了</td><td>查输入拦截（ImGui 菜单 / 其他插件）</td></tr>
+<tr><td><code>os=0x0</code>（按住 W 也还是 0）</td><td class="bad">我那个 OS 按键探针本身是坏的</td><td>换探针，别再拿它当证据</td></tr>
+</table>
+
+<div class="card wa">
+<p style="margin:0"><b>这一次请你做两件小事：</b><br>
+① 进世界后<b>站着别动，等 15 秒</b>（上一次世界段只有 4.5 秒，日志来不及说话）；<br>
+② 然后<b>按住 W 走 5 秒以上</b>再退。</p>
+<p style="margin:9px 0 0">上一次 <code>keys/os</code> 全是 0，我<b>分不清</b>「你没按」和「按了没进去」——
+这两件事在你那句「画面卡死了，怎么动啊？」里刚好是同一个意思。<b>按住 W 就能把它分开。</b></p>
+</div>
+
+<h2>六、一行还原（万一更糟）</h2>
+<pre>cp "D:/Modding/DynamicShaderFrameGen/src/backup-ini-20260919-2327/DynamicShaderFrameGen.ini.bak" \
+   "E:/EJ/mod/mods/DynamicShaderFrameGen/SKSE/Plugins/DynamicShaderFrameGen.ini"</pre>
+<p class="dim">原文件 md5 <code>ed9655ad2bd0d2576d7f7e9d200a3f4c</code>（14,525 B），现文件 md5
+<code>478bb555acd84b1e5c101a098c0607f0</code>（14,559 B，CRLF 261 / 裸 LF 0，尾部多一行注释标记）。</p>
+
+<h2>七、还没解释的一条（记下，不硬凑）</h2>
+<p>Transfusion 的性能行里，<code>Jitter</code> 在加载期是
+<code>6.41ms → 2.53ms → 1.43ms → 1.67ms</code>，到世界加载前后变成
+<b><code>51.14ms</code> → <code>51.26ms</code></b> —— 抖动量放大了约 30 倍，并且<b>停在那里</b>。
+这可能只是加载余波，也可能是呈现路径在抖。<b>我还没有证据说它是原因</b>，先记着。</p>
+
+<div class="card al">
+<p style="margin:0"><b class="bad">诚实边界</b>：我跑不了游戏。<b>第三节那层矛盾我没有解开</b> ——
+这一局的数据分不出「相机静止」和「画面陈旧」。第五节那张表是<b>设计好用来分开它们</b>的，
+不是结论。<b>DLSS5 上屏从未验证</b>（只证了在跑）；RTX 20/30 一行没写；
+<code>Provider=0</code> 后 FSR3 的 <code>numGeneratedFrames</code> 是硬编码 1，所以这次是 <b>2x</b>，不是 4x。</p>
+</div>
+
+<footer>
+本轮归档：<code>docs/runlogs/2026-09-19-2322-v1.19-nr-exonerated-known-good-control.{log,watchdog.log,transfusion.log,transfusion-crash.log}</code><br>
+DLL 未改：1,357,824 B md5 <code>df726bcd8ce70d800b9d01fc6f45c06f</code>（build == MO2 部署）· tag <code>v1.19</code><br>
+INI 补丁：<code>tools/patch_v120_ini_known_good.py</code>（干跑默认 / <code>--apply</code> 落盘 / <code>--revert</code> 回退 / 锚点 count==1 / 标记幂等）
+</footer>
+
+</div>
+</body>
+</html>

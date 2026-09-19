@@ -4041,3 +4041,124 @@ NRAllowWithFrameGen=1   →   NRAllowWithFrameGen=0
 | 补丁 | `tools/patch_v119_liveness.py`（4 锚点，干跑默认，重跑 REFUSED）|
 | 归档 | `docs/runlogs/2026-09-19-2254-v1.18b-hard-freeze-from-world-entry.*` |
 | 回 v1.18b | `git checkout v1.18b -- src/FrameGen.cpp` |
+---
+
+# 32. 23:22 那局：NR 结案、4x 证实、以及我回去跑了两天前就该跑的那一步
+
+**运行**：`2026-09-19 23:22:33` 起 · 构建 `Sep 19 2026 22:31:04`（v1.19）· DLL 1,357,824 B `df726bcd8ce70d800b9d01fc6f45c06f`（build == MO2 部署）
+**INI**：`Provider=1` · `MFGMaxFramesOverride=3` · `NRAllowWithFrameGen=0`（v1.19 实验值）
+**归档**：`docs/runlogs/2026-09-19-2322-v1.19-nr-exonerated-known-good-control.{log,watchdog.log,transfusion.log,transfusion-crash.log}`
+
+## 32.1 ★ NR 被排除（第 31 章的头号嫌疑作废）
+
+日志原文：
+
+```
+[23:22:45.050] [FrameGen] DLSSNR: color=true engineDepthSRV=false engineMvec=false inputs=false frames=0 status=not-probed
+[23:22:45.050] [W] [FrameGen] DLSSNR skipped: shared depth/mvec not ready (depthWrapped=false mvecWrapped=false srv=false)
+[23:23:04.966] [W] [FrameGen] DLSSNR suppressed: frame generation is active -
+               NR and DLSS-G are two temporal processors and stacking them is a
+               direct flicker source (v0.42 note: revert to mutual exclusion if it f...)
+```
+
+⇒ `NRAllowWithFrameGen=0` **确实生效**（NR 被完全压制），用户反馈**「还是老样子」**。
+**⇒ 第 31 章第 3 节的「NR 写 swapChainBufferWrapped，DLSS-G 读它」这条链不是冻结原因。结案。**
+
+**方法论**：一个「INI 自己写明的机制」听起来再合理，也只是**假设**；只有把开关真的翻过去、再拿到同样的故障，才能把它变成**否定**。这次翻对了。
+
+## 32.2 ★★ 三件被证实的好事（其中之一推翻用户自己的判断）
+
+| 事实 | 原文 | 含义 |
+|---|---|---|
+| **游戏时钟在走** | `LIVE ... hrsD=0.005342 → 0.005466 → 0.005376 → 0.005613 → 0.005609` | 0.0055 游戏小时/秒 × 3600 = **19.8 游戏秒/真实秒 = timescale 20**。游戏在**正常模拟** |
+| 三个开关同时为假 | `paused=0 ld=0 fade=0 menuOpen=0` | 没暂停、没卡 Loading Menu、淡入淡出已结束 |
+| **渲染循环健康** | `real=25.51ms`、`dt min/avg/max=23.73/25.54/30.10ms`、`longFrames=0`、无崩溃转储 | ~39 真实帧/秒，零长帧 |
+| **4x 真的在产出** | DFG：`presented per real frame = 4 (status=0)`、`mult(acc/pres)=4/4`<br>Transfusion：`DLSS-G actual presentation count: 4x (maximum generated frames=5, status=0)` | **两个独立插件互相印证 4x 成立** |
+| 解锁器是活的 | `Intercepted slDLSSGSetOptions`、`Active DLSS-G wrapper provider: patched=1`、arch gates `0x1b0 -> 0x190 (Ada)`、`Kernel: Ada`、`D157 midpoint fix: ... redirected 8 dlfg_kernel descriptor(s) ... (127200 bytes)` | Transfusion hook 正常 |
+
+**⇒ 用户「四倍帧生成感觉也没成功」这一条被**硬证据否定**：4x 成功。感觉不到是因为画面不动。**
+
+**⇒ `hrsD` 是本项目第一个「与用户手指无关」的存活见证，它把第 30 章的「引擎半死」分支也否掉了。**
+
+## 32.3 ★★ 两件被证实的坏事，以及一个新的独立证人
+
+| 事实 | 原文 |
+|---|---|
+| 进世界后相机一帧没动 | `frozen=30/30 → 60/60 → 90/90`、`clipDev=0.000061`、`eyeD=0.00`、`pos == prevPos` |
+| 玩家坐标也没动 | `plr=(-250.3,-360.4,-0.0) plrD=0.00`，秒秒逐字相同 |
+| **第二个独立证人** | Transfusion 自己的运动追踪：`[MOTION] route=slSetConstants call=1..3 clipToPrev=identity prevToClip=identity` ⇔ DFG 的 `clipDev=0.000061` |
+| 世界段只有 4.5 秒 | 进世界 `23:23:30.518` → 日志断在 `23:23:34.948`（句中截断，无 shutdown 行） |
+| 这 4.5 秒 OS 层面零输入 | `in(os=0x0 dc=0/0 fg=1)` 全程 |
+
+**★ 新的交叉验证价值**：Transfusion 是**第三方独立实现**，它也独立算出「clipToPrev = identity」。
+**两条独立的代码路径得出同一结论 ⇒ 「相机静止」这个事实本身是可靠的，不是我的代码算错。**
+
+**★ 但 `frozen`/`clipDev`/`clipToPrev` 三者都**源自相机** ⇒ 它们**永远无法区分**
+「相机静止（画面本来就该静止）」和「画面陈旧（相机在动也看不到）」。
+**这是一整类见证的结构性盲区：全部由一个上游量派生，就没有独立性可言。**
+（第 31 章记过同构的错误：「用僵死常量做门 = 空操作」。这次是「用单源派生量做结论 = 无法证伪」。）
+
+## 32.4 ★★★ 我回去跑了账本自己写着的「一秒回到可玩」
+
+账本从两天前就写着：
+
+```
+一秒回到可玩：Provider=0 + MFGMaxFramesOverride=0（只改 INI，不改代码）
+```
+
+**我从未让用户试过。** 两天里我一直在给 v1.07 → v1.19 堆见证，而没有先回到已知良好基线。
+
+现在应用（`tools/patch_v120_ini_known_good.py`，三行，锚点 count==1，CRLF 261 / 裸 LF 0）：
+
+| 键 | 改动 | 依据 |
+|---|---|---|
+| `Provider` | `1` → `0` | INI 注释：`0 = FSR3 tech - universal, works on ALL GPUs (NVIDIA & AMD) - default, most stable` |
+| `MFGMaxFramesOverride` | `3` → `0` | INI 注释：`0 = off, follow the hardware report exactly (default, always safe)` |
+| `NRAllowWithFrameGen` | `0` → `1` | 把 DLSS5 让回来，凑成用户自己说过「已经做到了」的那套 |
+
+⇒ **现在的配置 = 「FSR3 两倍帧生成 + DLSS5」—— 用户明确说过这是他之前已经跑成过的组合。**
+这是一次**已知良好配置的复现**，不是新猜测。
+
+备份 `src/backup-ini-20260919-2327/DynamicShaderFrameGen.ini.bak`（原 md5 `ed9655ad2bd0d2576d7f7e9d200a3f4c`）
+改后 md5 `478bb555acd84b1e5c101a098c0607f0`（14,559 B）。
+
+**⚠ 注意**：`Provider=0` 后 FSR3 的 `numGeneratedFrames` 是硬编码 1 ⇒ 这次是 **2x，不是 4x**。这是**诊断用的对照组**，不是目标配置。
+
+## 32.5 下一次运行的读法（一刀两半）
+
+| 看到 | 结论 | 下一步 |
+|---|---|---|
+| 画面活了、能走 | 冻结是 **DLSS-G / 多倍** 支线独有（与「v0.39–v0.50 正常，MFG 引入故障」吻合） | 回 `Provider=1`，只在 MFG 分支内二分 |
+| 还是定死 | 冻结**不在**帧生成这条路上 ⇒ 插件之外（ENB / 其他模组 / 存档 / 驱动） | 停手改插件 |
+| `os=0x…` 有值 且 `plrD>0` | 输入通路通，之前「卡」是 4 秒的印象 | 继续玩看极限 |
+| `os=0x…` 有值 但 `plrD=0.00` | 键按到了 OS，游戏不收 ⇒ 输入被拦 | 查拦截者 |
+| 按住 W 仍 `os=0x0` | **探针本身坏了** | 换探针，别再拿它当证据 |
+
+**运行协议（必须）**：① 进世界站着不动 15 秒；② 再按住 W 走 5 秒以上；③ 再退。
+上次世界段只有 4.5 秒 + 零输入 ⇒ 我分不清「没按」和「按了没进去」。
+
+## 32.6 还没解释的一条（记下，不硬凑）
+
+Transfusion 的 `[PERF]` 行里 `Jitter`：加载期 `6.41 → 2.53 → 1.43 → 1.67ms`，
+世界加载前后变成 **`51.14ms` → `51.26ms`** —— 抖动量放大约 30 倍并**停在那里**。
+可能只是加载余波，也可能是呈现路径在抖。**无证据说它是原因。**
+
+`DLSSG-Transfusion.crash.log` 于本轮被写出（29,526 B，23:23），但**只有 213 行模块表、零条异常记录** ⇒
+**这一局没有 first-chance 异常**。已排除。
+
+## 32.7 家族普查（本轮新增一列观察）
+
+```
+FAM[0] proj00=0.149184 arr=0   moved=225 stepSum=315.32   last=(-53.5172,785.1725,80.0000)
+FAM[1] proj00=1        arr=320 moved=868 stepSum=515194.00 span=(719.5,895.6,171.8)
+FAM[2] proj00=0.8391   arr=550 moved=0   stepSum=0.08     last=(-243.0493,-415.3115,118.5582)   <- 锁定目标
+FAM[3] proj00=0.888889 arr=74  moved=0   stepSum=0.00
+```
+
+一秒之间：`FAM[1] stepSum 420391 → 515194`（**+94,803/秒**，即 ~592 单位/步）——**噪声族**，
+不是相机。`FAM[2]`（锁定目标）`stepSum` 不变。
+**`FAM[0] (0.149184) arr=0`** —— 上一局那个在动的相机（y 900→807）这一局**彻底不再提交**。
+
+**⇒ 上一局 `proj00=0.149184` 被我记作「WORLD 族（随玩家动）」，现在看这个标注站不住：**
+本局 `0.149184` 出现在 **`eye=(0.00,0.00,128.00)`**（加载期空相机）上，`best=603.99`（远离地面真值）。
+**⇒ 旧族标签需要重标，别再拿「0.149184 = 世界相机」当前提。**
