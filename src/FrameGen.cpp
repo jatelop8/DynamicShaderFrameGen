@@ -643,10 +643,30 @@ namespace FrameGen
 		// travel is unambiguous motion, and still far below kCamJumpTol so a
 		// single slot jump cannot reach it on its own.
 		constexpr float kCamForeignMoveTol = 200.0f;
-		// Floor on the refusal count so two jittery arrivals cannot take the
-		// anchor by accident. 30 arrivals is ~0.06 s at the measured 500/s and
-		// ~0.33 s at the 90/s the world phase actually ran at.
-		constexpr std::uint32_t kCamForeignMinRej = 30;
+		// ---- v1.11: snapLockStill is not a liveness measure -------------------
+		// v1.10 gated the takeover below on
+		//     snapLockStill >= kCamForeignMinRej (= 30)
+		// and that gate is dead by construction: snapLockStill is reset to 0 by
+		// EVERY accepted arrival, and a frozen family arrives at d2 == 0 against
+		// its own previous arrival, so `continues` is true, so it is accepted,
+		// so the counter goes back to zero. The 14:20 run is the measurement:
+		// 81.6% of 184 000 arrivals were published, the frozen family dominated
+		// them, and `still` never left the 3..8 band while famRej climbed past
+		// 34 000. The one takeover that DID fire (14:28:11.972) fired because a
+		// release had just cleared snapHaveLast for an unrelated reason -- and
+		// it worked: matChanges went 2 -> 542 in three seconds.
+		//
+		// So gate on what we actually care about, measured at the publish site
+		// instead of the arrival site: how many consecutive publishes carried a
+		// byte-identical matrix. 200 publishes is ~0.6 s of a provably dead
+		// published stream at the measured ~330/s.
+		//
+		// The SECOND condition is unchanged and is still what makes this safe: a
+		// parked or stale family contributes no travel, so a legitimately still
+		// player -- where an identity clipToPrev is CORRECT -- can never hand the
+		// anchor away. Only a family that has walked >= kCamForeignMoveTol on its
+		// own can take it.
+		constexpr std::uint64_t kCamPubStaleTol = 200;
 
 	// v0.78: how many consecutive identical-matrix arrivals (with a different
 	// matrix seen in between) before we call the slot stale. The 08:59 run showed
@@ -1011,18 +1031,21 @@ namespace FrameGen
 						snapForeignPos[1] = py;
 						snapForeignPos[2] = pz;
 						snapForeignHave = true;
-						if (snapLockStill >= kCamForeignMinRej &&
+						// v1.11: was snapLockStill >= kCamForeignMinRej, which the
+						// frozen family reset to 0 on every one of its own accepts.
+						// See the kCamPubStaleTol comment for the 14:20 numbers.
+						if (snapPubStale >= kCamPubStaleTol &&
 						    snapForeignMove >= kCamForeignMoveTol) {
 							++snapForeignTakeover;
 							foreignTakeover = true;
 							if (snapForeignTakeover <= 5u) {
-								SKSE::log::info("[CAM] #{} FOREIGN TAKEOVER (v1.10): locked "
-									"proj00={:.6g} has not moved for {} arrivals while the "
-									"refused family proj00={:.6g} travelled {:.1f} units - "
-									"adopting pos=({:.1f},{:.1f},{:.1f})",
+								SKSE::log::info("[CAM] #{} FOREIGN TAKEOVER (v1.11): locked "
+									"proj00={:.6g} has gone {} publishes with an unchanged "
+									"matrix while the refused family proj00={:.6g} travelled "
+									"{:.1f} units - adopting pos=({:.1f},{:.1f},{:.1f})",
 									snapArrivals,
 									snapLockProjValid ? snapLockProj00 : 0.0f,
-									snapLockStill, proj00, snapForeignMove, px, py, pz);
+									snapPubStale, proj00, snapForeignMove, px, py, pz);
 							}
 							snapForeignMove = 0.0f;
 							snapForeignHave = false;
@@ -1092,7 +1115,20 @@ namespace FrameGen
 					}
 				}
 			}
-			if (!same) ++snapMatChanges;
+			if (!same) {
+				++snapMatChanges;
+				// v1.11: the published stream moved, so the lock is demonstrably
+				// alive. THIS IS THE ONLY WRITE THAT CLEARS THE COUNTER -- a
+				// second writer (an accept, a release, a timer) would let the
+				// stagnation erase the evidence of itself, which is exactly the
+				// defect this release removes.
+				snapPubStale = 0;
+			} else {
+				// v1.11: the SAME matrix went out again. The direct measurement of
+				// "the published stream is dead" -- snapMatChanges can only report
+				// that it is dead on average over a whole run.
+				++snapPubStale;
+			}
 			for (int r = 0; r < 4; ++r)
 				for (int k = 0; k < 4; ++k)
 					snapPubLastMat[r][k] = a_src.CameraViewProjUnjittered.data[r][k];
@@ -1149,15 +1185,18 @@ namespace FrameGen
 					SKSE::log::info("[CAM] pub #{} pos=({:.2f},{:.2f},{:.2f}) move={:.4f} path={:.2f} "
 						"matChanges={} arrivalsPerSec={:.0f} | lock(pub/hold/re/still)={}/{}/{}/{} "
 						"proj00={:.6g} famRej={} frozenRep={} ident/diff={}/{} "
-						"fMove={:.1f} takeover={} | {}",
+						"fMove={:.1f} takeover={} stalePub={} | {}",
 						snapAccept, px, py, pz, snapAcceptDist, snapPathLen, snapMatChanges,
 						arrPerSec, snapLockPublish, snapLockHold, snapLockRelock, snapLockStill,
 						snapLockProjValid ? snapLockProj00 : 0.0f, snapLockFamilyRej,
 						snapFrozenRepeats, snapIdenticalArrivals, snapDifferentArrivals,
 						snapForeignMove, snapForeignTakeover,
+						snapPubStale,
 						snapMatChanges == 0u
 							? "PROBLEM nothing has ever been published with a changed matrix"
-							: "ok");
+							: (snapPubStale >= kCamPubStaleTol
+								   ? "PROBLEM the published camera has been byte-identical for a long run"
+								   : "ok"));
 				}
 
 			}

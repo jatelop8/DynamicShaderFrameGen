@@ -344,6 +344,18 @@ namespace FrameGen
 	// healthy one looked identical in the log. This counter separates them, and
 	// it is live on both providers because the gate runs in the Map/Unmap hook.
 	std::uint64_t snapMatChanges = 0;   // publishes whose matrix differed from the previous one
+	// ---- v1.11: the takeover gate watches the published stream -------------
+	// snapMatChanges proves the stream is ALIVE over a whole run; it cannot
+	// prove it is alive NOW. This one can: consecutive publishes that carried
+	// a byte-identical matrix. Reset on exactly one branch (the matrix
+	// changed) so nothing that suffers stagnation can zero it -- which is
+	// precisely what was wrong with the counter v1.10 gated on.
+	//
+	// The 14:20 run measured the failure this detects: after the world started,
+	// pos=(-243.05,-415.31,118.56), matChanges frozen at 542, move=0.0000,
+	// clipDev=0.000061 -- while a walking family (proj00=1) was refused
+	// ~100 times a second. 200 stale publishes is ~0.6 s of that.
+	std::uint64_t snapPubStale = 0;
 	bool  snapPubHaveMat = false;
 	float snapPubLastMat[4][4] = {};
 
