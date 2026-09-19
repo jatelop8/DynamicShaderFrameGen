@@ -2621,3 +2621,233 @@ PATCH-POSTCONDITION SATISFIED: False
 L0 第二遍里「用户会不会白跑一趟」这一问，**必须落到配置文件的实际字节上核**，
 不能凭"我这轮改过它"的记忆。
 **记忆不是证据；后置条件跑在文件上才是。**
+
+---
+
+## 24. 第 24 章　2026-09-19 11:30 那局：**第一次拿到 4x 的实测值**，也是第一次把冻结链指到具体族
+
+### 24.1 这一局的身份
+- 11:30:56 启动，DLL = v1.09 构建（`mtime=2026-09-19 03:17` UTC = 本地 11:17，size=1335296B）。
+- 11:31:27 第一个相机快照；11:33:15.6 进世界；11:33:25 结束。
+- **`DynamicShaderFrameGen.20*.log` = 0 个** —— v1.09 的归档**一次都没跑**（见 24.9）。
+
+### 24.2 ★★★ 4x 是**实测**成功的，而且 hwMax=6（推翻旧记忆）
+```
+[Streamline] DLSS-G supports up to 6x frame generation (5 interpolated frames per real frame)
+[Streamline] MFG override 3 <= hardware max 5 - no change needed
+11:33:16.432  FPS probe: real=25.4 | DLSSG | cap~=101.6 | hwMax=6 ask=4 accepted=4
+11:33:18.483  FPS probe: real=9.7  | DLSSG | cap~=39.0  | hwMax=6 ask=4 accepted=4
+11:33:24.637  FPS probe: real=9.8  | DLSSG | cap~=39.0  | hwMax=6 ask=4 accepted=4
+```
+- `accepted=4` 是 `dlssgAcceptedFrames+1`，**测量值**（`DX12SwapChain.cpp:968-973`）。
+- `hwMax=6` = `dlssgMaxFramesToGenerate+1` ⇒ **运行时自报支持 6x（5 个插帧）**。
+- 呈现直方图：`presented all=… world=0/12/0/0/174/…` ⇒ 世界里 **174 次 present 各出 4 个 flip**；`menu=0/371/…` ⇒ 菜单里 FG 关（`MenuDisableFrameGen=1`）。
+
+**⇒ 结论一：4x 从来没有被上限卡住。旧记忆里「Ada 只能 2x / `dlssgMaxFramesToGenerate`=1」是错的。**
+**⇒ 结论二：用户的「4x 没成功」不是"没插帧"，是"插了但没有画面推进"（见 24.3）。**
+
+### 24.3 但画面不推进：`clipToPrevClip` = 单位阵
+```
+11:33:15.546 [MOTION] clipToPrevClip[3].w=-195.222366 (must be 1) - the inverse and the
+             previous matrix came from different cameras
+serial=399   clipDev=243.962387 clipW=-195.222366 p00(c/p)=1.1918/0.0000
+稳态          clipDev=0.000061 clipW=1.000000 p00(c/p)=1.1918/1.1918
+             curVP=15.0006 prevVP=15.0006 | pos=(-243.0,-415.3,118.6) prevPos=(-243.0,-415.3,118.6)
+```
+`prevVP == curVP` 且 `prevPos == pos` ⇒ `inv(cur)×prev = I` ⇒ DLSS-G 被告知"相机没动"
+⇒ **每 4 个呈现帧里有 3 个是复制品**。
+
+### 24.4 v1.09 的探针把"发布流冻结"变成了数字
+`[CAM] pub` 第一次有输出（115 行）。首尾：
+```
+#52989 (11:33:15.482) pos=(-243.05,-415.31,118.56) move=0.0000 path=65.41 matChanges=168 proj00=0.8391 famRej=13575
+#54489 (11:33:24.725) pos=(-243.05,-415.31,118.56) move=0.0000 path=65.41 matChanges=168 proj00=0.8391 famRej=14475
+```
+**`matChanges` 在 9.2 秒 / ≈2100 次发布里冻结在 168**，`path` 冻结在 65.41，`famRej` +900。
+（菜单阶段则相反：`matChanges=1` 冻结、`famRej` 增长，因为相机真的静止。）
+**⇒ 我们发布出去的快照是"逐字节冻结"的。这是 v1.09 探针要回答的问题，它回答了。**
+
+### 24.5 ★★★ 锁拿着的是"场景固定的相机"，不是玩家相机
+判据不是估值、不是直觉，是**跨运行的数字恒等**：
+- 被锁住的位置 `(-243.05,-415.31,118.56)`，与 `Streamline.cpp` v1.07c 注释里引用的 **23:10 那局**（两天前）
+  `cameraPos=(-243.049301,-415.311523,118.558205)`、`clipToPrev[3].w=-195.222366` **逐位相同**。
+- 活着的相机不可能精确复现另一局的坐标 ⇒ 这组值是**场景几何**（3D 菜单 / 载入画面相机）。
+
+而真正的活相机以 `proj00=1` 到达，**位置在走**：
+```
+[CAM] #67695 family rejected: proj00=1 locked=0.8391 ratio=1.1918 pos=(-125.7,210.8,188.4) dist=640.8
+[CAM] #69020 family rejected: proj00=1 locked=0.8391 ratio=1.1918 pos=(255.0,804.7,-94.4)  dist=1334.8
+```
+反证：菜单阶段同一个 `proj00=1` 在 `pos=(-160.0,160.0,128.0)` 上**逐字节恒定**（238 条拒绝全同）
+⇒ 它的行为与"活相机"完全一致：**菜单里静止、世界里走动**。
+
+### 24.6 触发点：reset edge 把锁交给了"下一个到达"，而那一个是假的
+```
+11:33:15.482 [CAM] #66564 lock RELEASED on the reset edge (was proj00=0.149184 famRej=13575)
+11:33:15.482 [CAM] pub #52989 ... proj00=0.8391
+11:33:15.482 [CAM] #66564 -> 立即 re-acquire 成 0.8391
+```
+v1.07b 的注释自己写着：release 之后 "hands the lock to the first arrival after it,
+**which is the world camera whenever the menu has closed**"。
+**这条假设是错的** —— 重置边之后第一个到达的是场景固定的 `0.8391`。
+
+### 24.7 而且没有任何东西能把它放掉（D2 由日志证实，不只是 grep）
+```
+[CAM] #66488 family rejected: proj00=0.8391 locked=0.149184 ratio=5.6246 pos=(-243.0,-415.3,118.6) still=1570/90
+```
+**连续 1570 次拒绝、阈值 90、什么都没发生。** `lock RELEASED` 全程 3 条，全部是 `on the reset edge`。
+⇒ 与第 22 章 D2 完全一致：锁没有自己的释放路径。
+
+### 24.8 ★ 我自己读错的两处（写下来避免再犯）
+**(a) `[MFG] debug CHECK: ... blocked=396 unblocked=1` 不是缺陷。**
+我第一遍读成"我们跳过了 396 次 SetDLSSGOptions"。读 `DX12SwapChain.cpp:1372-1439`：
+`blocked/unblocked` 数的是 **`menuBlock`**，即菜单守卫帧数。396 = 菜单开着 396 帧；
+警告之所以打，是因为**唯一那一个非菜单帧**的 `EvaluateDLSSG` 返回了 false。不是 bug。
+**(b) `camPrev(ok/used)=1/90` 不是"90 次里只成功 1 次"。**
+`Streamline.cpp:1002` 是 `diag.camPrevOk = camPrevOk ? 1 : 0;` —— **赋值，瞬时标志**；只有
+`camPrevUsed` 是累加。它读作"此刻重建成功，且已被使用 90 次"。
+
+### 24.9 v1.10 改了什么（已构建 = 已部署）
+- `FrameGen.h`：新增 `snapForeignMove` / `snapForeignHave` / `snapForeignPos[3]` /
+  `snapForeignProj00` / `snapForeignTakeover`。
+- `FrameGen.cpp`：新增 `kCamForeignMoveTol=200.0f`、`kCamForeignMinRej=30`；
+  **`!sameFamily` 分支尾部不再无条件 `return false`**，而是累计"被拒族自己的位移"，
+  当 `still >= 30 && travel >= 200` 时**接管 anchor**（落到已有的 adopt 路径）；
+  `foreignTakeover` 抑制那条会误述的 `same-family step break` 日志；
+  acquire / reset-edge 两个入口都清零累计器；`[CAM] pub` 增加 `fMove=` 与 `takeover=`。
+- `main.cpp`：`InitWatchdogLogPath()` **移到 `ArchivePreviousLog()` 之前**。
+  v1.09 把两者写反了：归档函数从 `WatchdogLogPath()` 取目录，而那个缓冲区当时还是空的，
+  于是它在第一个 guard 就返回 —— **11:30 那局一个归档文件都没有**。
+- **为什么这不是 v1.07b 删掉的那个 v0.94 re-acquire**：v0.94 是"谁排在第 90 个谁赢"（只看顺序），
+  所以一个静止的错族也能靠顺序夺锁（v1.07b 注释说它有一半概率落到 `proj00=1`）。
+  这里被拒族**必须自己走出 ≥200 单位**才可能接管 —— 静止或陈旧的相机不可能满足。计数下限只防抖动。
+- **没改**：`kCamStillTol` 依然是死常量。现在 v1.10 这条接管路径是锁唯一的自驱动释放通道。
+  记为已知缺口。
+
+### 24.10 仍未定 / 下一步
+1. **真实帧率从 58（菜单）塌到 9.8（世界）**。首要嫌疑：`NRRenderScale=1.00` ⇒ 每个真实帧做一遍
+   **3840×2160** 的神经渲染，而渲染分辨率只有 1689×950（INI 自己的注释就写着 "the expensive part"）。
+   **未测**，一次纯 INI 改动就能界定。
+2. `proj00=1` 到底是玩家相机还是"随玩家移动的非游戏相机"：**由 v1.10 的接管自己回答** ——
+   改后若 `matChanges` 开始增长、`clipDev` 变成非零，它就是相机。
+3. 判据（下一局）：
+   - 出现 `FOREIGN TAKEOVER (v1.10)` 且随后 `matChanges` 持续增长 ⇒ 链修对了；
+   - `clipDev` 在走动时明显 > 0（不再恒 0.000061）⇒ `clipToPrevClip` 有运动了；
+   - `SKSE/DynamicShaderFrameGen.20*.log` 出现 ⇒ 归档修对了。
+
+### 24.11 ★★★ L27：改部署目录的 INI 是白改 —— **部署源在仓库里**
+
+**怎么发现的**：交付前的 L0 第二遍，我按惯例复核"用户起游戏时读到的 INI"，第 222 行又是
+`NRAllowWithFrameGen=0`。而我 11:25 明明把它改成了 1，md5 也验过是 `a19307d4`。
+
+**根因（`CMakeLists.txt` POST_BUILD，逐行读出来的）：**
+```cmake
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/SKSE/Plugins/DynamicShaderFrameGen.ini"
+        "${PLUGIN_DEPLOY_DIR}/SKSE/Plugins/DynamicShaderFrameGen.ini" )
+```
+**仓库里的那一份才是部署源。** 手工改部署目录 = 下一次构建被覆盖回去。
+
+**md5 实证（2026-09-19 11:48）：**
+```
+repo     SKSE/Plugins/DynamicShaderFrameGen.ini        ed9655ad2bd0d2576d7f7e9d200a3f4c   NRAllowWithFrameGen=0
+deployed E:/EJ/mod/mods/.../DynamicShaderFrameGen.ini  ed9655ad2bd0d2576d7f7e9d200a3f4c   NRAllowWithFrameGen=0
+```
+两份**逐字节相同**，且都还是 0 ⇒ 11:25 那次修复（`a19307d4`）被 11:45 的构建盖掉了。
+**这也解释了当天 11:17:57 的那次"神秘回退"**：`ini.bak_20260919_090521` 的 md5 `ed9655ad`
+之所以与当时的部署文件相同，不是因为"我从来没改对"，而是因为**构建把仓库那份复制了过来**，
+而仓库那份一直没动。
+
+**第二个坑（同一次踩到）：`copy_if_different` 只在 DLL 重新链接时才执行。**
+我改完仓库 INI 后跑 `build_vs.sh`，DLL 是最新的 ⇒ ninja 不重新链接 ⇒ **POST_BUILD 不跑** ⇒
+部署目录仍是旧 md5 `ed9655ad`。**"我构建了" ≠ "INI 重新部署了"。**
+
+**处置：**
+1. 仓库 INI `NRAllowWithFrameGen 0→1`（锚点 count==1、等长替换 14525 B、纯 CRLF 259/0、
+   备份 `.bak_before_nrchain_20260919_114858`），md5 → **`a19307d47caeb513b9ef6a16c4a83a42`**。
+2. 新增 `tools/deploy_ini.sh`：无条件复制 + **核 md5 一致** + 逐条打印决定 4x/DLSS5 的键。
+   **改 INI 后必须跑它，不许只跑构建。**
+3. 复核结果：repo 与 deployed 均为 `a19307d4`，`Provider=1 / FrameGeneration=1 /
+   NeuralRenderingEnabled=1 / DLSSGFramesToExecute=3 / MFGMaxFramesOverride=3 /
+   NRAllowWithFrameGen=1`。
+
+**⇒ 新铁律 L27：部署源在仓库，不在部署目录。判据永远是 `md5(repo) == md5(deployed)`，
+不是"我改过"。**
+
+## 25. 第 25 章　v1.11 —— 接管门的计数器被它要检测的故障清零（2026-09-19 14:20 那局）
+
+### 25.1 这一章只讲一件事
+v1.10 的「会动的族可以接管静止的锁」机制**本身是对的**，但它的**门**是 `snapLockStill >= 30`，
+而 `snapLockStill` 被**每一次 accept** 清零。冻结族恰好在 `d2 == 0` 上到达自己的上一个到达点，
+所以它 `continues`、所以它被接受、所以计数器回零。**门永远打不开。**
+
+### 25.2 14:20 那局的证据（全部读自 DynamicShaderFrameGen.log，无一推测）
+这局是 v1.10 第一次上机，也是第一次有 `[CAM] pub` 探针。
+
+    14:20:33.718  build Sep 19 2026 11:46:58  dll size=1337856B  Provider=1
+    14:21:03.345  DLSSNR CHAINED with frame generation (v1.01, NRAllowWithFrameGen=1)
+    14:21:03.697  [XRAY] MENU EDGE open=1 serial=2 presentedBefore=0
+    14:21:03.697  [XRAY] LONG FRAME 20206.7ms (capUs=12658 mult=1 menu=0)     <- 载入存档
+    14:21:03.300  [CAM] raw #1  ... ProjUnj[0][0]=0.149184   pos=(-50.0000,600.0000,80.0000)
+    14:24:26.030  [CAM] raw #86401 ... 与 #1 逐字节相同（这 3.5 分钟在主菜单，相机确实静止）
+    14:27:38-14:28:08  real=39.0 稳定  hwMax=6 ask=4 accepted=4
+    14:28:01.109  FOCUS lost    14:28:11.999  FOCUS regained   (用户切出去 10.9 秒)
+    14:28:11.972  [CAM] #181702 FOREIGN TAKEOVER (v1.10): locked proj00=0.149184 has not
+                  moved for 30 arrivals while the refused family proj00=1 travelled 255.4
+                  units - adopting pos=(-125.8,211.4,189.1)
+    14:28:11.973  [CAM] pub #148521 pos=(-125.79,211.45,189.11) matChanges=2  takeover=1
+    14:28:12.001  [XRAY] LONG FRAME 10916.8ms           <- 切回来那一下，与 bug 无关
+    14:28:12.816  [CAM] MenuDraw entry: ... kMAIN=true kFRAMEBUFFER=false
+    14:28:14.271  [XRAY] MENU EDGE open=0 serial=16308   <- 7 分 11 秒后终于进世界
+    14:28:14.278  [CAM] #183318 lock RELEASED on the reset edge (was proj00=1    famRej=34258)
+    14:28:14.346  [MOTION] clipToPrevClip[3].w=-195.222366 (must be 1)
+                  v1.08 PROBE: p00 cur=1.1918 prev=0.0000 | mag invSrc=203.9 prevSrc=15
+    14:28:14.412  [CAM] #183366 lock RELEASED on the reset edge (was proj00=0.8391 famRej=34276)
+    14:28:15.015  [CAM] pub #149316 pos=(-243.05,-415.31,118.56) move=0.0000 path=151.05
+                  matChanges=542 | lock(pub/hold/re/still)=149316/34681/274/0
+                  proj00=0.8391 famRej=34411 | fMove=0.0 takeover=1 | ok
+    14:28:15.926  [CAM] #183951 family rejected: proj00=1 locked=0.8391 ratio=1.1918
+                  pos=(-865.8,657.2,285.8) dist=1251.4 still=8/90
+    14:28:18.479  日志停止；watchdog 同时停止，但最后一行 alive=1 presentAge=102ms
+
+### 25.3 从这些数字里能**推出**什么（以及不能）
+**能推出**
+- 两次 release 相隔 134 ms，中间的 acquire 抓到了 `proj00=0.8391`，此后**再没变过**。
+- `matChanges` 从 2 涨到 542 用了 3 秒 —— 这 3 秒里**接管确实让发布流活了**。**机制有效。**
+- 之后 `matChanges` 冻结在 542 直到日志结束；`clipDev=0.000061`；`prevPos == pos`。
+- `famRej` 从 34276 涨到 34681（<1 s，~100/s），而 `still` 只在 3–8。
+- `still` 上不去的原因看代码就明白：`:1073`（`continues` 分支）、`:1069`（step break）、`:933`（acquire）
+  三处都写 `snapLockStill = 0`，而 `:1014` 的门要 `>= 30`。
+**不能推出**
+- 世界内是不是真的"动不了" —— world 只有 34 帧、日志在进世界 4 秒后就停了，用户随后退出。
+  watchdog 证明进程活着、帧数在涨、`presentAge=102ms`（≈10 fps）。**"卡死"没有证据，"极慢且画面静止"有。**
+
+### 25.4 修法（v1.11，唯一一处行为改动）
+门改盯**发布流的直接测量**，而不是到达侧的代理计数：
+
+    FrameGen.h   新增  std::uint64_t snapPubStale = 0;
+    FrameGen.cpp 发布点： if (!same) { ++snapMatChanges; snapPubStale = 0; }
+                        else     { ++snapPubStale; }
+                 常数：  constexpr std::uint64_t kCamPubStaleTol = 200;   // 替换 kCamForeignMinRej
+                 门：    if (snapPubStale >= kCamPubStaleTol &&
+                             snapForeignMove >= kCamForeignMoveTol) { ...接管... }
+                 心跳：  [CAM] pub ... fMove={} takeover={} stalePub={} | {}
+                 verdict：stalePub 超阈时输出 "PROBLEM the published camera has been
+                          byte-identical for a long run"
+
+**为什么 200**：冻结族 ~150 次发布/s（14:28:15→18 是 450 次/3 s）⇒ 200 ≈ 1.3 秒的
+**可证死**发布流。**第二条件一个字没动**，它仍然是安全性的来源：停住的族贡献不了位移，
+所以"玩家本来就站着不动"（此时 identity 的 clipToPrev **是对的**）永远夺不走 anchor。
+
+**为什么只留一个清零点**：补丁里加了断言 `snapPubStale = 0;` 全文**必须恰好出现 1 次**。
+第二个写者（accept / release / 定时器）会让停滞自己擦掉自己的证据 —— 那正是这一版要消灭的缺陷。
+
+### 25.5 这一版**没有**做什么
+锁状态机、族指纹、release 路径、step-break 逻辑**一行未改**。
+唯一的行为差别是"哪个数字开门"，而这个数字从"被故障重置的代理量"变成了"故障本身的直接测量"。
+**"为什么接管前会锁到场景固定相机"仍未证** —— v1.11 只保证锁能自愈（~1.3 秒内），不解释它怎么锁错的。
+
+### 25.6 L28（本轮新增）
+**「被检测的故障本身会把这个检测器的计数清零」—— 用任何计数器做门之前，先证明这个故障不会重置它。**
+判据不是"这个门看起来合理"，而是"走一遍故障路径，看这个计数器还在不在"。
