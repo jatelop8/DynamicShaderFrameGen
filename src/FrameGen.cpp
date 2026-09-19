@@ -697,6 +697,12 @@ namespace FrameGen
 	// genuine world camera never trips it, short enough that a machine whose
 	// camera write fails the test is back on the old behaviour within one run.
 	constexpr std::uint64_t kCamCaptureFallbackSkips = 6000;
+
+	// ---- v1.15: the smallest pos delta that counts as a real camera step ----
+	// The hook sees the same writer several times per frame, so a live camera
+	// produces multi-unit steps between consecutive arrivals while a parked one
+	// only produces float noise far below this. 0.05 units = 5 cm.
+	constexpr float kCamMoveEps = 0.05f;
 	}
 
 	bool FrameGen::AcceptCameraSnapshot(const FrameBuffer& a_src)
@@ -707,41 +713,75 @@ namespace FrameGen
 		const float py = a_src.CameraPosAdjust[1];
 		const float pz = a_src.CameraPosAdjust[2];
 
-		// ---- v1.14 probe: a census of the WRITERS -- who writes this buffer, and
-		// does any of them MOVE?  Purely additive and placed BEFORE the gate, so it
-		// sees the whole cast.
-		// The 19:39 run proved the v1.13 gate works (the orthographic writer is
-		// dropped 13,804 times, cap=13804/0) but the published camera stayed
-		// byte-identical for the whole 11.4 s world session.  "The player was
-		// standing still" and "we are locked on a parked camera" call for two very
-		// different repairs, and only a census of the actual writers separates
-		// them: if snapCensusNew stays at 2-3 for a whole session, NO writer moves
-		// and the source itself has to change.
+		// ---- v1.15 probe: MOTION PER FAMILY ----------------------------------
+		// v1.14 counted DISTINCT positions against an 8-entry table that never
+		// evicted.  Once those eight slots filled with the first arrivals, every
+		// later arrival differing from them by >1 unit incremented the counter --
+		// so a PARKED writer and a MOVING one produced the same rising number.
+		// The 21:15 run duly read cen=5077/8 while every refused arrival in the
+		// world sat at the same position: the counter was measuring "differs from
+		// the first eight seen", not "moves".
+		//
+		// Measure the step between CONSECUTIVE arrivals instead, bucketed by
+		// proj00, because the question that decides the repair is not "do arrivals
+		// move" but "does a MOVING family reach this hook":
+		//   some family accumulates moves -> the live camera is arriving, and the
+		//     repair belongs in the accept rules (family lock / v1.11 takeover);
+		//   no family accumulates moves  -> no live camera reaches this hook, and
+		//     the SOURCE has to change (RE::PlayerCamera).
 		{
-			bool known = false;
-			for (std::uint32_t i = 0; i < snapCensusCount && !known; ++i) {
-				known = (std::fabs(snapCensus[i][0] - px) +
-				         std::fabs(snapCensus[i][1] - py) +
-				         std::fabs(snapCensus[i][2] - pz)) < 1.0f;
+			const float famKey = a_src.CameraProjUnjittered.data[0][0];
+			std::int32_t slot = -1;
+			for (std::uint32_t i = 0; i < kSnapFamMax; ++i) {
+				if (snapFamSeen[i] &&
+				    std::fabs(snapFamProj[i] - famKey) <= std::fabs(famKey) * 0.02f + 1.0e-6f) {
+					slot = static_cast<std::int32_t>(i);
+					break;
+				}
 			}
-			if (!known) {
-				if (snapCensusCount < kSnapCensusMax) {
-					snapCensus[snapCensusCount][0] = px;
-					snapCensus[snapCensusCount][1] = py;
-					snapCensus[snapCensusCount][2] = pz;
-					++snapCensusCount;
+			if (slot < 0) {
+				for (std::uint32_t i = 0; i < kSnapFamMax; ++i) {
+					if (!snapFamSeen[i]) {
+						snapFamSeen[i] = true;
+						snapFamProj[i] = famKey;
+						snapFamHavePos[i] = false;
+						snapFamMoved[i] = 0;
+						snapFamStep[i] = 0.0f;
+						slot = static_cast<std::int32_t>(i);
+						break;
+					}
 				}
-				++snapCensusNew;
-				if (snapCensusLogged < 80u) {
-					++snapCensusLogged;
-					SKSE::log::info("[CAM] WRITER #{} NEW pos=({:.3f},{:.3f},{:.3f}) proj00={:.6g} "
-						"row3_2={:.6g} row3_3={:.6g} prevPos=({:.3f},{:.3f},{:.3f}) arr#{}",
-						snapCensusNew, px, py, pz,
-						a_src.CameraProj.data[0][0],
-						a_src.CameraProj.data[3][2], a_src.CameraProj.data[3][3],
-						a_src.CameraPreviousPosAdjust[0], a_src.CameraPreviousPosAdjust[1],
-						a_src.CameraPreviousPosAdjust[2], snapArrivals);
+			}
+			if (slot >= 0) {
+				const auto s = static_cast<std::uint32_t>(slot);
+				if (snapFamHavePos[s]) {
+					const float mdX = px - snapFamPos[s][0];
+					const float mdY = py - snapFamPos[s][1];
+					const float mdZ = pz - snapFamPos[s][2];
+					const float mstep = std::sqrt(mdX * mdX + mdY * mdY + mdZ * mdZ);
+					snapFamStep[s] += mstep;
+					snapFamStepTotal += mstep;
+					if (mstep > kCamMoveEps) {
+						++snapFamMoved[s];
+						++snapFamMovedTotal;
+						if (snapFamLogged < 60u) {
+							++snapFamLogged;
+							SKSE::log::info("[CAM] MOTION fam={:.6g} #{} step={:.4f} "
+								"pos=({:.4f},{:.4f},{:.4f}) prevPos=({:.4f},{:.4f},{:.4f}) "
+								"Proj row3=({:.6g},{:.6g},{:.6g},{:.6g}) arr#{}",
+								famKey, snapFamMoved[s], mstep, px, py, pz,
+								snapFamPos[s][0], snapFamPos[s][1], snapFamPos[s][2],
+								a_src.CameraProjUnjittered.data[3][0],
+								a_src.CameraProjUnjittered.data[3][1],
+								a_src.CameraProjUnjittered.data[3][2],
+								a_src.CameraProjUnjittered.data[3][3], snapArrivals);
+						}
+					}
 				}
+				snapFamPos[s][0] = px;
+				snapFamPos[s][1] = py;
+				snapFamPos[s][2] = pz;
+				snapFamHavePos[s] = true;
 			}
 		}
 
@@ -1082,11 +1122,25 @@ namespace FrameGen
 					// refusals and not one of them counted.
 					++snapLockStill;
 					if (snapLockFamilyRej <= 3u || (snapLockFamilyRej % 500u) == 0u) {
+						// v1.15: pos at 4 decimals plus prevPos and row3. "Parked" and
+						// "gliding" are indistinguishable at 1 decimal, and that distinction
+						// is what decides whether this refused family could ever satisfy
+						// kCamForeignMoveTol on the v1.11 takeover.
 						SKSE::log::info("[CAM] #{} family rejected: proj00={:.6g} locked={:.6g} "
-							"ratio={:.4f} pos=({:.1f},{:.1f},{:.1f}) dist={:.1f} still={}/{}",
+							"ratio={:.4f} pos=({:.4f},{:.4f},{:.4f}) "
+							"prevPos=({:.4f},{:.4f},{:.4f}) dist={:.1f} still={}/{} "
+							"row3=({:.6g},{:.6g},{:.6g},{:.6g})",
 							snapArrivals, proj00, snapLockProj00,
 							snapLockProjValid ? (proj00 / snapLockProj00) : 0.0f,
-							px, py, pz, std::sqrt(d2), snapLockStill, kCamStillTol);
+							px, py, pz,
+							a_src.CameraPreviousPosAdjust[0],
+							a_src.CameraPreviousPosAdjust[1],
+							a_src.CameraPreviousPosAdjust[2],
+							std::sqrt(d2), snapLockStill, kCamStillTol,
+							a_src.CameraProjUnjittered.data[3][0],
+							a_src.CameraProjUnjittered.data[3][1],
+							a_src.CameraProjUnjittered.data[3][2],
+							a_src.CameraProjUnjittered.data[3][3]);
 					}
 					// v1.07b: do NOT re-acquire here.
 					//
@@ -1291,19 +1345,31 @@ namespace FrameGen
 					SKSE::log::info("[CAM] pub #{} pos=({:.2f},{:.2f},{:.2f}) move={:.4f} path={:.2f} "
 						"matChanges={} arrivalsPerSec={:.0f} | lock(pub/hold/re/still)={}/{}/{}/{} "
 						"proj00={:.6g} famRej={} frozenRep={} ident/diff={}/{} "
-						"fMove={:.1f} takeover={} stalePub={} cap={}/{} cen={}/{} | {}",
+						"fMove={:.1f} takeover={} stalePub={} cap={}/{} mv={} step={:.1f} | {}",
 						snapAccept, px, py, pz, snapAcceptDist, snapPathLen, snapMatChanges,
 						arrPerSec, snapLockPublish, snapLockHold, snapLockRelock, snapLockStill,
 						snapLockProjValid ? snapLockProj00 : 0.0f, snapLockFamilyRej,
 						snapFrozenRepeats, snapIdenticalArrivals, snapDifferentArrivals,
 						snapForeignMove, snapForeignTakeover,
 						snapPubStale,
-						snapNonCamera, snapSkipsSinceCam, snapCensusNew, snapCensusCount,
+						snapNonCamera, snapSkipsSinceCam,
+						snapFamMovedTotal, snapFamStepTotal,
 						snapMatChanges == 0u
 							? "PROBLEM nothing has ever been published with a changed matrix"
 							: (snapPubStale >= kCamPubStaleTol
 								   ? "PROBLEM the published camera has been byte-identical for a long run"
 								   : "ok"));
+					// v1.15: the per-family census, one line per family per second. This is
+					// the block that decides the next repair: a family whose `moved` climbs
+					// is a LIVE camera reaching this hook, so the fix belongs in the accept
+					// rules; if every family shows moved=0, nothing here is alive and the
+					// source has to change.
+					for (std::uint32_t fi = 0; fi < kSnapFamMax; ++fi) {
+						if (!snapFamSeen[fi])
+							continue;
+						SKSE::log::info("[CAM] FAM[{}] proj00={:.6g} moved={} stepSum={:.2f}",
+							fi, snapFamProj[fi], snapFamMoved[fi], snapFamStep[fi]);
+					}
 				}
 
 			}

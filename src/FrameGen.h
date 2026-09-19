@@ -384,6 +384,22 @@ namespace FrameGen
 	std::uint64_t snapCensusNew = 0;
 	std::uint64_t snapCensusLogged = 0;
 
+	// ---- v1.15: motion measured per projection family --------------------
+	// v1.14's census counted "positions differing from the first eight seen",
+	// which a single PARKED writer also increments without bound. These count
+	// the step between CONSECUTIVE arrivals, bucketed by proj00, so a live
+	// family is separable from a parked one by reading `moved` on [CAM] FAM.
+	static constexpr std::uint32_t kSnapFamMax = 8;
+	bool snapFamSeen[kSnapFamMax] = {};
+	float snapFamProj[kSnapFamMax] = {};
+	float snapFamPos[kSnapFamMax][3] = {};
+	bool snapFamHavePos[kSnapFamMax] = {};
+	std::uint64_t snapFamMoved[kSnapFamMax] = {};
+	float snapFamStep[kSnapFamMax] = {};
+	std::uint64_t snapFamMovedTotal = 0;
+	float snapFamStepTotal = 0.0f;
+	std::uint64_t snapFamLogged = 0;
+
 	// ---- v1.10: a MOVING family beats a STILL lock ---------------------- 
 	// The 11:30 run is the measurement this exists for. The reset edge at
 	// 11:33:15.482 released the lock and "the next arrival" took it -- and that
