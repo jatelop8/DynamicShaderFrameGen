@@ -1185,6 +1185,7 @@ namespace FrameGen
 					if (m > clipDev) clipDev = m;
 				}
 			}
+			Get().lastClipDev.store(clipDev);   // v1.23: read by PixelProbeTick()
 			float clipMagAll = 0.0f;
 			for (int r = 0; r < 4; ++r) {
 				clipMagAll += c.clipToPrevClip[r].x * c.clipToPrevClip[r].x
@@ -1192,7 +1193,13 @@ namespace FrameGen
 				            + c.clipToPrevClip[r].z * c.clipToPrevClip[r].z
 				            + c.clipToPrevClip[r].w * c.clipToPrevClip[r].w;
 			}
-			const bool clipFinite = clipMagAll < 1.0e30f;   // rejects NaN / Inf
+			// v1.23: mag == 0 passes "< 1e30" but is NOT a valid reprojection -- it means
+			// prevForReproj was a zero matrix, so inv(cur) x prev = 0. The 00:58 log prints
+			// exactly that at the loading -> world transition (`prev=0.0000`, and the FLD
+			// dump of frame #1 reads PrevVPU mag=0 BAD). The old test ACCEPTED it and stored
+			// it in s_lastGoodClip, so the garbage came back on later frames. Identity gives
+			// mag = 4.0 and real motion keeps it there, so 1e-6 only rejects degenerate input.
+			const bool clipFinite = clipMagAll < 1.0e30f && clipMagAll > 1.0e-6f;
 			if (clipFinite) {
 				s_lastGoodClip = c.clipToPrevClip;
 				s_hasLastGoodClip = true;
@@ -1534,7 +1541,11 @@ namespace FrameGen
 					     std::to_string(diag.detMax) + ") -> " + std::to_string(diag.detHold) +
 					     " of them held the last legal matrix (identity would tell DLSS-G the "
 					     "camera never moved, which is a lie)";
-				else if (diag.tidCallsB > 10)
+				// v1.23: tidCallsB > 10 alone fired on this run with a=1 -- the FIRST caller
+				// made one call and never came back (that is what a one-shot at world entry
+				// looks like), which demonstrates none of the hazard the message describes.
+				// Two threads are only a problem if BOTH are active.
+				else if (diag.tidCallsB > 10 && diag.tidCallsA > 10)
 					vd = "PROBLEM a second thread PERSISTENTLY calls slSetConstants (a=" +
 					     std::to_string(diag.tidCallsA) + " calls, b=" +
 					     std::to_string(diag.tidCallsB) + " calls) -> thread_local history is "
@@ -2115,8 +2126,12 @@ namespace FrameGen
 			static bool tagDimsLogged = false;
 			if (!tagDimsLogged) {
 				tagDimsLogged = true;
-				SKSE::log::info("[Streamline] DLSSG tag dims: hudless/scaling-output={}x{} depth={}x{} mvec={}x{} "
-					"- depth/mvec must read 2560x1440 (the real interop buffers)",
+				SKSE::log::info("[Streamline] DLSSG tag dims: {} | hudless/scaling-output={}x{} depth={}x{} mvec={}x{} "
+					"- v1.23: these extents come from the interop resources themselves (v0.56), so "
+					"- a tag smaller than the buffer is no longer possible. What is still worth "
+					"- watching is whether the GAME fills depth/mvec across the whole buffer.",
+					(depthExtent.width == mvecExtent.width && depthExtent.height == mvecExtent.height)
+					? "depth/mvec AGREE" : "depth/mvec DISAGREE - DLSS-G needs them equal",
 					extent.width, extent.height, depthExtent.width, depthExtent.height,
 					mvecExtent.width, mvecExtent.height);
 			}

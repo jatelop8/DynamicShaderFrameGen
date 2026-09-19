@@ -293,5 +293,18 @@ namespace FrameGen
 		std::uint32_t pixelProbeMaxStreak = 0;
 		bool pixelProbeReady = false;
 		bool pixelProbeDisabled = false;
+		// v1.23 -- two-phase sampling state. v1.22 copied and mapped in the same
+		// call, so the Map never once succeeded and the probe logged nothing at all
+		// (00:58 run: armed at 00:58:14.810, zero samples in 39 s).
+		bool pixelProbeCopyPending = false;      // a copy for the NEXT tick is in flight
+		bool pixelProbeSelfWitnessFired = false; // the "armed but silent" alarm
+		std::uint32_t pixelProbeSrcW = 0;        // size we armed against; a change rearms
+		std::uint32_t pixelProbeSrcH = 0;
+		std::uint32_t pixelProbeDropped = 0;     // copy landed too late to read
+		// A hash streak only means "frozen" if the camera was moving: with a still
+		// camera DLSS-G's interpolated output is legitimately identical to the real
+		// frame, so the streak alone cannot separate a still picture from a stale one.
+		std::uint32_t pixelProbeMovedDuringStreak = 0;
+		std::uint64_t pixelProbeArmedMs = 0;
 	};
 }

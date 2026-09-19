@@ -1650,7 +1650,7 @@ namespace FrameGen
 	// disables it permanently with one log line. The Map uses DO_NOT_WAIT, so a
 	// sample that is not ready is dropped instead of stalling the render thread:
 	// the probe can cost a frame's latency, never the frame itself.
-	void DX12SwapChain::PixelProbeTick()
+		void DX12SwapChain::PixelProbeTick()
 	{
 		if (pixelProbeDisabled)
 			return;
@@ -1662,22 +1662,42 @@ namespace FrameGen
 			return;
 		}
 
-		// 1 Hz. Sampling every frame would make the readback itself a variable in
-		// the thing being measured.
+		// v1.23 -- TWO-PHASE SAMPLING. This is a bug fix, not a refinement.
+		//
+		// v1.22 copied with CopySubresourceRegion and then, in the SAME call, asked
+		// Map for the staging texture it had just filled. The GPU has not executed
+		// that copy yet, so the Map returned DXGI_ERROR_WAS_STILL_DRAWING every
+		// single time -- and that path also reset the 1 Hz gate, so the retry
+		// happened on EVERY present. Net effect on the 00:58 run: "probe armed" at
+		// 00:58:14.810 and not one sample afterwards in 39 s, while a cross-API
+		// copy ran inside every frame. The question the probe exists to answer was
+		// therefore never measured.
+		//
+		// Now: harvest what the PREVIOUS tick copied (a full second to land), then
+		// issue the next copy. A sample that is still not ready is dropped and
+		// counted, never retried inside the same second.
 		const auto nowMs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()).count());
 		if (pixelProbeLastMs != 0 && nowMs - pixelProbeLastMs < 1000)
 			return;
 		pixelProbeLastMs = nowMs;
 
+		// Which buffer is the picture the player sees? With DLSS-G on, Streamline
+		// presents colorOutWrapped, not the engine backbuffer (that one is the
+		// HUD-less colour INPUT). Sampling the wrong one would report "a new frame
+		// was rendered" while the screen stayed on the same image.
+		WrappedResource* srcRes = colorOutWrapped ? colorOutWrapped : swapChainBufferWrapped;
+		if (!srcRes || !srcRes->resource11)
+			srcRes = swapChainBufferWrapped;
+
 		if (!pixelProbeReady) {
-			if (!swapChainBufferWrapped || !swapChainBufferWrapped->resource11 || !d3d11Device || !d3d11Context) {
+			if (!srcRes || !srcRes->resource11 || !d3d11Device || !d3d11Context) {
 				pixelProbeDisabled = true;
 				SKSE::log::warn("[PIXEL] probe disabled: the source texture is not up yet on this path");
 				return;
 			}
 			D3D11_TEXTURE2D_DESC src{};
-			swapChainBufferWrapped->resource11->GetDesc(&src);
+			srcRes->resource11->GetDesc(&src);
 
 			// Centre of the frame: that is where the world is. A corner block would
 			// sit on sky or HUD and could be genuinely constant while the world moves.
@@ -1710,68 +1730,123 @@ namespace FrameGen
 			}
 			pixelProbeWidth = bw;
 			pixelProbeHeight = bh;
+			pixelProbeSrcW = src.Width;
+			pixelProbeSrcH = src.Height;
+			pixelProbeArmedMs = nowMs;
 			pixelProbeReady = true;
-			SKSE::log::info("[PIXEL] probe armed: src={}x{} fmt={} block={}x{} at ({},{})",
-				src.Width, src.Height, static_cast<int>(src.Format), bw, bh, pixelProbeBox.left, pixelProbeBox.top);
+			pixelProbeCopyPending = false;
+			SKSE::log::info("[PIXEL] probe armed: src={}x{} fmt={} block={}x{} at ({},{}) source={}",
+				src.Width, src.Height, static_cast<int>(src.Format), bw, bh,
+				pixelProbeBox.left, pixelProbeBox.top,
+				(colorOutWrapped && srcRes == colorOutWrapped) ? "colorOut(presented)" : "engineBackbuffer");
 		}
-
-		d3d11Context->CopySubresourceRegion(
-			pixelProbeStaging.get(), 0, 0, 0, 0, swapChainBufferWrapped->resource11, 0, &pixelProbeBox);
-
-		D3D11_MAPPED_SUBRESOURCE ms{};
-		const HRESULT hrMap = d3d11Context->Map(
-			pixelProbeStaging.get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &ms);
-		if (hrMap == DXGI_ERROR_WAS_STILL_DRAWING) {
-			pixelProbeLastMs = 0;   // retry on the next frame; dropping a sample beats stalling
-			return;
-		}
-		if (FAILED(hrMap)) {
-			pixelProbeDisabled = true;
-			SKSE::log::warn("[PIXEL] probe disabled: Map failed hr=0x{:08X}", static_cast<unsigned>(hrMap));
-			return;
-		}
-
-		// Whole rows, padding included: this stays correct for any format because it
-		// never has to know the bytes per pixel. Any change inside the block changes
-		// the hash; the padding is stable, so it cannot mask one.
-		std::uint64_t h = 1469598103934665603ull;   // FNV-1a offset basis
-		const auto* rows = static_cast<const std::uint8_t*>(ms.pData);
-		for (UINT y = 0; y < pixelProbeHeight; ++y) {
-			const auto* row = rows + static_cast<std::size_t>(y) * ms.RowPitch;
-			for (std::size_t x = 0; x < ms.RowPitch; ++x) {
-				h ^= row[x];
-				h *= 1099511628211ull;
+		else if (srcRes && srcRes->resource11 && pixelProbeSrcW != 0) {
+			// The presented resource changed size: the cached box would then read the
+			// wrong region, so re-arm instead of reporting noise as content.
+			D3D11_TEXTURE2D_DESC cur{};
+			srcRes->resource11->GetDesc(&cur);
+			if (cur.Width != pixelProbeSrcW || cur.Height != pixelProbeSrcH) {
+				pixelProbeReady = false;
+				SKSE::log::warn("[PIXEL] presented image resized to {}x{} - rearming the probe", cur.Width, cur.Height);
+				return;
 			}
 		}
-		d3d11Context->Unmap(pixelProbeStaging.get(), 0);
 
-		++pixelProbeSamples;
-		bool changed = false;
-		if (pixelProbeLastHash != 0) {
-			changed = (h != pixelProbeLastHash);
-			if (changed) {
-				++pixelProbeChanged;
-				pixelProbeStreak = 0;
+		// ---- phase 2: harvest what the PREVIOUS tick copied ----
+		if (pixelProbeCopyPending) {
+			D3D11_MAPPED_SUBRESOURCE ms{};
+			const HRESULT hrMap = d3d11Context->Map(
+				pixelProbeStaging.get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &ms);
+			if (hrMap == DXGI_ERROR_WAS_STILL_DRAWING) {
+				++pixelProbeDropped;   // dropped, not retried: a dropped sample beats a stall
+			} else if (FAILED(hrMap)) {
+				pixelProbeDisabled = true;
+				SKSE::log::warn("[PIXEL] probe disabled: Map failed hr=0x{:08X}", static_cast<unsigned>(hrMap));
+				return;
 			} else {
-				++pixelProbeUnchanged;
-				++pixelProbeStreak;
-				if (pixelProbeStreak > pixelProbeMaxStreak)
-					pixelProbeMaxStreak = pixelProbeStreak;
+				// Whole rows, padding included: this stays correct for any format because
+				// it never has to know the bytes per pixel. Any change inside the block
+				// changes the hash; the padding is stable, so it cannot mask one.
+				std::uint64_t h = 1469598103934665603ull;   // FNV-1a offset basis
+				const auto* rows = static_cast<const std::uint8_t*>(ms.pData);
+				for (UINT y = 0; y < pixelProbeHeight; ++y) {
+					const auto* row = rows + static_cast<std::size_t>(y) * ms.RowPitch;
+					for (std::size_t x = 0; x < ms.RowPitch; ++x) {
+						h ^= row[x];
+						h *= 1099511628211ull;
+					}
+				}
+				d3d11Context->Unmap(pixelProbeStaging.get(), 0);
+				pixelProbeCopyPending = false;
+
+				++pixelProbeSamples;
+				bool changed = false;
+				if (pixelProbeLastHash != 0) {
+					changed = (h != pixelProbeLastHash);
+					if (changed) {
+						++pixelProbeChanged;
+						pixelProbeStreak = 0;
+					} else {
+						++pixelProbeUnchanged;
+						++pixelProbeStreak;
+						if (pixelProbeStreak > pixelProbeMaxStreak)
+							pixelProbeMaxStreak = pixelProbeStreak;
+					}
+				}
+				pixelProbeLastHash = h;
+
+				// v1.23: a streak of identical frames only means "frozen" if the camera
+				// was moving. With a static camera DLSS-G's interpolated output is
+				// legitimately identical to the real frame, so the hash alone cannot
+				// distinguish a still picture from a stale one.
+				const float cd = fg.lastClipDev.load();
+				if (cd > 0.0005f)
+					++pixelProbeMovedDuringStreak;
+				else
+					pixelProbeMovedDuringStreak = 0;
+
+				SKSE::log::info("[PIXEL] #{} hash={:016X} chg={} streak={} clipDev={:.6f} movedThisStreak={} "
+					"changed={} unchanged={} maxStreak={} dropped={}",
+					pixelProbeSamples, h, changed ? 1 : 0, pixelProbeStreak, static_cast<double>(cd),
+					pixelProbeMovedDuringStreak, pixelProbeChanged, pixelProbeUnchanged,
+					pixelProbeMaxStreak, pixelProbeDropped);
+
+				// The verdict. Every other witness this file owns can only say that a
+				// flip happened; this is the only one that can say the picture moved.
+				if (pixelProbeStreak == 10) {
+					if (pixelProbeMovedDuringStreak >= 5) {
+						SKSE::log::error("[PIXEL] VERDICT: the frame content is byte-identical for 10 "
+							"consecutive seconds WHILE the camera was moving (clipDev > 0 on {} of them). "
+							"presents, presentAge, dsync and the presented-per-real-frame ratio all report "
+							"a healthy flip, so the swap chain is showing the SAME image: what the player "
+							"sees is stale.", pixelProbeMovedDuringStreak);
+					} else {
+						SKSE::log::warn("[PIXEL] 10 identical seconds, but the camera was still on {} of "
+							"them - a static camera makes interpolated frames legitimately identical, so "
+							"this is NOT a frozen-screen verdict. Move for 10 s to make the next streak "
+							"mean something.", pixelProbeMovedDuringStreak);
+					}
+				}
 			}
 		}
-		pixelProbeLastHash = h;
 
-		SKSE::log::info("[PIXEL] #{} hash={:016X} chg={} streak={} changed={} unchanged={} maxStreak={}",
-			pixelProbeSamples, h, changed ? 1 : 0, pixelProbeStreak,
-			pixelProbeChanged, pixelProbeUnchanged, pixelProbeMaxStreak);
+		// v1.23 -- the instrument must be able to show that it ran (ledger L39). The
+		// v1.22 probe armed and then said nothing for 39 s; the log looked identical
+		// to one where the screen was healthy.
+		if (pixelProbeSamples == 0 && !pixelProbeSelfWitnessFired &&
+			nowMs - pixelProbeArmedMs > 15000u) {
+			pixelProbeSelfWitnessFired = true;
+			SKSE::log::error("[PIXEL] ERROR: armed {} s ago and produced ZERO samples (dropped={}). The "
+				"picture question CANNOT be answered from this run - treat a missing [PIXEL] sample line "
+				"as 'no measurement', never as 'the screen was fine'.",
+				(nowMs - pixelProbeArmedMs) / 1000u, pixelProbeDropped);
+		}
 
-		// The verdict. Every other witness in this file can only say that a flip
-		// happened; this is the only one that can say the picture moved.
-		if (pixelProbeStreak == 10) {
-			SKSE::log::error(
-				"[PIXEL] VERDICT: the frame content is byte-identical for 10 consecutive seconds. "
-				"presents, presentAge, dsync and the presented-per-real-frame ratio all report a healthy "
-				"flip, so the swap chain is flipping the SAME buffer: what the player sees is stale.");
+		// ---- phase 1: issue the copy for the NEXT tick ----
+		if (srcRes && srcRes->resource11) {
+			d3d11Context->CopySubresourceRegion(
+				pixelProbeStaging.get(), 0, 0, 0, 0, srcRes->resource11, 0, &pixelProbeBox);
+			pixelProbeCopyPending = true;
 		}
 	}
 	HRESULT DX12SwapChain::GetDevice(REFIID uuid, void** ppDevice)

@@ -252,6 +252,12 @@ namespace FrameGen
 
 		// 帧生成是否激活（Home 可切换；INI Enable=1 时初始开启）
 		std::atomic<bool> fgActive{ false };
+		
+		// v1.23 -- last clipDev the constants path computed, i.e.
+		// max|I - clipToPrevClip|. Identity (a genuinely still camera) reads 0.000061;
+		// the pixel probe reads this at 1 Hz so that ten identical frames with a still
+		// camera are not reported as a frozen screen.
+		std::atomic<float> lastClipDev{ 0.0f };
 
 		// perFrame 常量缓冲（REL ID）
 		static ID3D11Buffer** GetPerFrameBuffer();
