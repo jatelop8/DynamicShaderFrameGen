@@ -2202,14 +2202,39 @@ namespace FrameGen
 				// presents 636 fps, the present queue backs up, the SL pacer
 				// loses cadence, and the picture stops advancing while the frame
 				// counter keeps climbing - the 21:27 freeze.
-				const double want = Get().refreshRate / static_cast<double>(capMult) - 1.0;
+				// v1.12 -- THE DIVISOR WAS THE BUG, and this time it is proved by the
+				// running process, not by argument. The limiter's quantum is a FLIP,
+				// not a real frame, so dividing by capMult paced the FLIPS at 39/s
+				// and left the render side at 39/4 = 9.75 fps. Four numbers from the
+				// 2026-09-19 14:55 run agree, and all four reproduce
+				// 1e6/(160/capMult - 1) exactly:
+				//   capUs = 12658 while capMult was 2  -> 1e6/79      = 12658
+				//   capUs = 25641 once capMult was 4   -> 1e6/39      = 25641
+				//   dt    = 102.56 ms                  -> 4 x 25641   = 102564 us
+				//   real  = 9.74 fps                   -> 39/4        = 9.75
+				// The 21:27 freeze that the v1.06 note blames on dropping the divisor
+				// cannot have come from dropping it: with the divisor PRESENT the panel
+				// saw 39 presents/s, not 636, and the render side collapsed -- which is
+				// what the log for that run actually shows.
+				// The v0.63 block above states the correct invariant: the cap is the
+				// FLIP rate, kept one Hz under the panel; the multiplier only divides
+				// the render side. This line restores exactly that.
+				const double want = Get().refreshRate - 1.0;
 				capFps = static_cast<std::uint32_t>(want < 15.0 ? 15.0 : want);
-				// v1.06: state the invariant as an assertion, so a future edit to
-				// either term cannot silently re-introduce the over-submit.
-				if (capFps * capMult > Get().refreshRate)
-					SKSE::log::warn("[Streamline] Reflex cap OVER-SUBMIT: {}fps render x{} = "
-						"{} present fps vs a {}Hz panel - the cap formula is wrong (v1.06)",
-						capFps, capMult, capFps * capMult, Get().refreshRate);
+				// v1.12: the assertion must test the invariant the cap now states.
+				// "render fps x capMult > panel" was the v1.06 misreading -- it treats a
+				// flip cap as a render cap. The real invariants are that a FLIP cap can
+				// never exceed the panel, and that the render side lands where the
+				// multiplier promises (the previous defect left no trace of either).
+				if (capFps > Get().refreshRate)
+					SKSE::log::warn("[Streamline] Reflex cap OVER-SUBMIT: {} flip fps on a "
+						"{}Hz panel - the cap formula is wrong (v1.12)",
+						capFps, Get().refreshRate);
+				else
+					SKSE::log::info("[Streamline] Reflex cap check (v1.12): {} flip fps on a "
+						"{}Hz panel = {:.1f} rendered fps at {}x",
+						capFps, Get().refreshRate,
+						capFps / static_cast<double>(capMult), capMult);
 			} else {
 				// 刷新率读不到时不能再默默写死一个值（旧 60fps 就是这么来的 bug）——
 				// 留 0 = 不限帧，并明确告警。
@@ -2222,8 +2247,9 @@ namespace FrameGen
 			// the block being re-entered, so the log is edge-driven either way.
 			if (capFps != lastCapFps || capMult != lastCapMult) {
 				const bool capConfirmed = (dlssgAcceptedFrames != 0);
-				SKSE::log::info("[Streamline] Reflex FLIP cap = {} fps ({}us) - panel {}Hz, {} flips per real frame => ~{} presented fps (real = cap/flips){}{}",
-					capFps, opts.frameLimitUs, Get().refreshRate, capMult, capFps * capMult,
+				SKSE::log::info("[Streamline] Reflex FLIP cap = {} fps ({}us) - panel {}Hz, {} flips per real frame => ~{} presented fps, ~{:.1f} rendered fps (v1.12: the cap is the FLIP rate){}{}",
+					capFps, opts.frameLimitUs, Get().refreshRate, capMult, capFps,
+					capFps / static_cast<double>(capMult),
 					capFps ? "" : "  [UNLIMITED - over-submit possible]",
 					capConfirmed ? "" : "  [UNCONFIRMED - using the 2x floor, v1.04]");
 				lastCapFps = capFps;
