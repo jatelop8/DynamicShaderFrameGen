@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DFG v1.16 — 22:02 那局诊断</title>
+<style>
+:root{
+  --bg:#faf9f7; --card:#ffffff; --line:#e3e0da; --tx:#26251f; --tx2:#6b6862; --tx3:#98948c;
+  --red:#a32d2d; --redbg:#fcebeb; --grn:#3b6d11; --grnbg:#eaf3de; --amb:#854f0b; --ambbg:#faeeda;
+  --blu:#185fa5; --blubg:#e6f1fb;
+}
+@media (prefers-color-scheme: dark){
+:root{
+  --bg:#1c1b19; --card:#252420; --line:#3a3833; --tx:#f0ede6; --tx2:#b4b0a8; --tx3:#807c74;
+  --red:#f09595; --redbg:#3a1c1c; --grn:#97c459; --grnbg:#22301a; --amb:#ef9f27; --ambbg:#3a2c14;
+  --blu:#85b7eb; --blubg:#16283a;
+}
+}
+*{box-sizing:border-box}
+body{margin:0;padding:28px 20px 60px;background:var(--bg);color:var(--tx);
+  font:15px/1.7 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:900px;margin:0 auto}
+h1{font-size:24px;font-weight:500;margin:0 0 6px}
+.sub{color:var(--tx2);font-size:13px;margin:0 0 26px}
+h2{font-size:17px;font-weight:500;margin:34px 0 12px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+h3{font-size:14px;font-weight:500;margin:20px 0 8px;color:var(--tx2)}
+p{margin:10px 0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:14px 0}
+table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13.5px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--tx2);font-weight:500;font-size:12.5px}
+code{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;
+  background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px 14px;
+  overflow-x:auto;font-family:ui-monospace,Consolas,monospace;font-size:12.5px;line-height:1.6;margin:12px 0}
+.tag{display:inline-block;font-size:12px;padding:2px 9px;border-radius:20px;margin-right:6px;
+  border:1px solid var(--line)}
+.g{background:var(--grnbg);color:var(--grn);border-color:var(--grn)}
+.r{background:var(--redbg);color:var(--red);border-color:var(--red)}
+.a{background:var(--ambbg);color:var(--amb);border-color:var(--amb)}
+.b{background:var(--blubg);color:var(--blu);border-color:var(--blu)}
+ul{margin:10px 0;padding-left:22px}
+li{margin:6px 0}
+.k{color:var(--tx2);font-size:13px}
+.big{font-size:15.5px;font-weight:500;margin:0}
+.hl{border-left:3px solid var(--amb);padding-left:14px;margin:14px 0;background:var(--ambbg);
+  border-radius:0 8px 8px 0;padding:12px 16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>22:02 那局：4x 是真的，相机是假的</h1>
+<p class="sub">构建 <code>Sep 19 2026 21:21:37</code>（v1.15b）· 跑 53 秒（菜单 15 s / 世界 4.5 s）· watchdog
+<code>alive=1 presentAge=17ms silent=6ms</code> 无挂起无崩溃<br>
+本轮改了 <b>v1.16 + v1.16b</b>：不再从写者身上推断相机，直接问引擎。DLL
+<code>b21bd0f3…</code>（1,352,192 B，build == 部署）</p>
+
+<div class="hl">
+<p class="big">一句话：这一局第一次看到「4x 真的在产出」（<code>presented per real frame = 4</code>），
+同时也第一次看到「菜单里的相机链是活的」（<code>path</code> 从 0 涨到 54.89，状态 <code>ok</code>）。
+世界段之所以还是不动，是因为进世界那一刻，锁被交给了<b>第一个到达者</b>，而它是一个<b>不动的</b>写者。</p>
+</div>
+
+<h2>一、这局的好消息（都有日志原文）</h2>
+<table>
+<tr><th>项</th><th>实测</th><th>含义</th></tr>
+<tr><td>4x 是否真在插帧</td>
+<td><code>DLSSG presented per real frame = 4 (status=0)</code> @22:02:37.524</td>
+<td class="g">真的在产出 4 帧/真帧（菜单期是 <code>1</code>，符合菜单门）</td></tr>
+<tr><td>帧率</td><td><code>real=38.25</code> fps · <code>Reflex FLIP cap = 159 fps (6289us)</code></td>
+<td class="g">v1.12 的收益仍在</td></tr>
+<tr><td>v1.13 内容门</td><td><code>cap=2560/0</code>（左边在涨、右边恒 0）</td>
+<td class="g">正交写一直在被丢掉，逃生门没触发</td></tr>
+<tr><td>菜单期发布流</td>
+<td><code>pub #4495 pos=(-50.00,618.10,105.33) move=0.0562 path=54.89 frozenRep=0 stalePub=0 | ok</code></td>
+<td class="g"><b>整条相机链是活的</b>：重建 prev → clipToPrevClip 有真实运动</td></tr>
+</table>
+
+<h2>二、世界段：锁在一个纹丝不动的写者上</h2>
+<p>世界段四条接受记录<b>逐字节相同</b>：</p>
+<pre>[CAM] acc #4572/#4598/#4625/#4652  pos=(0.00,0.00,1.00)  move=0.0000  path=54.99
+                                   devVP=2.0001  detVP=-2.25023  magVP=2</pre>
+<p>心跳：<code>frozen</code> 与世界帧数 1:1（29/30、59/64、89/94）、<code>clipDev=0.000000</code>、
+<code>clipW=1.000000</code> ⇒ <code>clipToPrevClip = I</code> ⇒ 插帧退化成复制上一帧。</p>
+<p>而这一切是这样发生的——进世界那一刻锁被释放了<b>两次</b>，每次都由「紧接着的第一个到达者」补上：</p>
+<pre>#7343 lock RELEASED on the reset edge (was proj00=0.149184 famRej=1111)
+#7390 lock RELEASED on the reset edge (was proj00=0.8391  famRej=1114)</pre>
+<p>被拒的那个族 <code>0.8391</code> 位置<b>恒定</b>在 <code>(-243.0493,-415.3115,118.5582)</code>，
+<code>still=4..1000/90</code>，<code>famRej</code> 每秒 +390。而 v1.11 的「移动的异族才能接管」要求被拒族
+<b>自己走过 200 单位</b>——一个停着的写者永远走不到。</p>
+<p class="k">⇒ 接管门死锁第二次被确证。这是安全方向的死锁（它不会让停车写者抢走控制权），所以一直没暴露。</p>
+
+<h2>三、★ 我自己的探针是坏的，上一轮的判据表作废</h2>
+<div class="card">
+<h3>缺陷 1：族键容差 2%</h3>
+<p>两个投影略有差异的写者被并进同一个桶，它们的到达交错 ⇒ 位置被读成巨大位移。
+铁证：<code>FAM[1] proj00=1 moved=765 stepSum=318990</code>，而世界段<b>没有任何东西在动</b>
+（平均 417 单位/步）。</p>
+<h3>缺陷 2：MOTION 明细只有 60 行预算</h3>
+<p>被菜单期 <code>0.149184</code> 的慢漂全部吃掉 ⇒ 世界段<b>一条明细都没有</b>，
+而世界段才是唯一要看的那一段。</p>
+</div>
+<p><b>L31：自造的量表凡是带容差，就可能把两个不同样本并成一个；读数一旦不再代表任何单一对象，
+就不能拿它做判据。</b></p>
+
+<h2>四、和参考实现（Community Shaders）逐行对照后的两个更正</h2>
+<table>
+<tr><th>对照项</th><th>结论</th></tr>
+<tr><td>Map/Unmap 钩子</td>
+<td>CS <code>Globals.cpp:217-265</code> 与我们<b>逐字相同</b>（同 REL ID <code>524768/411384</code>、
+同槽位 14/15、同样「最后一次匹配的 Map 指针在 Unmap 时拷走」）⇒
+<b>「取最后一个写者」不是我们独有的缺陷</b>，我上一轮的叙述要更正</td></tr>
+<tr><td>喂给 SL 的相机字段</td>
+<td>CS <code>Streamline.cpp:235-244</code> 用 <code>CameraViewInverse.Transpose()</code> 取
+right/up/fwd、用 <code>CameraPosAdjust</code> 取 pos、用 <code>CameraProjUnjittered.Transpose()</code>
+取 viewToClip —— <b>和我们完全一样</b></td></tr>
+<tr><td class="a"><b>真正的差异</b></td>
+<td class="a">CS 在 flat（非 VR）分支调用 Streamline 官方 helper
+<code>recalculateCameraMatrices()</code>（<code>sl_matrix_helpers.h:178</code>），由它重算
+<code>clipToPrevClip</code> 并自维护上一帧的<b>相机位姿</b>。该 helper 特意「先把当前相机平移到世界原点」
+再求逆乘，为的是避开<b>大平移导致的 fp32 精度崩塌</b>——而我们用的
+<code>inv(curVP) × prevVP</code> 正是它注释里警告的做法</td></tr>
+</table>
+<p class="k">⇒ 这是下一轮的候选改动（flat 路径也交给官方 helper）。本轮不动它：一次只改一处可归因。</p>
+
+<h2>五、v1.16 改了什么（+ v1.16b 安全补丁）</h2>
+<div class="card">
+<p><b>核心思路：不再推断，直接问引擎。</b></p>
+<p><code>RE::PlayerCamera::GetSingleton()-&gt;cameraRoot-&gt;world.translate</code> 是<b>活的相机眼位</b>
+（CS 的 <code>Hooks.cpp:711-722</code> 就是这么取水面反射相机位置的），而 <code>CameraPosAdjust</code>
+装的是同一个量。于是：<b>落在它 20 单位以内的到达者，就是相机写</b>——这是可判定的，不是推断。</p>
+<table>
+<tr><th>编号</th><th>改动</th></tr>
+<tr><td>v1.16</td><td>每个到达者算 <code>pcDist</code>；当 <code>pcDist ≤ 20</code> <b>且锁在另一个族上</b> ⇒
+掉锁，让紧接着的正常 acquire 路径接纳它并发布，锁的族随之刷新成相机族<br>
+<span class="k">「另一个族」这一条是防抖：否则相机锁上以后每个到达者都会掉锁，而 v0.93 已实测过掉锁的代价（CTD，<code>path=845264</code>）</span></td></tr>
+<tr><td>v1.16b</td><td>同一参考也用来<b>拒绝</b>：参考自证过（真有到达者落在 20 单位内）、
+<code>pcDist &gt; 20</code>、且族与锁不同 ⇒ <code>return false</code><br>
+<span class="k">没有这一条，当相机写在前、停车写在后时，每帧会发布一次停车矩阵 = v0.93 的交错源流</span></td></tr>
+<tr><td>诊断</td><td>每秒一行 <code>[CAM] PC v1.16: read= match= adopt= best= at proj00= eye=(…)</code>；
+族普查键收紧到 0.01%，每条加 <code>arr=</code>、<code>span=(…)</code>、<code>last=(…)</code><br>
+<span class="k"><code>span</code> 一个数就能分开三种群体：0.0000 = 停车写者；小且 moved≈arr = 活相机；几百 = 合并过的桶</span></td></tr>
+</table>
+<p class="k">全部以 <code>snapPcEverMatched</code> 为门：<b>参考若永不匹配，这一版与上一版行为完全一致。</b></p>
+</div>
+
+<h2>六、下一局只看这两行（一次读数定案）</h2>
+<table>
+<tr><th>看到什么</th><th>结论</th><th>下一步</th></tr>
+<tr><td><code>[CAM] PC</code> 的 <code>best</code> 掉到几单位以内、<code>adopt</code> 开始增长</td>
+<td class="g">相机写<b>确实在这个缓冲里</b>，v1.16 抓住了</td>
+<td>看 <code>path</code> / <code>clipDev</code> 是否活了</td></tr>
+<tr><td><code>best</code> 全程几百~上千、<code>match=0</code>、<code>adopt=0</code></td>
+<td class="k"><b>相机写根本不在这个缓冲里</b></td>
+<td>用 PlayerCamera 的位姿<b>合成</b>相机（pos=eye，right/up/fwd 取
+<code>cameraRoot-&gt;world.rotate</code>，投影取已到达的族），并接官方 helper</td></tr>
+<tr><td><code>PC TAKEOVER</code> 出现但 <code>path</code> 仍不涨</td>
+<td class="k">源对了、矩阵装配有问题</td><td>flat 路径改用官方 <code>recalculateCameraMatrices</code></td></tr>
+<tr><td><code>best</code> 有值但 <code>read=0</code></td>
+<td class="k">PlayerCamera 读不到（时序/线程）</td><td>把参考取样挪到 Present 侧</td></tr>
+</table>
+<p><b>前置条件：进世界后停留 15 秒以上，并且真的走动。</b>
+22:02 的世界段只有 4.5 秒（19:39 是 11.5 s、21:15 是 3.4 s），而
+<b>「玩家站着没动」和「锁在固定相机上」在日志里是同一种形状</b>——这是唯一无法从数据消歧的点。</p>
+
+<h2>七、L0 两遍自检</h2>
+<p><b>第一遍·手脚</b>：8/8 锚点 <code>count==1</code>；两个补丁脚本重跑都 <code>REFUSED</code>(exit 1)；
+<code>FrameGen.cpp</code> 1887 CRLF / 裸 LF 0，<code>FrameGen.h</code> 473 / 0；<code>BUILD SUCCESS</code> 无
+<code>error C*</code>/<code>LNK</code>；DLL 双份 md5 一致；新串各 1 次；两条旧串
+（<code>[CAM] MOTION fam=</code>、<code>cen=</code>）<b>0</b> 次；v1.13 闸门 / v1.12 限速器 / DLSSNR 串各 1 次。</p>
+<p><b>第二遍·脑子</b>：本轮我自己踩了三个坑，<b>全被断言挡住、一个都没落盘</b>——</p>
+<ul>
+<li><code>Path.read_text()</code> 会做通用换行转换 ⇒ CRLF 变 LF，锚点全部失配；更危险的是
+<code>write_text</code> 会把整份文件写成 LF。干跑的后置条件抓到。</li>
+<li>预检用 LF 锚点去数 CRLF 文件 ⇒ 计数 0。<b>「行尾要按文件取」这条铁律又一次救场。</b></li>
+<li>我断言 <code>frameBufferCopy = a_src;</code> 出现 ≥2 次，实际<b>只有 1 次</b>——是断言写错，不是代码错。</li>
+</ul>
+
+<h2>八、诚实边界与回退</h2>
+<ul>
+<li><b>我跑不了游戏。</b>「这次能不能跑通」只能由你那一趟的日志裁定，不能由我说了算。</li>
+<li><b>DLSS5 输出是否真的上屏仍未证</b>（代码链在跑：<code>DLSSNR CHAINED</code>）。</li>
+<li><b>RTX 20/30 系一行代码都没写</b>（<code>grep -i xess</code> = 0）。四个目标里唯一完全没动的。</li>
+<li><b>回退</b>：换回 <code>src/backup-v1.16-20260919-221351/built_DLL.bin</code>（md5
+<code>1178525c…</code>，就是跑过 22:02 那局的 v1.15b）；或只改 INI 回到纯 2x 可玩：
+<code>Provider=0</code> + <code>MFGMaxFramesOverride=0</code>。</li>
+</ul>
+
+</div>
+</body>
+</html>
