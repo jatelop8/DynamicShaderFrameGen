@@ -359,6 +359,16 @@ namespace FrameGen
 	bool  snapPubHaveMat = false;
 	float snapPubLastMat[4][4] = {};
 
+	// ---- v1.13: capture-side content filter ----
+	// The perFrame constant buffer is mapped ~22 times per rendered frame and
+	// only one of those writes is the engine's camera.  snapNonCamera counts
+	// the snapshots dropped because CameraProj is orthographic (no perspective
+	// divide), snapSkipsSinceCam counts them consecutively and drives the
+	// fallback that abandons the filter.  Both are printed by [CAM] pub as
+	// `cap={}/{}`.  A healthy world run looks like cap=~fps/0..30.
+	std::uint64_t snapNonCamera = 0;
+	std::uint64_t snapSkipsSinceCam = 0;
+
 	// ---- v1.10: a MOVING family beats a STILL lock ---------------------- 
 	// The 11:30 run is the measurement this exists for. The reset edge at
 	// 11:33:15.482 released the lock and "the next arrival" took it -- and that

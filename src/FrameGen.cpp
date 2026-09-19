@@ -683,6 +683,20 @@ namespace FrameGen
 	// 10 s this comment describes. The gate itself was downgraded to a counter
 	// in v0.93 ("gates observe, they do not discard"), so this detector fires
 	// and changes nothing -- see the [CAM] pub `frozenRep=` field for its value.
+
+	// ---- v1.13: how a CAMERA WRITE is told apart from the other writers ----
+	// The perFrame buffer is mapped ~22 times per rendered frame and only one
+	// of those writes is the camera; see the gate in AcceptCameraSnapshot for
+	// the full measurement.  Both numbers come from the 18:20 run and both
+	// separate the two populations exactly:
+	//     camera   : |Proj[3][2]| = 1     |Proj[3][3]| = 0
+	//     impostor : |Proj[3][2]| = 0     |Proj[3][3]| = 1
+	constexpr float kCamProjDivideMin = 0.05f;   // |CameraProj[3][2]| -- perspective divide present
+	constexpr float kCamProjWMax = 0.05f;        // |CameraProj[3][3]| -- must be 0 for a D3D projection
+	// ~10 s of drops at the measured ~590 arrivals/s.  Long enough that a
+	// genuine world camera never trips it, short enough that a machine whose
+	// camera write fails the test is back on the old behaviour within one run.
+	constexpr std::uint64_t kCamCaptureFallbackSkips = 6000;
 	}
 
 	bool FrameGen::AcceptCameraSnapshot(const FrameBuffer& a_src)
@@ -701,6 +715,59 @@ namespace FrameGen
 			SKSE::log::warn("[CAM] #{} rejected: empty/garbage snapshot (magVP={:.6g} devVP={:.6g})",
 				snapArrivals, camMag(a_src.CameraViewProjUnjittered), camDev(a_src.CameraViewProjUnjittered));
 			return false;
+		}
+
+		// ---- v1.13: A CAMERA SNAPSHOT MUST LOOK LIKE A CAMERA ----------------
+		// This hook captures *every* Map/Unmap of the perFrame constant buffer,
+		// ~22 per rendered frame (measured 18:20 run: 591 arrivals/s at ~24 world
+		// fps), and tlsMappedFB is overwritten by each one -- so the snapshot that
+		// reaches this function is whatever pass wrote LAST, and in the world that
+		// is not the camera.  Measured populations in the world:
+		//
+		//   camera write  : CameraProj row3 = (0,0,1.000733,-15.01099) + (0,0,1,0)
+		//                   -> a perspective projection, CameraPreviousPosAdjust
+		//                      tracks the live position
+		//   impostor write: CameraProj row3 = (0,0,1.111111,-0.1111111) + (0,0,0,1)
+		//                   -> an ORTHOGRAPHIC fullscreen-style projection
+		//                      (m22=0.9, m23=0.1 on its inverse: z:[0.1,1]->[0,1]),
+		//                      CameraView is the exact axis permutation
+		//                      [[0,0,1],[0,1,0],[1,0,0]], and
+		//                      CameraPreviousPosAdjust is identically (0,0,0,0)
+		//
+		// Publishing the impostor IS the freeze: on the published stream
+		// matChanges stopped at 6171, `path` stayed at 124.92 for 30 s while pos
+		// jittered +/- 0.6 around a parked point, and the lock's anchor went to a
+		// non-camera.  So a snapshot that is not a camera must never reach the
+		// lock, frameBufferCopy, or the reprojection.
+		//
+		// ESCAPE HATCH: if NOTHING looks like a camera for kCamCaptureFallbackSkips
+		// consecutive snapshots, the test itself is wrong for this machine and
+		// accepting the last writer -- today's behaviour -- is strictly better than
+		// starving the stream.  The gate then stops filtering for the rest of the
+		// run, so the worst case is the current build, never a worse one.
+		{
+			const bool camShaped =
+				(std::fabs(a_src.CameraProj.data[3][2]) >= kCamProjDivideMin) &&
+				(std::fabs(a_src.CameraProj.data[3][3]) <= kCamProjWMax);
+			if (!camShaped) {
+				++snapNonCamera;
+				++snapSkipsSinceCam;
+				if (snapNonCamera <= 5u) {
+					SKSE::log::info("[CAM] #{} NON-CAMERA write dropped (v1.13): Proj "
+						"row3=({:.6g},{:.6g},{:.6g},{:.6g}) prevPos=({:.4g},{:.4g},{:.4g}) "
+						"pos=({:.1f},{:.1f},{:.1f}) magVP={:.6g} - not a camera",
+						snapArrivals,
+						a_src.CameraProj.data[3][0], a_src.CameraProj.data[3][1],
+						a_src.CameraProj.data[3][2], a_src.CameraProj.data[3][3],
+						a_src.CameraPreviousPosAdjust[0], a_src.CameraPreviousPosAdjust[1],
+						a_src.CameraPreviousPosAdjust[2], px, py, pz,
+						camMag(a_src.CameraViewProjUnjittered));
+				}
+				if (snapSkipsSinceCam < kCamCaptureFallbackSkips)
+					return false;
+			} else {
+				snapSkipsSinceCam = 0;
+			}
 		}
 
 		// ---- v0.89: SHAPE rejection REMOVED (was v0.86) ----------------------
@@ -1185,13 +1252,14 @@ namespace FrameGen
 					SKSE::log::info("[CAM] pub #{} pos=({:.2f},{:.2f},{:.2f}) move={:.4f} path={:.2f} "
 						"matChanges={} arrivalsPerSec={:.0f} | lock(pub/hold/re/still)={}/{}/{}/{} "
 						"proj00={:.6g} famRej={} frozenRep={} ident/diff={}/{} "
-						"fMove={:.1f} takeover={} stalePub={} | {}",
+						"fMove={:.1f} takeover={} stalePub={} cap={}/{} | {}",
 						snapAccept, px, py, pz, snapAcceptDist, snapPathLen, snapMatChanges,
 						arrPerSec, snapLockPublish, snapLockHold, snapLockRelock, snapLockStill,
 						snapLockProjValid ? snapLockProj00 : 0.0f, snapLockFamilyRej,
 						snapFrozenRepeats, snapIdenticalArrivals, snapDifferentArrivals,
 						snapForeignMove, snapForeignTakeover,
 						snapPubStale,
+						snapNonCamera, snapSkipsSinceCam,
 						snapMatChanges == 0u
 							? "PROBLEM nothing has ever been published with a changed matrix"
 							: (snapPubStale >= kCamPubStaleTol
