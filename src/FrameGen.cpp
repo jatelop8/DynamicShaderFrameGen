@@ -209,6 +209,8 @@ namespace FrameGen
 				settings.interopFenceWait = readBool(line, true);
 			else if (key == "MenuGuardFader")
 				settings.menuGuardFader = readBool(line, true);
+			else if (key == "PixelProbe")
+				settings.pixelProbe = readBool(line, true);
 			else if (key == "Sharpness") {
 				// v0.6.3：DLSS 超分锐化（0-1，0=关闭）
 				try {

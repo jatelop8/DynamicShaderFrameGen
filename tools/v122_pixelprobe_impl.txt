@@ -1,0 +1,138 @@
+	// ---- v1.22 PIXEL PROBE ----
+	// L38: "the counter is climbing" and "the content is changing" are two
+	// different facts and each needs its own witness. The 00:30 run has the first
+	// in abundance -- 4.00 presents per real frame, dsync = 0 (the back-buffer
+	// index really moved), presentAge 5-8 ms -- and no witness at all for the
+	// second, which is why a frozen screen and a healthy one produced the same
+	// log. A flip is not a picture. This reads the pixels the plugin is about to
+	// hand to the swap chain and reports whether they change.
+	//
+	// Read-only and self-disabling: creation is attempted once, and a failure
+	// disables it permanently with one log line. The Map uses DO_NOT_WAIT, so a
+	// sample that is not ready is dropped instead of stalling the render thread:
+	// the probe can cost a frame's latency, never the frame itself.
+	void DX12SwapChain::PixelProbeTick()
+	{
+		if (pixelProbeDisabled)
+			return;
+
+		auto& fg = Get();
+		if (!fg.settings.pixelProbe) {
+			pixelProbeDisabled = true;
+			SKSE::log::info("[PIXEL] probe disabled by INI (PixelProbe=0)");
+			return;
+		}
+
+		// 1 Hz. Sampling every frame would make the readback itself a variable in
+		// the thing being measured.
+		const auto nowMs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+		if (pixelProbeLastMs != 0 && nowMs - pixelProbeLastMs < 1000)
+			return;
+		pixelProbeLastMs = nowMs;
+
+		if (!pixelProbeReady) {
+			if (!swapChainBufferWrapped || !swapChainBufferWrapped->resource11 || !d3d11Device || !d3d11Context) {
+				pixelProbeDisabled = true;
+				SKSE::log::warn("[PIXEL] probe disabled: the source texture is not up yet on this path");
+				return;
+			}
+			D3D11_TEXTURE2D_DESC src{};
+			swapChainBufferWrapped->resource11->GetDesc(&src);
+
+			// Centre of the frame: that is where the world is. A corner block would
+			// sit on sky or HUD and could be genuinely constant while the world moves.
+			const UINT bw = src.Width < 64u ? src.Width : 64u;
+			const UINT bh = src.Height < 64u ? src.Height : 64u;
+			pixelProbeBox.left = (src.Width - bw) / 2;
+			pixelProbeBox.top = (src.Height - bh) / 2;
+			pixelProbeBox.front = 0;
+			pixelProbeBox.right = pixelProbeBox.left + bw;
+			pixelProbeBox.bottom = pixelProbeBox.top + bh;
+			pixelProbeBox.back = 1;
+
+			D3D11_TEXTURE2D_DESC st{};
+			st.Width = bw;
+			st.Height = bh;
+			st.MipLevels = 1;
+			st.ArraySize = 1;
+			st.Format = src.Format;
+			st.SampleDesc = src.SampleDesc;
+			st.Usage = D3D11_USAGE_STAGING;
+			st.BindFlags = 0;
+			st.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+			st.MiscFlags = 0;
+
+			const HRESULT hrCreate = d3d11Device->CreateTexture2D(&st, nullptr, pixelProbeStaging.put());
+			if (FAILED(hrCreate)) {
+				pixelProbeDisabled = true;
+				SKSE::log::warn("[PIXEL] probe disabled: CreateTexture2D failed hr=0x{:08X}", static_cast<unsigned>(hrCreate));
+				return;
+			}
+			pixelProbeWidth = bw;
+			pixelProbeHeight = bh;
+			pixelProbeReady = true;
+			SKSE::log::info("[PIXEL] probe armed: src={}x{} fmt={} block={}x{} at ({},{})",
+				src.Width, src.Height, static_cast<int>(src.Format), bw, bh, pixelProbeBox.left, pixelProbeBox.top);
+		}
+
+		d3d11Context->CopySubresourceRegion(
+			pixelProbeStaging.get(), 0, 0, 0, 0, swapChainBufferWrapped->resource11, 0, &pixelProbeBox);
+
+		D3D11_MAPPED_SUBRESOURCE ms{};
+		const HRESULT hrMap = d3d11Context->Map(
+			pixelProbeStaging.get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &ms);
+		if (hrMap == DXGI_ERROR_WAS_STILL_DRAWING) {
+			pixelProbeLastMs = 0;   // retry on the next frame; dropping a sample beats stalling
+			return;
+		}
+		if (FAILED(hrMap)) {
+			pixelProbeDisabled = true;
+			SKSE::log::warn("[PIXEL] probe disabled: Map failed hr=0x{:08X}", static_cast<unsigned>(hrMap));
+			return;
+		}
+
+		// Whole rows, padding included: this stays correct for any format because it
+		// never has to know the bytes per pixel. Any change inside the block changes
+		// the hash; the padding is stable, so it cannot mask one.
+		std::uint64_t h = 1469598103934665603ull;   // FNV-1a offset basis
+		const auto* rows = static_cast<const std::uint8_t*>(ms.pData);
+		for (UINT y = 0; y < pixelProbeHeight; ++y) {
+			const auto* row = rows + static_cast<std::size_t>(y) * ms.RowPitch;
+			for (std::size_t x = 0; x < ms.RowPitch; ++x) {
+				h ^= row[x];
+				h *= 1099511628211ull;
+			}
+		}
+		d3d11Context->Unmap(pixelProbeStaging.get(), 0);
+
+		++pixelProbeSamples;
+		bool changed = false;
+		if (pixelProbeLastHash != 0) {
+			changed = (h != pixelProbeLastHash);
+			if (changed) {
+				++pixelProbeChanged;
+				pixelProbeStreak = 0;
+			} else {
+				++pixelProbeUnchanged;
+				++pixelProbeStreak;
+				if (pixelProbeStreak > pixelProbeMaxStreak)
+					pixelProbeMaxStreak = pixelProbeStreak;
+			}
+		}
+		pixelProbeLastHash = h;
+
+		SKSE::log::info("[PIXEL] #{} hash={:016X} chg={} streak={} changed={} unchanged={} maxStreak={}",
+			pixelProbeSamples, h, changed ? 1 : 0, pixelProbeStreak,
+			pixelProbeChanged, pixelProbeUnchanged, pixelProbeMaxStreak);
+
+		// The verdict. Every other witness in this file can only say that a flip
+		// happened; this is the only one that can say the picture moved.
+		if (pixelProbeStreak == 10) {
+			SKSE::log::error(
+				"[PIXEL] VERDICT: the frame content is byte-identical for 10 consecutive seconds. "
+				"presents, presentAge, dsync and the presented-per-real-frame ratio all report a healthy "
+				"flip, so the swap chain is flipping the SAME buffer: what the player sees is stale.");
+		}
+	}
+

@@ -272,5 +272,26 @@ namespace FrameGen
 		winrt::com_ptr<ID3D11PixelShader> copyMvecPS;
 		bool mvecCopyReady = false;
 		bool mvecCopyFailed = false;
+		// ---- v1.22 PIXEL PROBE ----
+		// See PixelProbeTick() in the .cpp for the full argument. In one line: every
+		// witness this file already has (Present's return, presentAge, dsync, the
+		// presented-per-real-frame ratio) reports that a flip HAPPENED, and not one
+		// of them can see that the same picture was flipped again. The 00:30 run
+		// measured ratio = 4.00 with dsync = 0 and presentAge 5-8 ms while the player
+		// reported a frozen screen, which is the gap this closes.
+		void PixelProbeTick();
+		winrt::com_ptr<ID3D11Texture2D> pixelProbeStaging;
+		D3D11_BOX pixelProbeBox{};
+		std::uint32_t pixelProbeWidth = 0;
+		std::uint32_t pixelProbeHeight = 0;
+		std::uint64_t pixelProbeLastMs = 0;
+		std::uint64_t pixelProbeLastHash = 0;
+		std::uint32_t pixelProbeSamples = 0;
+		std::uint32_t pixelProbeChanged = 0;
+		std::uint32_t pixelProbeUnchanged = 0;
+		std::uint32_t pixelProbeStreak = 0;
+		std::uint32_t pixelProbeMaxStreak = 0;
+		bool pixelProbeReady = false;
+		bool pixelProbeDisabled = false;
 	};
 }

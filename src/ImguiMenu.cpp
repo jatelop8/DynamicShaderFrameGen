@@ -274,6 +274,7 @@ namespace FrameGen
 			<< "MenuDisableFrameGen=" << (s.menuDisableFrameGen ? 1 : 0) << "\n"
 			<< "InteropFenceWait=" << (s.interopFenceWait ? 1 : 0) << "\n"
 			<< "MenuGuardFader=" << (s.menuGuardFader ? 1 : 0) << "\n"
+			<< "PixelProbe=" << (s.pixelProbe ? 1 : 0) << "\n"
 			<< "Sharpness=" << s.sharpness << "\n"
 			<< "RenderResolutionScale=" << std::fixed << std::setprecision(2) << s.renderResolutionScale << "\n"
 			<< "MvecScaleOverride=" << std::fixed << std::setprecision(2) << s.mvecScaleOverride << "\n"

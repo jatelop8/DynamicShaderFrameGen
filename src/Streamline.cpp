@@ -430,7 +430,23 @@ namespace FrameGen
 			static const auto s_faderT0 = std::chrono::steady_clock::now();
 			const auto faderUpSec = std::chrono::duration_cast<std::chrono::seconds>(
 				std::chrono::steady_clock::now() - s_faderT0).count();
-			return ui->IsMenuOpen("Fader Menu") && faderUpSec < 90;
+			// v1.22 -- the fader guards ENTRY, not play. Measured on the 00:30 run,
+			// in-world (every field from the same [CAM] PC v1.19 line):
+			//   00:31:02.935  paused=0 ld=0 fade=1 hrsD=0.003807  ~1 present/frame
+			//   00:31:03.935  paused=0 ld=0 fade=1 hrsD=0.005663   1 present/frame
+			//   00:31:04.943  paused=0 ld=0 fade=0 hrsD=0.005501   4 present/frame
+			// The world was already live at 00:31:02.935 -- paused=0, ld=0, the calendar
+			// advancing at timescale 20 -- but the fader held this line true for another
+			// two seconds, and [XRAY] MENU EDGE open=0 fired at 00:31:04.683, between the
+			// fade=1 sample and the fade=0 sample. The 90 s cap did not release it (the
+			// run was 57 s long); the fader closing did. The 23:38 run is the same defect
+			// with a longer fade: fade=1 in the world for 40+ s.
+			//
+			// GameIsPaused() separates the two cases: 1 through start-up, the main menu
+			// and the load fade -- every pre-world sample in the 00:30 log reads 1, so the
+			// v0.96 protection is untouched -- and 0 the moment the player camera takes
+			// over (the v1.16 TAKEOVER line lands on that same 00:31:02.935 sample).
+			return ui->GameIsPaused() && faderUpSec < 90;
 		}
 
 		// v0.69: MENU PROBE -- make the probe itself falsifiable. Compares the data

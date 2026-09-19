@@ -127,6 +127,14 @@ namespace FrameGen
 		// never handed a frame. 1 = the fader counts only while we cannot yet be
 		// in the world (start-up + loads), 0 = never counts. See GameMenuOpenNow.
 		bool menuGuardFader = true;     // INI MenuGuardFader
+		// v1.22 -- PIXEL PROBE (default 1). Samples a 64x64 block from the centre of
+		// the frame the plugin hands to the swap chain, once per second, and reports
+		// whether that content changed. It exists because up to v1.21 a frozen screen
+		// and a healthy one produced the same log: presents, presentAge, dsync and the
+		// presented-per-real-frame ratio are all witnesses that a flip happened, and
+		// none of them can see the same picture being flipped again (ledger L38).
+		// Read-only and self-disabling; 0 switches it off without a rebuild.
+		bool pixelProbe = true;         // INI PixelProbe
 		int  provider = 0;             // 0=FSR3（AMD 插帧，默认） 1=DLSSG（NVIDIA 插帧）
 		int  qualityMode = 1;          // DLSS 模式：0=DLAA 1=Quality 2=Balanced 3=Performance 4=UltraPerformance
 		// v0.41：渲染分辨率缩放（自定义 DRS）——引擎渲染分辨率 = 输出 × 该比例，DLSS
