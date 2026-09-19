@@ -4366,3 +4366,152 @@ done
 
 **未做 / 未证（别假装做了）**：机制②（互操作围栏）只是**症状吻合 + 头号嫌疑**，不是已证结论；
 DLSS5 的**屏幕输出**仍未证实；RTX 20/30 系一行未动。
+
+---
+
+# 34. v1.22 —— 4x 请求第一次真的发出去了；fader 按住了世界入口；装上像素探针
+
+## 34.1 这一局的第一个真进展：请求发出且被接受（v1.21 局，00:30）
+
+上一章的结论是「4x 的请求从来没被发出去」。v1.21 那一局（`docs/runlogs/2026-09-20-0031-v1.21-4x-still-frozen.log`，
+00:30:10.395 → 00:31:07.259，共 57 s）**推翻了这一条的一半**：
+
+| 指标 | 本局读数 | 含义 |
+|---|---|---|
+| `FPS probe` 行 | `ask=4 accepted=4 cap~=200.5 (=real*4)` | 请求发出去了，**运行时也接受了** |
+| 看门狗逐秒比值 | `00:31:05 → 4.00`、`00:31:06 → 4.00` | **4 个 present / 每个真实帧**，插帧真的在上屏 |
+| `presentAge` | 5 / 11 / 69 ms | 呈现及时，不是卡死 |
+| `hrsD` | 0.0038 → 0.0058 /秒 | timescale 20，游戏在模拟 |
+
+⇒ **4x 通了。** v1.21 那道闸门修对了。用户报告的「依旧卡住冻结」发生在 4x 已经生效的
+那 2.36 秒里（00:31:04.898 → 00:31:07.259），**所以冻结还有第二个成因**。
+
+★ 这一局还有一个必须先说的事实：**用户在世界里只待了 4.3 秒**（00:31:02.935 → 00:31:07.259），
+`plrD=0.00` 全程、`INPUT_NONE` 全程 —— 没有按过 W。日志**没有关闭序列**，
+最后一行 00:31:07.259，看门狗最后一条 `alive=1 presentAge=69ms`（由 5ms 爬上来）。
+⇒ 这一局是**被强杀/硬挂**的，不是正常退出。
+
+## 34.2 A 改动：`fader` 按住的是「能不能进世界」，不是「能不能玩」
+
+同一份日志，四项字段取自**同一条** `[CAM] PC v1.19` 行：
+
+| 时刻 | paused | ld | fade | hrsD | presents/real frame |
+|---|---|---|---|---|---|
+| 00:31:02.935 | **0** | **0** | **1** | 0.003807 | ~1 |
+| 00:31:03.935 | 0 | 0 | 1 | 0.005663 | 1.00 |
+| 00:31:04.943 | 0 | 0 | **0** | 0.005501 | **4.00** |
+
+- 世界在 **00:31:02.935 就活了**：`paused=0`、`ld=0`、日历以 timescale 20 在走，
+  而且 v1.16 的 `PC TAKEOVER` 恰好落在这一采样上（`best=0.00 proj00=0.8391`）；
+- 但闸门又多按了 **2 秒**，因为 `IsMenuOpen("Fader Menu")` 仍为真；
+- `[XRAY] MENU EDGE open=0 serial=653` 发生在 **00:31:04.683**，
+  严格落在 `fade=1` 采样与 `fade=0` 采样**之间**；
+- **90 秒兜底不可能解释它**：日志起于 00:30:10.395，释放时整局才 54.3 s，
+  `s_faderT0` 只会比这更晚。
+
+**这不是空操作（A≠B 已证）**：`paused=0` 与 `fade=1` 在两个采样上**同时**成立。
+`GameIsPaused()` 在世界之前 13 个采样上全是 1（v0.96 的保护完好），
+接管之后 5 个采样全是 0。`Loading Menu` 的提前返回**独立**覆盖加载窗口
+（`ld=1` 从 00:30:57.684 到 00:31:01.919，那一段 `paused` 也全是 1）。
+
+**改法**：`return ui->IsMenuOpen("Fader Menu") && faderUpSec < 90;`
+→ `return ui->GameIsPaused() && faderUpSec < 90;`
+
+★ **诚实边界**：A 只收回世界入口那 1.75–2 秒的死窗口。它**解释不了** 4x 已生效的
+那 2.36 秒里的冻结 —— 那正是 B 存在的原因。
+
+## 34.3 B 改动：像素探针（L38 的那个缺失见证）
+
+本项目已有的**每一个**见证 —— `Present` 的返回值、`presentAge`、`dsync`、
+`presented per real frame` 比值 —— 都只能报「**发生了一次 flip**」。
+**没有一个能看见「同一张画面被翻了两次」**。这就是为什么 00:30 那一局
+（ratio 4.00、dsync 0、presentAge 5–8 ms）读起来是健康的，而用户看到的是冻结。
+**flip 不是画面。**
+
+探针从**插件交给交换链的那张纹理**的正中央取 64×64 块，1 Hz，记录它有没有变：
+- 只读、自禁用；`Map` 用 `D3D11_MAP_FLAG_DO_NOT_WAIT`，取不到样本就丢掉，**不阻塞渲染线程**；
+- 连续 10 秒逐字节相同 ⇒ 打 `[PIXEL] VERDICT`（这是唯一能说「画面没动」的仪器）；
+- INI `PixelProbe=1`（默认开），`0` 关掉、无需重编译。
+
+**两个"探针挂在死分支上"的历史坑，这次都先排掉了：**
+1. 调用点插在 `m_stage = "present entry";` 之后 —— 那是 `Present()` 三个返回分支**共用**的
+   那条路。**可证伪检查**：看门狗里 `stage=present entry` 出现 **47 次** ⇒ 这条路真的在跑。
+2. `CreateInterop()`（`swapChainBufferWrapped` 在那儿创建）在 `hk_IDXGIFactory_CreateSwapChain`
+   里**无条件**调用，顺序是 `SetD3D11Device`(1764) → `SetD3D11DeviceContext`(1770)
+   → `CreateSwapChain`(1797) → `CreateInterop()`(1798)，**全部早于任何一次 `Present`**
+   ⇒ 探针不会因为"纹理还没就绪"在第一次 tick 就自禁用。
+
+## 34.4 L40：锚点要整行；后置条件必须有一条只有"真改过"才满足
+
+本轮补丁在 `.ini` 上连挂两次，两次都是好事：
+
+1. 第一版锚点用 `MenuGuardFader=1`（裸串）。**它在这份 INI 里出现 2 次** ——
+   第 22 行的**文档注释**里也提了这个键名。断言拦住：`count=2`。
+2. 改成 `"\nMenuGuardFader=1"` 想去整行锚定。**这条路走不通**：
+   `line_indent()` 用 `text.rfind("\n", 0, i)` 求缩进，而针**本身以 `\n` 开头** ⇒
+   i 指向那个换行符 ⇒ 求出的是**上一行的内容**（`"B\r"`）当缩进 ⇒
+   拼出来的 old 是 `"B\r\r\nMenuGuardFader=1\r\n"`，`count=0`。
+   `.ini` 无缩进，所以我给补丁加了一个 **`afterline`** 模式：
+   按 EOL 切行、要求**恰好一行**等于该针、否则 `REFUSED`。
+
+**L40：给"没有缩进"的文件（ini/csv/json）做锚点时，用整行匹配，不要用"前缀换行"去凑唯一性。**
+并且：**后置条件里必须有一条，是"什么都没改"无法满足的**。
+本轮的 `POST_GONE`：结果文本里 `IsMenuOpen("Fader Menu") && faderUpSec < 90` 出现次数必须为 **0**。
+（这是 33 章那次"散文满足断言"事故的正面做法 —— 断言只能由真东西满足。）
+
+## 34.5 L41：方法名不是字符串 —— 用修饰符号证明调用进了二进制
+
+核 A 改动有没有编进 DLL 时，`grep -a -c GameIsPaused <dll>` = **0**。
+**这个 0 是对的，但如果按 L39 的直觉直接下结论就会误判。** 做对照：
+
+| 查的串 | DLL 内计数 | 性质 |
+|---|---|---|
+| `GetSingleton` | 0 | 方法名（调用） |
+| `Calendar` | 0 | 类名（调用） |
+| `InterfaceStrings` | 0 | 类名（调用） |
+| `GameIsPaused` | 0 | 方法名（调用） |
+| `IsMenuOpen` | 1 | **格式串字面量**（MENU PROBE 的日志文本） |
+| `Fader Menu` | 1 | 真字面量 |
+| `PixelProbe` | 3 | 真字面量（窄+宽+日志） |
+
+⇒ **方法/类名以"调用"形式存在，不以字符串形式存在。字符串计数根本不该拿来验证它们。**
+
+真凭据要另找。本轮用的是**目标文件符号**：
+```
+build/NINJA/CMakeFiles/DynamicShaderFrameGen.dir/src/Streamline.cpp.obj
+  → ?GameIsPaused@UI@RE@@QEAA_NXZ      （1 处，修饰符号）
+git show HEAD:src/Streamline.cpp | grep -c GameIsPaused   → 0
+```
+时间戳链：源码 00:52:23 → obj 00:52:44 → DLL 00:52:47。
+改前源码里**零**出现 ⇒ obj 里这一处**只可能**来自本次改动。
+
+**L41：要证明一次调用改动进了二进制，用 `grep -a <修饰名> <obj>`（或看反汇编），
+不要用字符串搜索 —— 后者对方法名恒为 0，是结构性假阴性。**
+
+## 34.6 收尾状态与下一局判据
+
+| 项 | 值 |
+|---|---|
+| DLL | 1,362,944 B，md5 `5f1793d921493f1e94fc23aad4a8b390`（build == MO2 部署）|
+| INI | md5 `efce89119d840670e519d219749a6476`（源树 == 部署），PURE CRLF 358 行 |
+| INI 关键键 | `Provider=1`、`DLSSGFramesToGenerate=3`、`MFGMaxFramesOverride=3`、`MenuDisableFrameGen=1`、`MenuGuardFader=1`、`InteropFenceWait=1`、`NRAllowWithFrameGen=0`、**`PixelProbe=1`** |
+| git | HEAD `f7fe9b7`，tag `v1.22`，`git status --short` 空 |
+| 行尾 | `DX12SwapChain.cpp` 纯 LF（bare_lf 1810→1960）；`Streamline.cpp` CRLF+BOM；INI 纯 CRLF（343→358）；全库 `lone_cr=0` |
+
+**下一局这么跑**：① 进世界**站着不动 15 秒** → ② **按住 W 走 5 秒以上** → ③ 再退。
+
+**日志里看三样：**
+
+| 看什么 | 命令 | 判据 |
+|---|---|---|
+| 4x 是不是从进世界就生效 | `grep -a "presented per real frame" <log>` | 出现 `= 4` |
+| **画面到底动没动** | `grep -a "\[PIXEL\]" <log>` | 每秒一行 `chg=`；`VERDICT` = 陈旧缓冲已证 |
+| 呈现健康度 | `python tools/wd_ratio.py <watchdog.log> 10` | ratio ≈ 4 且 presentAge 小 |
+
+**A 的回退**：这个改动在代码里，不是 INI 开关 ——
+`git checkout v1.21 -- src/Streamline.cpp` 再 `./build_vs.sh`。
+（`MenuGuardFader=0` 不是它的回退键：那个值是 v0.96 的"fader 永不算菜单"，会进不去游戏。）
+
+**未证 / 未做（别假装做了）**：机制②（互操作围栏）仍是症状吻合 + 头号嫌疑；
+冻结的**存在性**本轮仍未被独立见证 —— 这正是要 `[PIXEL]` 的原因；
+DLSS5 屏幕输出未证；RTX 20/30 未动。
