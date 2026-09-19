@@ -1825,10 +1825,15 @@ namespace FrameGen
 							"a healthy flip, so the swap chain is showing the SAME image: what the player "
 							"sees is stale.", pixelProbeMovedDuringStreak);
 					} else {
-						SKSE::log::warn("[PIXEL] 3 identical seconds, but the camera was still on {} of "
-							"them - a static camera makes interpolated frames legitimately identical, so "
-							"this is NOT a frozen-screen verdict. Move for 3 s to make the next streak "
-							"mean something.", pixelProbeMovedDuringStreak);
+						// v1.25: this counter counts the samples on which the camera MOVED, but
+						// the old text read "the camera was still on {} of them" and printed
+						// that same number -- so the sentence said the opposite of its own
+						// value, and a 0 (camera never moved) read as "it moved every time".
+						SKSE::log::warn("[PIXEL] {} identical samples in a row, and the camera moved on "
+							"only {} of them - a static camera makes interpolated frames "
+							"legitimately identical, so this is NOT a frozen-screen verdict. "
+							"Hold W for 3 s to make the next streak mean something.",
+							pixelProbeStreak, pixelProbeMovedDuringStreak);
 					}
 				}
 			}

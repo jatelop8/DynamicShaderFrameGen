@@ -205,8 +205,19 @@ namespace FrameGen
 			mult = 2.0f;  // FSR3 generates exactly one frame (verified by the dispatch probe)
 		}
 
-		char buf[32];
-		std::snprintf(buf, sizeof(buf), "%.0f FPS%s", s_fps * mult, tag);
+		// v1.25: keep the two factors visible. `mult` is the runtime's REPORT of how
+		// many frames it presented for the last real frame (slDLSSGGetState) and
+		// s_fps is the real present rate measured right here, so the product is an
+		// inference, not a measurement. On the 01:56 run the read-out jumped from
+		// ~50 to ~150 at world entry while an independent reader in the same process
+		// (Transfusion's [PERF], 300-frame window) measured 49.3 FPS. Printing the
+		// product alone is what makes "4x" look like an observation.
+		char buf[64];
+		if (mult > 1.0f)
+			std::snprintf(buf, sizeof(buf), "%.0f FPS  [%.0f real x%.0f reported]",
+				s_fps * mult, s_fps, mult);
+		else
+			std::snprintf(buf, sizeof(buf), "%.0f FPS%s", s_fps * mult, tag);
 
 		ImFont* font = fontFps ? fontFps : ImGui::GetFont();
 		const float size = font->LegacySize;  // font size passed to AddFont* (36.0f)

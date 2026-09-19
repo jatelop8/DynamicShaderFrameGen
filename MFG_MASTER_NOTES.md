@@ -5048,3 +5048,147 @@ return ui->GameIsPaused() && faderUpSec < 90;    // v1.22 的原行为，超过 
 - 行尾：`Streamline.cpp` CRLF 2447 / lone_LF 0 / BOM 保留；`DX12SwapChain.cpp` lone_LF 2039 / CRLF 0。
 - 补丁幂等：重跑 ⇒ `REFUSED, nothing written`。
 - **下一局协议（必须照做，否则又是白跑）**：进世界 → 站 15 s → **按住 W 走 10 s 以上** → 松开站 10 s → 退出。
+
+# 第 38 章：4x 是在加载屏幕上被武装的，而世界入口那帧的反投影矩阵不是仿射的（v1.25）
+
+**局**：2026-09-20 01:55:25.480 → 01:56:20.077（55 s），v1.24 首跑。
+归档 `docs/runlogs/2026-09-20-0156-v1.24-fade-guard-freeze.*`（含 transfusion.log / perf.csv / crash.log）。
+世界段 = 释放后 **3.0 s**，用户退出。**这一局同样没有输入**（21 条 `[CAM] PC`，20 条 `INPUT_NONE`）。
+
+## 38.1 先否掉一条：那 20.6 秒不是 MFG 造成的
+
+本局看门狗在 `frames=1` 处只有 **一次**停顿：`silent=20590ms stage=d3d12 Present(dlssg) msg=0 alive=1`，
+起于 01:55:39、止于 01:55:59.4 —— 进程的**第一次 Present** 就压了 20.6 秒，`msg=0`
+（`SendMessageTimeoutA(SMTO_ABORTIFHUNG)` 返回 0 = 窗口被 USER32 判为未响应）。
+
+**把 13 份看门狗归档全扫一遍**，每局都恰好有一次这样的停顿：
+
+| 局 | 停顿 | 起于 frames | stage | msg |
+|---|---|---|---|---|
+| v1.11 08:27 | 19.6 s | 1 | d3d11 Wait | 0 |
+| v1.13 19:39 | — | 1 | | |
+| v1.17 22:38 | 21.0 s | 1 | d3d11 Wait | 0 |
+| v1.18b 22:54 | 20.0 s | 1 | d3d11 Wait | 0 |
+| **v1.19 23:38（FSR3，你说"活"的那局）** | **23.0 s** | **1** | **d3d11 Wait** | **0** |
+| v1.21 00:31 | 22.9 s | 1 | unfocused | 0 |
+| v1.22 00:58 | 20.8 s | 1 | d3d11 Wait | 0 |
+| v1.23 01:30 | 21.6 s | 1 | d3d11 Wait | 0 |
+| v1.24 01:56 | 20.6 s | 1 | d3d12 Present(dlssg) | 0 |
+
+13/13，**包括那局唯一存活的 FSR3**。⇒ **加载期这一次 20 秒停顿与 MFG 无关**，是这套整合包加载时的固有行为。
+「加载界面最后就卡住」如果指的是这 20 秒，那它不在本插件里。
+
+## 38.2 4x 是在加载屏幕上被武装的（v1.24 声称修掉了，没修掉）
+
+本局 Transfusion 的日志（**别的模块写的，不是我们的回声**）全程只有一次 DLSS-G 选项下发：
+
+```
+[2026-09-20 01:55:59.490] [tid=7244] [OPTIONS] Game DLSS-G options: structVersion=5 mode=eOn frames=3 uir=0 color=3840x2160 flags=0x00000010
+[2026-09-20 01:55:59.490] [tid=7244] Applied fixed multiplier: 4x, result=0 (eOk)
+```
+
+这一毫秒同时发生三件事：
+- 我方 `[XRAY] MENU EDGE open=1 serial=2`（**闸门在这一帧合上**）
+- 我方 `[MFG] probe RUNS while the menu guard skips DLSS-G: step advertised=4x accepted=4x latched=1`
+- Transfusion `Applied fixed multiplier: 4x`
+
+那一帧的上下文：`consts(ok=0 fail=0)`（**一帧相机常量都没喂**）、`hrs=0.0`、`fade=1`、`[CAM] PC` 打出 `eye=(0,0,0) read=0`。
+**这是加载屏幕。** 此后到 01:56:17.044 世界入口，17.5 秒里运行时一直被留在 4x 上。
+
+**为什么 v1.24 没挡住**：v1.24 把 fader 加回了 `GameMenuOpenNow()`，但**武装不走那条路**。
+`ProbeMfgLadder()`（`src/Streamline.cpp:2042`）按 v0.79 的设计**故意跑在菜单闸门之前**，
+而它在 `DX12SwapChain.cpp:1412` 的调用条件只有 `fgOn && featureDLSSG` —— **没有 menuBlock 项**。
+于是它是整个进程里唯一一条「闸门合上时仍在和运行时说话」的路径。
+**判据不是布尔值，是一张覆盖表（L47）**：v1.24 数了 Present 那张，没数阶梯那张。
+
+## 38.3 世界入口那一帧，交给 DLSS-G 的反投影矩阵不是仿射的
+
+**两个独立来源给出同一条错矩阵。**
+
+我方 `[XRAY] serial=848`（01:56:17.103，释放后 59 ms）：
+```
+clipDev=243.962387 clipW=-195.222366 p00(c/p)=1.1918/0.0000
+reproj src=fixed engPrevEqCur=1/1 engPrevZero=0 frozen=0
+cam(ok/inv)=1/0 camPrev(ok/used)=0/0 hist(hit/miss)=1/0 seed=1 missGood=0
+fix(src=2 dev=414.178)
+```
+Transfusion 同一毫秒（01:56:17.103）：
+```
+[MOTION] clipToPrev rows=[0.999993265 ...][...][...][-243.962387 2.7390945 -77.6724777 -195.222366]
+         cameraPos=(-243.049286,-415.311523,118.558205)
+```
+
+**机理**（读代码即得，不是猜）：`prevForReproj` 有三个候选，分属**两个家族**——
+`camPrevVP` / `s_prevVP` 是「从 R + eye 重建的相机」（**带平移**），
+`engPrevViewProjSL` 是「引擎自己的副本」（**无平移**）。
+但取逆的那个表达式是 `camCurOk ? camCurVP : curForReproj` —— **按当前帧选的，不是按 prev 的家族选的**。
+世界入口那一帧 `s_hasPrevVP` 还是 false（整段加载 `curOk` 都是 false），而 `camCurOk` 已经是 true：
+`inv(带平移) × 无平移` ⇒ 不可取消 ⇒ `w = -195`。
+
+三个计数器把这条路径钉死了：`seed=1`（prev 来自引擎种子）、`camPrev(ok/used)=0/0`（重建的 prev 没用上）、
+`cam(ok/inv)=1/0`（当前帧是有效的）。
+
+**而且这条错矩阵被用了，不只是被警告了。** 文件里早就算了 `clipW` 并在注释里写明「w 必须等于 1」，
+但接受判据只有 `clipMagAll < 1e30 && > 1e-6` —— **只测量级，不测仿射性**。
+于是 `w=-195` 通过、被写进 `s_lastGoodClip`、被交给 DLSS-G。Transfusion 的 row dump 就是它真的到了运行时的证据。
+
+**为什么这条线比别的嫌疑更像"和 4x 绑在一起"**：全归档扫描，
+MOTION 警告 13 局 12 局各 1 条，**唯一 0 条的就是 FSR3 那局（Provider=0，DLSS-G 没启用）**。
+
+## 38.4 覆盖层的「4 倍帧数」是算的，而且和一个独立读数差 3.6 倍
+
+我方 FPS probe：`real=50.3 → 53.3 → … → 39.0 → 33.4`，`cap~=real*4`。
+同一进程里 Transfusion 的 `[PERF]`（300 帧窗口，自己的读数）：
+
+| 时刻 | 我方 overlay 会显示 | Transfusion 实测 |
+|---|---|---|
+| 01:56:15.870 | real=44.7 → **179（=44.7×4）** | **49.3 FPS**（1% low 29.1）|
+| 01:56:10.852 | real=52.4 → 210 | 52.4 FPS |
+
+**Transfusion 的 49.3 ≈ 我方的 real 44.7，不是 real×4。**
+`dlssgFramesPresentedLast` 是 `slDLSSGGetState` 的**回报**，`s_fps` 是这里实测的呈现间隔，两者相乘是**推断**。
+⇒ **呈现帧率至今没有实测值**，三个口径互不一致（回报 4×／Transfusion 49.3／我方 dt 30 ms）。
+你说「看到左上角得帧数变成4倍」—— 那个数字就是这么来的，它不能当作「4x 生效了」的证据。
+
+**加载期它反而是对的**：`DLSSG presented per real frame = 1` 出现 10 次（全在闸门内），
+换到世界后 2 次 `= 4`。所以那 5 分钟里运行时确实没插帧。
+
+## 38.5 像素探针的判据说反了自己
+
+本局 01:56:14.377 打出了 v1.24 新写的 3 秒判据，原文：
+
+```
+[PIXEL] 3 identical seconds, but the camera was still on 0 of them - ...
+```
+
+`pixelProbeMovedDuringStreak` 数的是**相机在动的样本数**，而句子把它念成「相机静止的样本数」——
+**数字 0 被念成了它自己的反义**（0 = 一次都没动过，句子读起来却是"一次都没静止过"）。
+这条文案会让人把「站桩」读成「陈旧已证」。探针本身读数：`#40 changed=20 unchanged=19 maxStreak=7 dropped=0`。
+
+## 38.6 v1.25 改了什么（四处，都有上面那几条读数兜底）
+
+| # | 位置 | 改动 | 兜底证据 |
+|---|---|---|---|
+| A1 | `Streamline.cpp` | 给 `prevForReproj` 加家族标记（`prevIsRebuilt` / `s_prevVPIsRebuilt`），取逆按**同家族**选 | `seed=1` + `camPrev=0/0` + `cam(ok)=1` + `w=-195`（我方与 Transfusion 双侧）|
+| A2 | `Streamline.cpp` | 接受判据加**仿射闸**：`|w-1| <= 0.01`，不过则退回 last-good / 单位阵 | 同 38.3；阈值用的是文件自己已有的 `wDev > 0.01` 判废线 |
+| B | `Streamline.cpp` `ProbeMfgLadder()` | 闸门合上时**不碰运行时**（连 setOptions 都不发），边沿各打一行 | Transfusion `[OPTIONS] frames=3` 全程仅 1 次、且落在 serial=2 / fade=1 |
+| C | `DX12SwapChain.cpp` | 像素判据文案改成数它真正数的东西 | 38.5 |
+| D | `ImguiMenu.cpp` | 覆盖层拆开显示两个因子：`156 FPS  [39 real x4 reported]` | 38.4 的 3.6 倍分歧 |
+
+**B 的安全性**：它替代的正是 Present 的 `menuDisableFrameGen && MenuIsOpen()`（`DX12SwapChain.cpp:1392` 的 `menuBlock`），
+而 Present 在这个窗口里本来就不生成（`presentedMenu=0/819/0/…`）⇒ **不会少掉任何一帧本可生成的帧**。
+判据与 Present 逐字对齐（都含 `menuDisableFrameGen`），否则 `MenuDisableFrameGen=0` 的用户会被这个守卫误伤。
+
+## 38.7 交付与未证
+
+构建 `BUILD SUCCESS`；DLL **1,369,600 B md5 `7cb1e6546857e120f4a242d99d986d82`**，**build == MO2 部署目录**；
+`Streamline.cpp.obj` 02:05:13 < DLL 02:05:16；DLL 内新串各 1、旧串各 0；INI **未动** `efce89119d840670e519d219749a6476`（8 键、零新键）。
+补丁 `tools/patch_v125_affinity_and_ladder_guard.py`（9 处锚点各 count==1，干跑默认，重跑逐条 REFUSED）。
+行尾：Streamline CRLF 2532 / lone_LF 0 / BOM 保留；DX12SwapChain 纯 LF 2044；ImguiMenu CRLF。
+
+**未证，不许当成已修**：
+1. 那**一帧**的非仿射矩阵是不是"卡死"的原因 —— 未证。它只坏了一帧（`hist 31/0` 之后即恢复），1 帧不一定冻屏。
+2. 「加载期武装 4x」是不是原因 —— 未证。加载期本来就没插帧（`presentedMenu` 全 1）。
+3. DLSSG-Transfusion 与冻结 —— 仍是 **12/12 相关 + 两次时间戳同现**，**未证**。隔离实验（`DINPUT8.dll` → `DINPUT8.dll.transfusion-off`）**至今没跑过**。
+4. 世界是否响应输入 —— 本局 20/21 `INPUT_NONE`，**这格还是空的**。
+5. 呈现帧率 —— 仍无实测值（38.4）。

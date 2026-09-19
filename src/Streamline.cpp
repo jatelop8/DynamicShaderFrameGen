@@ -1098,8 +1098,14 @@ namespace FrameGen
 		// 顶多是被另一个线程刚更新的、时间上更近的一帧 —— 那正是我们要的语义。
 		static sl::float4x4 s_prevVP{};
 		static bool s_hasPrevVP = false;
+		// v1.25: which FAMILY s_prevVP belongs to. camCurVP is the camera rebuilt
+		// from R + eye (translation included); curForReproj is the engine's own
+		// ViewProj, which carries NO translation. Inverting one and multiplying by
+		// the other cannot cancel -- see the v1.07c derivation at the invert site.
+		static bool s_prevVPIsRebuilt = false;
 		sl::float4x4 prevForReproj{};
 		bool havePrev = false;
+		bool prevIsRebuilt = false;   // v1.25: family of prevForReproj
 		if (curOk) {
 			// ---- v1.02: the history advances with the REBUILT camera ----------
 			//
@@ -1112,8 +1118,10 @@ namespace FrameGen
 			if (s_hasPrevVP) {
 				prevForReproj = s_prevVP;
 				havePrev = true;
+				prevIsRebuilt = s_prevVPIsRebuilt;
 			}
 			s_prevVP = advance;
+			s_prevVPIsRebuilt = camCurOk;
 			s_hasPrevVP = true;
 		}
 		// ---- v1.02: prefer the rebuilt previous camera ------------------------
@@ -1126,6 +1134,7 @@ namespace FrameGen
 		if (camPrevOk) {
 			prevForReproj = camPrevVP;
 			havePrev = true;
+			prevIsRebuilt = true;   // v1.25: rebuilt from R + eye
 			++diag.camPrevUsed;
 		}
 		// v0.82: 没有自维护历史时，先试引擎自己的 prev（CameraPreviousViewProjUnjittered）。
@@ -1134,6 +1143,7 @@ namespace FrameGen
 		if (!havePrev && curOk && finiteMag(engPrevViewProjSL) > 1.0e-6f) {
 			prevForReproj = engPrevViewProjSL;
 			havePrev = true;
+			prevIsRebuilt = false;   // v1.25: engine copy, no translation
 			++diag.prevSeededFromEngine;
 		}
 
@@ -1170,7 +1180,22 @@ namespace FrameGen
 			// between that and clipDev=0.000023 because camCurOk flips, so DLSS-G
 			// was told "still" then "moved 244 units", frame by frame. That is
 			// the back-and-forth the picture shows.
-			const sl::float4x4& reprojInvSrc = camCurOk ? camCurVP : curForReproj;
+			// v1.25: the inverse MUST be the same FAMILY as `prev`.
+			//
+			// The 01:56 run reached the mismatch here and nowhere else. At world entry
+			// s_hasPrevVP was still false (curOk had been false for the whole loading
+			// screen), so prevForReproj came from the engine seed while camCurOk was
+			// already true: inv(rebuilt-with-translation) x engine-without-translation.
+			// Both sides of the log agree on what that produced -- ours:
+			//   clipW=-195.222366 clipDev=243.962387 p00(c/p)=1.1918/0.0000
+			// and Transfusion's own [MOTION] row dump, written by a different module:
+			//   clipToPrev rows=[...][-243.962387 2.7390945 -77.6724777 -195.222366]
+			// Because both `prev` candidates are built the same way, matching the
+			// families also fixes it: the engine prev equals the engine cur on that
+			// frame (engPrevEqCur=1/1), so the one frame that used to be absurd now
+			// reads as 'the camera did not move', which is what it was.
+			const sl::float4x4& reprojInvSrc =
+				(prevIsRebuilt && camCurOk) ? camCurVP : curForReproj;
 			sl::matrixFullInvert(invCurrViewProj, reprojInvSrc);
 			sl::matrixMul(c.clipToPrevClip, invCurrViewProj, prevForReproj);
 			// v0.66 (det guard)：det(inv(cur) x prev) **恒等于 1 当且仅当** cur/prev
@@ -1223,7 +1248,21 @@ namespace FrameGen
 			// dump of frame #1 reads PrevVPU mag=0 BAD). The old test ACCEPTED it and stored
 			// it in s_lastGoodClip, so the garbage came back on later frames. Identity gives
 			// mag = 4.0 and real motion keeps it there, so 1e-6 only rejects degenerate input.
-			const bool clipFinite = clipMagAll < 1.0e30f && clipMagAll > 1.0e-6f;
+			// v1.25: AFFINITY GATE. The block above already computes clipW and states
+			// in plain words that w must be 1 -- but nothing gated on it, so a matrix
+			// with w = -195 was ACCEPTED, written into s_lastGoodClip, and handed to
+			// DLSS-G. Transfusion's [MOTION] dump is the proof it reached the runtime.
+			//
+			// A clip-space -> clip-space reprojection is affine, so its last row is
+			// (tx,ty,tz,1). Unlike clipDev this test does not grow with camera speed
+			// or frame time, so it cannot reject legitimate motion -- identity scores
+			// 0 and any real displacement keeps w at exactly 1.
+			// (wAffDev, not wDev: the v1.08 probe block below already owns wDev in a
+			//  nested scope.)
+			const float wAffDev = c.clipToPrevClip[3].w - 1.0f;
+			const float wAbs = wAffDev < 0.0f ? -wAffDev : wAffDev;
+			const bool clipAffine = wAbs <= 0.01f;
+			const bool clipFinite = clipMagAll < 1.0e30f && clipMagAll > 1.0e-6f && clipAffine;
 			if (clipFinite) {
 				s_lastGoodClip = c.clipToPrevClip;
 				s_hasLastGoodClip = true;
@@ -2054,6 +2093,52 @@ namespace FrameGen
 		// stage=d3d11 Wait means we are blocked on the engine instead. The whole
 		// point of the 18:23 investigation was that those two were
 		// indistinguishable, and the blame went to the wrong place for two days.
+		// v1.25: do NOT talk to the runtime while the loading/fade guard is up.
+		//
+		// v0.79 lifted this probe out of SetDLSSGOptions so a rejected rung could
+		// still step down while a menu was open. The side effect was never stated:
+		// this became the ONLY path that arms frame generation while the guard
+		// blocks Present. Evidence, from the 01:56 run, and taken from Transfusion's
+		// log rather than ours -- a different module, so this is not our echo:
+		//   [01:55:59.490] [OPTIONS] Game DLSS-G options: structVersion=5
+		//                  mode=eOn frames=3 uir=0 color=3840x2160 flags=0x00000010
+		//   [01:55:59.490] Applied fixed multiplier: 4x, result=0 (eOk)
+		// That is the ONLY DLSS-G option call in the entire process, it lands on
+		// serial=2 with consts ok=0 / hrs=0 / fade=1 -- the loading screen -- and the
+		// multiplier then stays at 4x for the 17.5 s that remain before the world is
+		// entered. v1.24 added the fader to the guard to stop exactly this and did
+		// not, because the arming never goes through the guarded path.
+		//
+		// Skipping the call entirely -- rather than sending a smaller step -- leaves
+		// the runtime exactly as the last unguarded frame left it, and cannot pin a
+		// rejected rung: the ladder resumes, and can still step down, on the first
+		// unguarded frame.
+		{
+			static bool s_ladderHeldBack = false;
+			// v1.25: mirror the guard Present uses EXACTLY. Present's predicate is
+			// `menuDisableFrameGen && MenuIsOpen()` (DX12SwapChain.cpp, menuBlock), and
+			// MenuIsOpen() is this same GameMenuOpenNow(). Using GameMenuOpenNow()
+			// alone would be a strictly larger window than the one Present refuses in,
+			// so a user who set MenuDisableFrameGen=0 -- asking for frame generation
+			// during menus -- would get the ladder held back anyway. Same window, or
+			// this guard is just a second opinion.
+			const bool guarded = Get().settings.menuDisableFrameGen && GameMenuOpenNow();
+			if (guarded) {
+				if (!s_ladderHeldBack) {
+					s_ladderHeldBack = true;
+					SKSE::log::info("[MFG] ladder held back: the loading/fade guard is up, so the " 
+						"runtime is left untouched for this frame (step would have been {}x). " 
+						"Present skips DLSS-G here anyway; arming it only leaves the " 
+						"multiplier set across the whole load.", mfgProbeStep + 1);
+				}
+				return;
+			}
+			if (s_ladderHeldBack) {
+				s_ladderHeldBack = false;
+				SKSE::log::info("[MFG] ladder resumed on the first unguarded frame: step {}x",
+					mfgProbeStep + 1);
+			}
+		}
 		mfgInSetOptions = true;
 		g_inSetOptions.store(1);
 		SetDLSSGOptions(cw, ch, cw, ch, dx.swapChainDesc.Format);

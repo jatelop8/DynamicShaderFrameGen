@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DFG v1.25 —— 那 20 秒不是 4x 干的；4x 是加载期被武装的；世界入口那帧的矩阵不是仿射的</title>
+<style>
+  :root{
+    --bg:#14161a; --panel:#1b1f26; --panel2:#21262f; --line:#2c333d;
+    --fg:#e6eaf0; --dim:#98a3b3; --dim2:#6f7b8c;
+    --red:#ff6b6b; --amber:#ffb454; --green:#5ddc8a; --blue:#63b3ff; --purple:#b48cff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1080px;margin:0 auto;padding:34px 26px 80px}
+  h1{font-size:25px;margin:0 0 6px;letter-spacing:.4px;line-height:1.45}
+  h2{font-size:19px;margin:38px 0 12px;padding-left:11px;border-left:4px solid var(--blue)}
+  h3{font-size:16px;margin:24px 0 8px;color:var(--amber)}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:26px}
+  .lead{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--amber);
+    border-radius:8px;padding:16px 18px;margin:22px 0}
+  .lead b{color:var(--amber)}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+    padding:15px 18px;margin:14px 0}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:var(--dim);font-weight:600}
+  td.n{font-variant-numeric:tabular-nums;white-space:nowrap}
+  .ok{color:var(--green);font-weight:600}
+  .bad{color:var(--red);font-weight:600}
+  .warn{color:var(--amber);font-weight:600}
+  .mut{color:var(--dim)}
+  code{background:#0e1014;border:1px solid var(--line);border-radius:4px;
+    padding:1px 6px;font:13px/1.5 Consolas,"Courier New",monospace;color:var(--blue)}
+  pre{background:#0e1014;border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+    overflow-x:auto;font:13px/1.65 Consolas,"Courier New",monospace;color:#cfe0f5}
+  ul{margin:8px 0 8px 20px;padding:0} li{margin:5px 0}
+  .kv{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}
+  .kv div{background:var(--panel2);border:1px solid var(--line);border-radius:6px;
+    padding:7px 12px;font-size:13px}
+  .kv span{color:var(--dim2);margin-right:6px}
+  .step{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+    padding:14px 18px;margin:12px 0;border-left:4px solid var(--green)}
+  .step.a{border-left-color:var(--blue)}
+  .step.b{border-left-color:var(--amber)}
+  .step.c{border-left-color:var(--purple)}
+  .tag{display:inline-block;font-size:12px;padding:1px 8px;border-radius:99px;
+    border:1px solid var(--line);background:var(--panel2);color:var(--dim);margin-left:8px}
+  .foot{margin-top:48px;padding-top:18px;border-top:1px solid var(--line);
+    color:var(--dim2);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>v1.25 —— 那 20 秒不是 4x 干的；4x 是加载期被武装的；<br>世界入口那帧交给 DLSS-G 的矩阵不是仿射的</h1>
+<div class="sub">局：2026-09-20 01:55:25 → 01:56:20（55 s）· 跑的是 v1.24 · 归档 <code>docs/runlogs/2026-09-20-0156-v1.24-fade-guard-freeze.*</code></div>
+
+<div class="lead">
+本局世界段只有 <b>3.0 秒</b>（闸门 01:56:17.044 释放，01:56:20 日志结束），而且
+<b>20/21 条输入见证都是 <code>INPUT_NONE</code></b> —— 这一局同样没能回答「世界是不是真的冻了」。<br>
+但它给出了三条<b>别人写的、不是我方回声</b>的证据，其中两条能落成改动。
+</div>
+
+<h2>① 先否掉一条：加载期那 20.6 秒与 MFG 无关</h2>
+
+<p>看门狗在 <code>frames=1</code> 处只有一次停顿，<code>silent=20590ms stage=d3d12 Present(dlssg) msg=0 alive=1</code>
+—— 进程的第一次 Present 就压了 20.6 秒，<code>msg=0</code> 意思是 USER32 把这个窗口判成了「未响应」。</p>
+
+<p>把 13 份看门狗归档<b>全扫一遍</b>，每局都恰好有一次这样的停顿：</p>
+
+<table>
+<tr><th>局</th><th class="n">停顿</th><th class="n">起于 frames</th><th>stage</th><th class="n">msg</th></tr>
+<tr><td>v1.11 08:27</td><td class="n">19.6 s</td><td class="n">1</td><td>d3d11 Wait</td><td class="n">0</td></tr>
+<tr><td>v1.17 22:38</td><td class="n">21.0 s</td><td class="n">1</td><td>d3d11 Wait</td><td class="n">0</td></tr>
+<tr><td>v1.18b 22:54</td><td class="n">20.0 s</td><td class="n">1</td><td>d3d11 Wait</td><td class="n">0</td></tr>
+<tr><td><b>v1.19 23:38 · FSR3（你说「活」的那一局）</b></td><td class="n bad">23.0 s</td><td class="n">1</td><td>d3d11 Wait</td><td class="n">0</td></tr>
+<tr><td>v1.21 00:31</td><td class="n">22.9 s</td><td class="n">1</td><td>unfocused</td><td class="n">0</td></tr>
+<tr><td>v1.22 00:58</td><td class="n">20.8 s</td><td class="n">1</td><td>d3d11 Wait</td><td class="n">0</td></tr>
+<tr><td>v1.23 01:30</td><td class="n">21.6 s</td><td class="n">1</td><td>d3d11 Wait</td><td class="n">0</td></tr>
+<tr><td>v1.24 01:56（本局）</td><td class="n">20.6 s</td><td class="n">1</td><td>d3d12 Present(dlssg)</td><td class="n">0</td></tr>
+</table>
+
+<p><b>13/13，包括唯一存活的那局 FSR3。</b>⇒ 「加载界面最后就卡住」如果指的是这 20 秒，
+它<b>不在本插件里</b>，是这套整合包加载时的固有行为。</p>
+
+<h2>② 4x 是在加载屏幕上被武装的 —— v1.24 声称修掉了，没修掉</h2>
+
+<p>Transfusion 的日志（<b>另一个模块写的</b>）全程只有一次 DLSS-G 选项下发：</p>
+
+<pre>[2026-09-20 01:55:59.490] [tid=7244] [OPTIONS] Game DLSS-G options: structVersion=5 mode=eOn frames=3 uir=0 color=3840x2160 flags=0x00000010
+[2026-09-20 01:55:59.490] [tid=7244] Applied fixed multiplier: 4x, result=0 (eOk)</pre>
+
+<p>这一毫秒同时发生三件事：</p>
+<ul>
+<li>我方 <code>[XRAY] MENU EDGE open=1 serial=2</code> —— <b>闸门在这一帧合上</b></li>
+<li>我方 <code>[MFG] probe RUNS while the menu guard skips DLSS-G: step advertised=4x accepted=4x latched=1</code></li>
+<li>Transfusion <code>Applied fixed multiplier: 4x</code></li>
+</ul>
+
+<p>那一帧的上下文：<code>consts(ok=0 fail=0)</code>（<b>一帧相机常量都没喂</b>）、<code>hrs=0.0</code>、
+<code>fade=1</code>、<code>[CAM] PC</code> 打出 <code>eye=(0,0,0) read=0</code>。<b>这是加载屏幕。</b>
+此后到 01:56:17.044 世界入口，<b>17.5 秒里运行时一直被留在 4x 上</b>。</p>
+
+<div class="panel">
+<b>为什么 v1.24 没挡住：</b>v1.24 把 fader 加回了 <code>GameMenuOpenNow()</code>，但<b>武装不走那条路</b>。
+<code>ProbeMfgLadder()</code>（<code>Streamline.cpp:2042</code>）按 v0.79 的设计<b>故意跑在菜单闸门之前</b>，
+而它在 <code>DX12SwapChain.cpp:1412</code> 的调用条件只有 <code>fgOn &amp;&amp; featureDLSSG</code> ——
+<b>没有 menuBlock 项</b>。于是它是整个进程里唯一一条「闸门合上时仍在和运行时说话」的路径。
+<span class="warn">判据不是布尔值，是一张覆盖表（L47）：v1.24 数了 Present 那张，没数阶梯那张。</span>
+</div>
+
+<h2>③ 世界入口那一帧，交给 DLSS-G 的反投影矩阵不是仿射的</h2>
+
+<p><b>两个独立来源给出同一条错矩阵。</b></p>
+
+<p>我方 <code>[XRAY] serial=848</code>（01:56:17.103，释放后 59 ms）：</p>
+<pre>clipDev=243.962387 clipW=-195.222366 p00(c/p)=1.1918/0.0000
+reproj src=fixed engPrevEqCur=1/1 engPrevZero=0 frozen=0
+cam(ok/inv)=1/0 camPrev(ok/used)=0/0 hist(hit/miss)=1/0 seed=1 missGood=0
+fix(src=2 dev=414.178)</pre>
+
+<p>Transfusion 同一毫秒：</p>
+<pre>[MOTION] clipToPrev rows=[0.999993265 ...][...][...]
+                          [-243.962387 2.7390945 -77.6724777 -195.222366]</pre>
+
+<h3>机理（读代码即得，不是猜）</h3>
+<p><code>prevForReproj</code> 有三个候选，分属<b>两个家族</b>：
+<code>camPrevVP</code> / <code>s_prevVP</code> 是「从 R + eye 重建的相机」（<b>带平移</b>），
+<code>engPrevViewProjSL</code> 是「引擎自己的副本」（<b>无平移</b>）。
+可取逆的那个表达式是 <code>camCurOk ? camCurVP : curForReproj</code> ——
+<b>按当前帧选的，不是按 prev 的家族选的</b>。
+世界入口那帧 <code>s_hasPrevVP</code> 还是 false（整段加载 <code>curOk</code> 都是 false），
+而 <code>camCurOk</code> 已经是 true ⇒ <code>inv(带平移) × 无平移</code> ⇒ 不可取消 ⇒ <code>w = -195</code>。</p>
+
+<p>三个计数器把这条路径钉死了：<code>seed=1</code>（prev 来自引擎种子）、
+<code>camPrev(ok/used)=0/0</code>（重建的 prev 没用上）、<code>cam(ok/inv)=1/0</code>（当前帧有效）。</p>
+
+<div class="panel">
+<b>而且这条错矩阵被用了，不只是被警告了。</b>文件里早就算了 <code>clipW</code>，注释也白纸黑字写明「w 必须等于 1」，
+但接受判据只有 <code>clipMagAll &lt; 1e30 &amp;&amp; &gt; 1e-6</code> —— <b>只测量级，不测仿射性</b>。
+于是 <code>w=-195</code> 通过、被写进 <code>s_lastGoodClip</code>、被交给 DLSS-G。
+Transfusion 的 row dump 就是它<b>真的到了运行时</b>的证据。
+</div>
+
+<p><b>为什么这条线比别的嫌疑更像「和 4x 绑在一起」：</b>全归档扫描，MOTION 警告
+13 局里 12 局各 1 条，<b>唯一 0 条的就是 FSR3 那局（Provider=0，DLSS-G 没启用）</b>。</p>
+
+<h2>④ 覆盖层的「4 倍帧数」是算的，和一个独立读数差 3.6 倍</h2>
+
+<table>
+<tr><th>时刻</th><th>我方 overlay 会显示</th><th>Transfusion 实测（300 帧窗口）</th></tr>
+<tr><td><code>01:56:15.870</code></td><td class="n warn">real=44.7 → <b>179</b>（=44.7×4）</td><td class="n ok">49.3 FPS（1% low 29.1）</td></tr>
+<tr><td><code>01:56:10.852</code></td><td class="n">real=52.4 → 210</td><td class="n ok">52.4 FPS</td></tr>
+</table>
+
+<p><b>Transfusion 的 49.3 ≈ 我方的 real 44.7，不是 real×4。</b>
+<code>dlssgFramesPresentedLast</code> 是 <code>slDLSSGGetState</code> 的<b>回报</b>，
+<code>s_fps</code> 是这里实测的呈现间隔，两者相乘是<b>推断</b>。
+⇒ <b>呈现帧率至今没有实测值</b>，三个口径互不一致（回报 4×／Transfusion 49.3／我方 dt 30 ms）。
+<span class="warn">你说「看到左上角得帧数变成4倍」—— 那个数字就是这么来的，它不能当作「4x 生效了」的证据。</span></p>
+
+<p><b>加载期它反而是对的</b>：<code>DLSSG presented per real frame = 1</code> 出现 10 次（全在闸门内），
+换到世界后 2 次 <code>= 4</code>。所以那 18 秒里运行时确实没插帧。</p>
+
+<h2>⑤ 像素探针的判据说反了自己</h2>
+<pre>[PIXEL] 3 identical seconds, but the camera was still on 0 of them - ...</pre>
+<p><code>pixelProbeMovedDuringStreak</code> 数的是<b>相机在动的样本数</b>，
+而句子把它念成「相机静止的样本数」—— <b>数字 0 被念成了它自己的反义</b>
+（0 = 一次都没动过，句子读起来却是「一次都没静止过」）。
+这条文案会让人把「站桩」读成「陈旧已证」。</p>
+
+<h2>v1.25 改了什么</h2>
+
+<div class="step a">
+<h3>A · <code>Streamline.cpp</code> —— 反投影矩阵按家族配对 + 仿射闸</h3>
+<ul>
+<li><b>A1</b> 给 <code>prevForReproj</code> 加家族标记（<code>prevIsRebuilt</code> / <code>s_prevVPIsRebuilt</code>），取逆按<b>同家族</b>选。</li>
+<li><b>A2</b> 接受判据加<b>仿射闸</b>：<code>|w-1| &lt;= 0.01</code>，不过则退回 last-good / 单位阵。
+阈值用的是文件自己已有的 <code>wDev &gt; 0.01</code> 判废线，不是新拍的。</li>
+</ul>
+</div>
+
+<div class="step b">
+<h3>B · <code>Streamline.cpp ProbeMfgLadder()</code> —— 闸门合上时不碰运行时</h3>
+<p>连 <code>SetDLSSGOptions</code> 都不发，边沿各打一行日志。
+判据与 Present 的 <code>menuDisableFrameGen &amp;&amp; MenuIsOpen()</code> <b>逐字对齐</b>，
+否则 <code>MenuDisableFrameGen=0</code> 的用户会被这个守卫误伤。</p>
+<p><b>安全性</b>：它替代的正是 Present 在同一个窗口里的判据，
+而 Present 在那窗口里本来就不生成（<code>presentedMenu=0/819/0/…</code>）
+⇒ <b>不会少掉任何一帧本可生成的帧</b>。</p>
+</div>
+
+<div class="step c">
+<h3>C / D · 两处仪表</h3>
+<p><b>C</b> <code>DX12SwapChain.cpp</code> 像素判据文案改成数它真正数的东西；
+<b>D</b> <code>ImguiMenu.cpp</code> 覆盖层拆开显示两个因子：<code>156 FPS&nbsp;&nbsp;[39 real x4 reported]</code>。</p>
+</div>
+
+<h2>交付核对（第一遍 · 手脚）</h2>
+<div class="kv">
+<div><span>DLL</span>1,369,600 B</div>
+<div><span>md5</span>7cb1e6546857e120f4a242d99d986d82</div>
+<div><span>build == 部署</span>是</div>
+<div><span>INI</span>efce8911…（未动）</div>
+<div><span>补丁</span>9 锚点各 count==1</div>
+<div><span>重跑</span>逐条 REFUSED</div>
+</div>
+<ul>
+<li>逐符号回读：<code>s_prevVPIsRebuilt</code>=3 · <code>prevIsRebuilt</code>=5 · <code>clipAffine</code>=2 · 两处新文案各 1</li>
+<li>行尾：Streamline <span class="ok">CRLF 2532 / lone_LF 0 / BOM 保留</span>；DX12SwapChain <span class="ok">纯 LF 2044</span>；ImguiMenu <span class="ok">CRLF 466 / lone_LF 0</span></li>
+<li>构建 <span class="ok">BUILD SUCCESS</span>，0 error / 0 warning；<code>Streamline.cpp.obj</code> 02:05:13 &lt; DLL 02:05:16</li>
+<li>DLL 内新串各 1、旧串各 0（证明改动真进了二进制，不是编译通过了但代码没走到）</li>
+<li>账本纯追加 144 行、CR=0（上一次 <code>Path.write_text</code> 把整份 LF 静默转 CRLF，这次用 <code>write_bytes</code> + 断言）</li>
+</ul>
+
+<h2>未证 —— 不许当成已修</h2>
+<table>
+<tr><th>#</th><th>主张</th><th>状态</th></tr>
+<tr><td>1</td><td>那<b>一帧</b>的非仿射矩阵是「卡死」的原因</td><td class="warn">未证。它只坏了一帧（<code>hist 31/0</code> 之后即恢复），1 帧不一定冻屏</td></tr>
+<tr><td>2</td><td>「加载期武装 4x」是原因</td><td class="warn">未证。加载期本来就没插帧（<code>presentedMenu</code> 全 1）</td></tr>
+<tr><td>3</td><td>DLSSG-Transfusion 与冻结</td><td class="warn">仍是 12/12 相关 + 两次时间戳同现，<b>未证</b>。隔离实验至今没跑过</td></tr>
+<tr><td>4</td><td>世界是否响应输入</td><td class="bad">本局 20/21 <code>INPUT_NONE</code>，这格还是空的</td></tr>
+<tr><td>5</td><td>呈现帧率</td><td class="warn">仍无实测值（见 ④）</td></tr>
+</table>
+
+<h2>下一局：这一次请只做一件事</h2>
+<div class="panel">
+<p>已经跑了 14 局，其中 <b>绝大多数因为没有输入而作废</b>。请照这个顺序，不要提前退：</p>
+<ul>
+<li>① 进世界 → <b>站着不动 15 秒</b></li>
+<li>② <b>按住 W 走 10 秒以上</b> ← 这一步是关键，没有它整局白跑</li>
+<li>③ 松开 → 再站 10 秒 → 再退</li>
+</ul>
+<p>日志里会出现三种之一：</p>
+<ul>
+<li><code>[CAM] PC</code> 里 <code>key=0x1</code> + <code>eyeD&gt;0</code> ⇒ 输入通且世界在动 ⇒ 游戏是活的</li>
+<li><code>key=0x1</code> 但 <code>eyeD≈0</code> ⇒ <b>世界真的冻了</b>（输入到了但相机不动）</li>
+<li><code>[PIXEL] VERDICT</code> ⇒ 屏幕确实在显示同一张图，陈旧已证</li>
+</ul>
+<p><b>另外，有一个零代码的隔离实验至今一次都没做</b>（账本第 36 章就写下了）：
+把游戏根目录的 <code>DINPUT8.dll</code> 改名成 <code>DINPUT8.dll.transfusion-off</code>。
+<br>★ 不要用 <code>.disabled</code> —— 那个名字已经被另一个 5.9 MB 的 <code>dinput8.dll.disabled</code> 占着。</p>
+</div>
+
+<div class="foot">
+动态帧生成插件 · v1.25 · 2026-09-20 02:06 · 账本 <code>MFG_MASTER_NOTES.md</code> 第 38 章 ·
+源码树 <code>D:/Modding/DynamicShaderFrameGen</code>
+</div>
+
+</div>
+</body>
+</html>
