@@ -402,9 +402,35 @@ namespace FrameGen
 					ui->IsMenuOpen(istrings->journalMenu))) {
 				return true;
 			}
-			return ui->IsMenuOpen("Main Menu") || ui->IsMenuOpen("Loading Menu") ||
+			if (ui->IsMenuOpen("Main Menu") || ui->IsMenuOpen("Loading Menu") ||
 				ui->IsMenuOpen("Journal Menu") || ui->IsMenuOpen("Pause Menu") ||
-				ui->IsMenuOpen("RaceSex Menu") || ui->IsMenuOpen("Fader Menu");
+				ui->IsMenuOpen("RaceSex Menu")) {
+				return true;
+			}
+			// v1.21 -- the fader is NOT evidence of a menu. Evidence: the 23:38 run
+			// logged fade=1 (IsMenuOpen("Fader Menu")) for 40+ seconds while
+			// paused=0, ld=0 and Calendar advanced at timescale 20 -- i.e. the
+			// fader is open for the entire time the player is in the world.
+			// Counting it as a menu engaged the v0.63 guard on 571 of 572 frames
+			// of the 22:54 run (blocked=571 unblocked=1), so SetDLSSGOptions and
+			// EvaluateDLSSG were never called and "presented per real frame" stayed
+			// at 1: the 4x request was not being rejected by the runtime, it was
+			// never being made. The moment the guard released (serial 573) the same
+			// log reported 4.
+			//
+			// It must still hold during start-up and during loads. v0.96 removed the
+			// fader term outright and the game could not be entered, and the 22:54
+			// MENU PROBE shows why the term exists: at serial 2 every real menu was
+			// closed (IsMenuOpen(is)=false/false/false), so the fader was the only
+			// thing holding the guard -- it IS the start-up protection.
+			if (!Get().settings.menuGuardFader)
+				return false;
+			if (ui->IsMenuOpen("Loading Menu"))
+				return true;
+			static const auto s_faderT0 = std::chrono::steady_clock::now();
+			const auto faderUpSec = std::chrono::duration_cast<std::chrono::seconds>(
+				std::chrono::steady_clock::now() - s_faderT0).count();
+			return ui->IsMenuOpen("Fader Menu") && faderUpSec < 90;
 		}
 
 		// v0.69: MENU PROBE -- make the probe itself falsifiable. Compares the data

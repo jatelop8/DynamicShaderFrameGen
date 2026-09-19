@@ -1286,7 +1286,11 @@ namespace FrameGen
 		// which makes it the first suspect - that is the whole argument.
 		//
 		// Set back to true to restore the old behaviour exactly, for comparison.
-		static constexpr bool kD3D12WaitsOnD3D11 = false;
+		// v1.21: the withdrawal is a SETTING rather than a constant now, so the
+		// two behaviours can be compared without a rebuild and a run that wedges
+		// on it is reverted by editing one INI line. What the withdrawal costs
+		// is written up in FrameGen.h next to InteropFenceWait.
+		const bool kD3D12WaitsOnD3D11 = Get().settings.interopFenceWait;
 		if (kD3D12WaitsOnD3D11) {
 			m_stage = "d3d11 Signal(fence)";
 			DX::ThrowIfFailed(d3d11Context->Signal(d3d11Fence.get(), fenceValue));

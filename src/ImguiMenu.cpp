@@ -251,6 +251,12 @@ namespace FrameGen
 			<< "FrameGeneration=" << (s.frameGeneration ? 1 : 0) << "\n"
 			<< "EnableUpscale=" << (s.enableUpscale ? 1 : 0) << "\n"
 			<< "NeuralRenderingEnabled=" << (s.neuralRenderingEnabled ? 1 : 0) << "\n"
+			// v1.21: this key is READ by LoadConfig and was never WRITTEN here, so
+			// one press of Save silently reverted NR to "mutually exclusive with
+			// frame generation" on the next launch -- and rewrote the 14,559 B
+			// commented template as 517 B. Every key LoadConfig understands has to
+			// come out of this function, or the menu is a settings shredder.
+			<< "NRAllowWithFrameGen=" << (s.nrAllowWithFrameGen ? 1 : 0) << "\n"
 			<< "NRIntensity=" << a_fg.nrTuning.intensity << "\n"
 			<< "NRLocalTone=" << a_fg.nrTuning.localToneStrength << "\n"
 			<< "NRLocalStructure=" << a_fg.nrTuning.localStructureStrength << "\n"
@@ -266,6 +272,8 @@ namespace FrameGen
 			<< "MFGMaxFramesOverride=" << s.mfgMaxFramesOverride << "\n"
 			<< "ReflexFpsLimit=" << s.reflexFpsLimit << "\n"
 			<< "MenuDisableFrameGen=" << (s.menuDisableFrameGen ? 1 : 0) << "\n"
+			<< "InteropFenceWait=" << (s.interopFenceWait ? 1 : 0) << "\n"
+			<< "MenuGuardFader=" << (s.menuGuardFader ? 1 : 0) << "\n"
 			<< "Sharpness=" << s.sharpness << "\n"
 			<< "RenderResolutionScale=" << std::fixed << std::setprecision(2) << s.renderResolutionScale << "\n"
 			<< "MvecScaleOverride=" << std::fixed << std::setprecision(2) << s.mvecScaleOverride << "\n"

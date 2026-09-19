@@ -202,6 +202,13 @@ namespace FrameGen
 			// v0.63：菜单期间不插帧（1=开，默认；0=旧行为，菜单也插帧 -> 菜单画面持续闪）
 			else if (key == "MenuDisableFrameGen")
 				settings.menuDisableFrameGen = readBool(line, true);
+			// v1.21: switchable so one rebuild covers both behaviours of the
+			// interop fence, and so a run that wedges on it is reverted by editing
+			// one INI line instead of rebuilding.
+			else if (key == "InteropFenceWait")
+				settings.interopFenceWait = readBool(line, true);
+			else if (key == "MenuGuardFader")
+				settings.menuGuardFader = readBool(line, true);
 			else if (key == "Sharpness") {
 				// v0.6.3：DLSS 超分锐化（0-1，0=关闭）
 				try {

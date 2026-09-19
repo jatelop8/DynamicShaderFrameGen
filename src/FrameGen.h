@@ -111,6 +111,22 @@ namespace FrameGen
 		// 1 = NR runs first on the real frame, then DLSS-G interpolates it.
 		// Read from INI (NRAllowWithFrameGen) and exposed in the GUI.
 		bool nrAllowWithFrameGen = false;
+		// v1.21 -- INTEROP FENCE. v0.75 withdrew the D3D11 -> D3D12 wait
+		// ("kD3D12WaitsOnD3D11 = false") on the argument that the fence value
+		// had sat at its initial 1 for 50 s. A fence nobody signals looks
+		// exactly like that. What the withdrawal costs: the D3D12 queue then
+		// reads swapChainBufferWrapped / colorOutWrapped -- which the engine and
+		// NR write through D3D11 -- with no ordering at all, while the note at
+		// DX12SwapChain's "fence before" comment still says the design relies on
+		// that ordering. 1 = restore it (default), 0 = the v0.75 behaviour.
+		bool interopFenceWait = true;   // INI InteropFenceWait
+		// v1.21 -- THE FADER MENU IS NOT A MENU. IsMenuOpen("Fader Menu") is true
+		// the whole time the player is in the world (23:38 run: fade=1 for 40+ s
+		// with paused=0, ld=0 and the clock at timescale 20), so counting it as
+		// one engages the v0.63 guard on essentially every frame and DLSS-G is
+		// never handed a frame. 1 = the fader counts only while we cannot yet be
+		// in the world (start-up + loads), 0 = never counts. See GameMenuOpenNow.
+		bool menuGuardFader = true;     // INI MenuGuardFader
 		int  provider = 0;             // 0=FSR3（AMD 插帧，默认） 1=DLSSG（NVIDIA 插帧）
 		int  qualityMode = 1;          // DLSS 模式：0=DLAA 1=Quality 2=Balanced 3=Performance 4=UltraPerformance
 		// v0.41：渲染分辨率缩放（自定义 DRS）——引擎渲染分辨率 = 输出 × 该比例，DLSS
