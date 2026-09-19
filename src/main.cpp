@@ -65,9 +65,107 @@ extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Query(const SKSE::QueryInterface* a
 	return true;
 }
 
+// v1.09: keep the previous session's log.
+//
+// CommonLibSSE-NG's spdlog sink is a rotating logger whose base file is
+// truncated when it is opened, so every launch destroys the previous run's
+// evidence. That is exactly how the one run that reproduced the freeze
+// (2026-09-19 07:36) was lost: it was overwritten six minutes later by the next
+// launch, and the freeze could no longer be re-examined from the log that saw
+// it. One copy before SKSE::Init keeps it.
+//
+// The archive name is `DynamicShaderFrameGen.<YYYYMMDD>-<HHMMSS>.log`, which
+// sorts chronologically. Archives older than 7 days are deleted. The delete is
+// restricted to files matching `DynamicShaderFrameGen.20*.log`, so it can never
+// touch the watchdog log or any other plugin's log -- the `20` prefix is the
+// year, and the watchdog log is named `.watchdog.log`.
+static void ArchivePreviousLog()
+{
+	const char* wd = FrameGen::WatchdogLogPath();
+	if (wd == nullptr || wd[0] == '\0')
+		return;
+
+	char dir[MAX_PATH] = {};
+	std::snprintf(dir, sizeof(dir), "%s", wd);
+	int cut = -1;
+	for (int i = 0; dir[i] != '\0'; ++i)
+		if (dir[i] == '\\')
+			cut = i;
+	if (cut <= 0)
+		return;
+	dir[cut] = '\0';
+
+	char src[MAX_PATH] = {};
+	std::snprintf(src, sizeof(src), "%s\\DynamicShaderFrameGen.log", dir);
+	if (::GetFileAttributesA(src) == INVALID_FILE_ATTRIBUTES)
+		return;   // no previous run to preserve
+
+	SYSTEMTIME st{};
+	::GetLocalTime(&st);
+	for (int attempt = 0; attempt < 120; ++attempt) {
+		char dst[MAX_PATH] = {};
+		::GetLocalTime(&st);   // refresh so a long copy cannot skew the stamp
+		std::snprintf(dst, sizeof(dst),
+			"%s\\DynamicShaderFrameGen.%04d%02d%02d-%02d%02d%02d.log",
+			dir, st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+		if (::CopyFileA(src, dst, TRUE))       // TRUE = never overwrite
+			break;
+		if (::GetLastError() != ERROR_FILE_EXISTS)
+			break;
+		::Sleep(1000);                          // collision: wait for the next second
+	}
+
+	// Prune. Cutoff string is YYYYMMDD; the stamp starts at offset 21, which is
+	// the length of "DynamicShaderFrameGen.".
+	FILETIME nowFt{};
+	::GetSystemTimeAsFileTime(&nowFt);
+	ULARGE_INTEGER t{};
+	t.LowPart = nowFt.dwLowDateTime;
+	t.HighPart = nowFt.dwHighDateTime;
+	t.QuadPart -= 7ull * 24ull * 60ull * 60ull * 10000000ull;
+	FILETIME cutFt{};
+	cutFt.dwLowDateTime = t.LowPart;
+	cutFt.dwHighDateTime = t.HighPart;
+	SYSTEMTIME cutSt{};
+	char cutoff[16] = {};
+	if (::FileTimeToSystemTime(&cutFt, &cutSt))
+		std::snprintf(cutoff, sizeof(cutoff), "%04d%02d%02d", cutSt.wYear, cutSt.wMonth, cutSt.wDay);
+	if (cutoff[0] == '\0')
+		return;
+
+	char pattern[MAX_PATH] = {};
+	std::snprintf(pattern, sizeof(pattern), "%s\\DynamicShaderFrameGen.20*.log", dir);
+	WIN32_FIND_DATAA fd{};
+	HANDLE hf = ::FindFirstFileA(pattern, &fd);
+	if (hf == INVALID_HANDLE_VALUE)
+		return;
+	do {
+		if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0u)
+			continue;
+		const char* stamp = fd.cFileName + 21;
+		bool older = true;
+		for (int i = 0; i < 8; ++i) {
+			if (stamp[i] == '\0') { older = false; break; }
+			if (stamp[i] < cutoff[i]) break;
+			if (stamp[i] > cutoff[i]) { older = false; break; }
+		}
+		if (!older)
+			continue;
+		char victim[MAX_PATH] = {};
+		std::snprintf(victim, sizeof(victim), "%s\\%s", dir, fd.cFileName);
+		::DeleteFileA(victim);
+	} while (::FindNextFileA(hf, &fd) != 0);
+	::FindClose(hf);
+}
+
 extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Load(const SKSE::LoadInterface* a_skse)
 {
 	// SKSE::Init 内部已自动初始化 spdlog 日志（CommonLibSSE-NG 4.x）
+	// v1.09: SKSE::Init opens the spdlog sink, which truncates the log file. Copy
+	// the previous session's log out of the way first, or the run that reproduced
+	// the bug is destroyed by the run that follows it.
+	ArchivePreviousLog();
+
 	SKSE::Init(a_skse);
 
 	// v0.73: cache the watchdog log path before anything can go wrong, so the

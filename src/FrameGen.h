@@ -337,6 +337,16 @@ namespace FrameGen
 	std::uint64_t snapLockReleased = 0;   // times the family lock was released
 	std::uint64_t snapLockRelockJump = 0; // same-family teleports that took the anchor
 	std::uint64_t snapLockAdopted = 0;    // times a position snapshot was adopted
+
+	// ---- v1.09: is the PUBLISHED stream actually moving? ----
+	// `snapAccept` counts publishes, not changes. The 09:55 run published a
+	// byte-identical matrix 19 288 times in a row, so a dead capture layer and a
+	// healthy one looked identical in the log. This counter separates them, and
+	// it is live on both providers because the gate runs in the Map/Unmap hook.
+	std::uint64_t snapMatChanges = 0;   // publishes whose matrix differed from the previous one
+	bool  snapPubHaveMat = false;
+	float snapPubLastMat[4][4] = {};
+
 		// ---- v0.83: instrument the gate so a log can name which branch fires ----
 		// snapFrozenReject / snapFrozenRepeats already existed but were never
 		// printed, so the 13:22 run could not tell whether the v0.78 frozen gate

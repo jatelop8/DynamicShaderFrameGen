@@ -618,6 +618,22 @@ namespace FrameGen
 		// at 60 Hz: long enough that an interleaved slot cannot steal the lock
 		// (it never gets 90 in a row while the real camera keeps arriving),
 		// short enough that a genuine scene change re-locks promptly.
+		//
+		// v1.09 -- THIS THRESHOLD IS NOT CONSUMED ANYWHERE.
+		// A whole-project grep finds kCamStillTol in exactly four places: this
+		// definition, three comments, and two log-format argument lists. There is
+		// no comparison against it, so the release that the comment above promises
+		// does not exist. The v1.07b note at the same site says the reset edge is
+		// "the ONLY release path", and snapLockStill is reset to 0 by every accept
+		// (so `still=2/90` never grows). Observed consequence: the lock has no
+		// release of its own, so whichever family wins the first acquire keeps the
+		// stream until the process exits.
+		//
+		// v1.09 -- AND THE NUMBER IS WRONG BY 8x.
+		// 90 arrivals is not "~1.5 s at 60 Hz", it is 0.18 s: the Map/Unmap hook
+		// fires 493-502 times per second (measured: 612 arrivals per 1.22 s, at
+		// 41.4 rendered fps, i.e. ~12 maps per frame). Every arrival-count
+		// threshold in this file carries the same 8.2x error.
 		constexpr std::uint32_t kCamStillTol = 90;
 
 	// v0.78: how many consecutive identical-matrix arrivals (with a different
@@ -631,6 +647,10 @@ namespace FrameGen
 	// forge, reading a book. A false positive froze the picture permanently,
 	// while a late detection costs one stale frame, so the trade is lopsided.
 	constexpr std::uint32_t kCamFrozenTol = 600;
+	// v1.09: 600 arrivals is 1.2 s at the measured 493-502 arrivals/s, not the
+	// 10 s this comment describes. The gate itself was downgraded to a counter
+	// in v0.93 ("gates observe, they do not discard"), so this detector fires
+	// and changes nothing -- see the [CAM] pub `frozenRep=` field for its value.
 	}
 
 	bool FrameGen::AcceptCameraSnapshot(const FrameBuffer& a_src)
@@ -990,6 +1010,28 @@ namespace FrameGen
 
 		frameBufferCopy = a_src;
 		++snapAccept;
+		// v1.09: how often the matrix we PUBLISH actually changes. `snapAccept`
+		// alone cannot answer that -- 19 288 consecutive accepts at a byte-identical
+		// matrix is exactly what the freeze looks like from this side.
+		{
+			bool same = snapPubHaveMat;
+			if (same) {
+				for (int r = 0; r < 4 && same; ++r) {
+					for (int k = 0; k < 4; ++k) {
+						if (snapPubLastMat[r][k] != a_src.CameraViewProjUnjittered.data[r][k]) {
+							same = false;
+							break;
+						}
+					}
+				}
+			}
+			if (!same) ++snapMatChanges;
+			for (int r = 0; r < 4; ++r)
+				for (int k = 0; k < 4; ++k)
+					snapPubLastMat[r][k] = a_src.CameraViewProjUnjittered.data[r][k];
+			snapPubHaveMat = true;
+		}
+
 		// ---- v1.00: remember which family owns the stream ----
 		if (projOk) {
 			snapLockProj00 = proj00;
@@ -1003,10 +1045,9 @@ namespace FrameGen
 		// 相机数据不跟踪真实相机），任何重投影侧的修法都救不了。节流 0.25 s，最多 200 行。
 		{
 			static auto lastAccLog = std::chrono::steady_clock::now() - std::chrono::seconds(30);
-			static std::uint32_t accLogs = 0;
+			static std::uint64_t accLogs = 0;
 			const auto now = std::chrono::steady_clock::now();
-			if (accLogs < 200u &&
-				(snapAccept == 1u || std::chrono::duration<double>(now - lastAccLog).count() >= 0.25)) {
+			if (snapAccept == 1u || std::chrono::duration<double>(now - lastAccLog).count() >= 1.0) {
 				lastAccLog = now;
 				++accLogs;
 				SKSE::log::info("[CAM] acc #{} pos=({:.2f},{:.2f},{:.2f}) move={:.4f} path={:.2f} "
@@ -1014,6 +1055,42 @@ namespace FrameGen
 				snapAccept, px, py, pz, snapAcceptDist, snapPathLen,
 				camDev(a_src.CameraViewProjUnjittered), camDet3(a_src.CameraViewProjUnjittered),
 				camMag(a_src.CameraViewProjUnjittered), snapConsecReject);
+				// v1.09: the published-stream trace.
+				//
+				// `matChanges` counts publishes whose matrix differed from the one
+				// published before it. A stream that stops changing while the player
+				// walks IS the freeze -- clipToPrev collapses to identity and DLSS-G
+				// repeats the previous frame -- and no other line shows it directly.
+				//
+				// `arrivals/s` settles the calibration defect: every "consecutive
+				// arrivals" threshold in this file was written for 60 arrivals/s
+				// (kCamStillTol = "~1.5 s at 60 Hz"), while the hook is measured at
+				// 493-502/s because the engine maps the perFrame buffer ~12 times per
+				// rendered frame. Each of those thresholds therefore fires about
+				// eight times earlier than its comment intends.
+				{
+					static std::uint64_t rateLastArrivals = 0;
+					static std::uint64_t rateLastTick = 0;
+					const std::uint64_t tickNow = ::GetTickCount64();
+					float arrPerSec = 0.0f;
+					if (rateLastTick != 0u && tickNow > rateLastTick) {
+						arrPerSec = static_cast<float>(snapArrivals - rateLastArrivals) * 1000.0f /
+							static_cast<float>(tickNow - rateLastTick);
+					}
+					rateLastArrivals = snapArrivals;
+					rateLastTick = tickNow;
+					SKSE::log::info("[CAM] pub #{} pos=({:.2f},{:.2f},{:.2f}) move={:.4f} path={:.2f} "
+						"matChanges={} arrivalsPerSec={:.0f} | lock(pub/hold/re/still)={}/{}/{}/{} "
+						"proj00={:.6g} famRej={} frozenRep={} ident/diff={}/{} | {}",
+						snapAccept, px, py, pz, snapAcceptDist, snapPathLen, snapMatChanges,
+						arrPerSec, snapLockPublish, snapLockHold, snapLockRelock, snapLockStill,
+						snapLockProjValid ? snapLockProj00 : 0.0f, snapLockFamilyRej,
+						snapFrozenRepeats, snapIdenticalArrivals, snapDifferentArrivals,
+						snapMatChanges == 0u
+							? "PROBLEM nothing has ever been published with a changed matrix"
+							: "ok");
+				}
+
 			}
 		}
 		snapLastPos[0] = px;
