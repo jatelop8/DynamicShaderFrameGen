@@ -1158,8 +1158,17 @@ namespace FrameGen
 		// Suppress NR whenever frame generation is actually running. Press the
 		// toggle key (0xC7) to turn FG off and NR comes straight back -- no second
 		// switch, the same NeuralRenderingEnabled flag still governs it.
+		// v1.21: the dlssgMode term is gone. With it, nrSuppressed could only ever
+		// be true on the DLSSG path, so on Provider=0 (FSR3) NRAllowWithFrameGen=0
+		// was silently ignored and DLSS5 NR stacked with FSR3 frame generation
+		// regardless -- the 23:38 run's INI asked for no stacking, the log shows
+		// "D3D12 command contexts saturated" plus a full-resolution NR pass on
+		// every real frame, and the complaint was flicker, which is what two
+		// temporal processors writing history for the same frame produce.
+		// On the DLSSG path dlssgMode is already true, so removing the term leaves
+		// this expression identical there.
 		const bool fgGeneratingNow =
-			dlssgMode && fg.settings.frameGeneration && fg.fgActive.load();
+			fg.settings.frameGeneration && fg.fgActive.load();
 		// ---- v1.01: NR may run IN SERIES with frame generation ----
 		// The mutual exclusion above is now a SETTING (NRAllowWithFrameGen,
 		// default 0 = unchanged). Rationale and evidence: see the header of
