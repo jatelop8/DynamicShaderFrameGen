@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DFG v1.17 — 22:22 那局诊断：方向是反的</title>
+<style>
+:root{
+  --bg:#faf9f7; --card:#ffffff; --line:#e3e0da; --tx:#26251f; --tx2:#6b6862; --tx3:#98948c;
+  --red:#a32d2d; --redbg:#fcebeb; --grn:#3b6d11; --grnbg:#eaf3de; --amb:#854f0b; --ambbg:#faeeda;
+  --blu:#185fa5; --blubg:#e6f1fb;
+}
+@media (prefers-color-scheme: dark){
+:root{
+  --bg:#1c1b19; --card:#252420; --line:#3a3833; --tx:#f0ede6; --tx2:#b4b0a8; --tx3:#807c74;
+  --red:#f09595; --redbg:#3a1c1c; --grn:#97c459; --grnbg:#22301a; --amb:#ef9f27; --ambbg:#3a2c14;
+  --blu:#85b7eb; --blubg:#16283a;
+}
+}
+*{box-sizing:border-box}
+body{margin:0;padding:28px 20px 60px;background:var(--bg);color:var(--tx);
+  font:15px/1.7 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:900px;margin:0 auto}
+h1{font-size:24px;font-weight:500;margin:0 0 6px}
+.sub{color:var(--tx2);font-size:13px;margin:0 0 26px}
+h2{font-size:17px;font-weight:500;margin:34px 0 12px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+h3{font-size:14px;font-weight:500;margin:20px 0 8px;color:var(--tx2)}
+p{margin:10px 0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:14px 0}
+table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13.5px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--tx2);font-weight:500;font-size:12.5px}
+code{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;
+  background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px 14px;
+  overflow-x:auto;font-family:ui-monospace,Consolas,monospace;font-size:12.5px;line-height:1.6;margin:12px 0}
+.tag{display:inline-block;font-size:12px;padding:2px 9px;border-radius:20px;margin-right:6px;
+  border:1px solid var(--line)}
+.g{background:var(--grnbg);color:var(--grn);border-color:var(--grn)}
+.r{background:var(--redbg);color:var(--red);border-color:var(--red)}
+.a{background:var(--ambbg);color:var(--amb);border-color:var(--amb)}
+.b{background:var(--blubg);color:var(--blu);border-color:var(--blu)}
+ul{margin:10px 0;padding-left:22px}
+li{margin:6px 0}
+.k{color:var(--tx2);font-size:13px}
+.big{font-size:15.5px;font-weight:500;margin:0}
+.hl{border-left:3px solid var(--amb);padding-left:14px;margin:14px 0;background:var(--ambbg);
+  border-radius:0 8px 8px 0;padding:12px 16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>22:22 那局：方向是反的</h1>
+<p class="sub">构建 <code>Sep 19 2026 22:15:25</code>（v1.16）· 跑 49 秒（载入 20.6 s / 菜单 15 s / <b>世界 2.2 s</b>）
+· 无崩溃、无挂起，日志到最后一刻仍在正常渲染<br>
+本轮改了 <b>v1.17</b>：真值从「选源依据」升级为「唯一权威」。DLL
+<code>91493b4d…</code>（1,353,728 B，build == 部署）</p>
+
+<div class="hl">
+<p class="big">一句话：<b>两天来锁住的一直是主菜单相机，不是玩家相机。</b></p>
+<p>真值判据说得很干脆——<code>RE::PlayerCamera</code> 的眼睛在 <code>(-243.049,-415.315,118.624)</code>，
+而那个到达者写着 <code>(-243.0493,-415.3115,118.5582)</code>：
+<b>相距 0.00 单位，每秒 397 次</b>。那个族的 <code>proj00</code> 是 <code>0.8391</code>。</p>
+<p>而 <code>0.149184</code>——v1.00 到 v1.15 一直被我当成「世界相机」的那个——离玩家相机
+<b>604 到 836 单位</b>。它是主菜单的相机。</p>
+</div>
+
+<h2>一、这局还活着的三件事（都有日志原文）</h2>
+<table>
+<tr><th style="width:26%">项</th><th>实测</th><th style="width:30%">含义</th></tr>
+<tr><td>4x 在产出</td><td><code>real=25.9 | DLSSG | hwMax=6 ask=4 accepted=4</code><br>
+<code>presented all=0/630/0/0/54/…</code>（桶 4 有 54 帧）</td><td>多倍帧生成通路是活的</td></tr>
+<tr><td>限速还在</td><td><code>Reflex cap check (v1.12): 159 flip fps on a 160Hz panel</code></td>
+<td>25.9 × 4 ≈ 103 fps 呈现</td></tr>
+<tr><td>DLSS5 在跑</td><td><code>DLSSNR: color=true engineDepthSRV=true engineMvec=true inputs=true frames=719 status=initialized</code></td>
+<td>输入齐、初始化完成</td></tr>
+</table>
+
+<h2>二、决定性发现：真值把方向判反了</h2>
+<pre>[CAM] PC v1.16: read=392 match=0   best=835.51 at proj00=0.149184 eye=(0.00,0.00,128.00)   ← 菜单期
+[CAM] PC v1.16: read=366 match=154 best=0.00   at proj00=0.8391   eye=(-243.05,-415.31,118.56)  ← 世界
+[CAM] #5842 PC TAKEOVER (v1.16): this arrival is 0.00 units from the live player camera
+      pos=(-243.049,-415.315,118.624) pc=(-243.049,-415.315,118.624) proj00=0.8391</pre>
+<table>
+<tr><th>读数</th><th>我此前的解释</th><th>真值判决</th></tr>
+<tr><td><code>0.8391</code> @ <code>(-243.0493,-415.3115,118.5582)</code></td>
+<td class="k">「场景固定的 3D 菜单机位」</td>
+<td class="g"><b>玩家相机</b>（距真值 0.00，397 次/秒）</td></tr>
+<tr><td><code>0.149184</code> @ <code>(-50, 600→848, 65→69)</code></td>
+<td class="k">「世界相机，跟着玩家动」</td>
+<td class="r">主菜单相机（离玩家 604–836 单位）</td></tr>
+<tr><td><code>0.8391</code> 的「不动」</td>
+<td class="k">「一个停着的写者」</td>
+<td class="a"><b>玩家站着不动</b></td></tr>
+</table>
+<p class="k"><code>FrameGen.h</code> 里 v1.10 那条注释写着「真正的相机是 <code>proj00=1</code>」——
+那也是推断出来的，从没测过。已在该处插入 <code>CORRECTION (v1.17, 22:22 run)</code> 标注，保留作记录。</p>
+
+<h2>三、我自己的两个错，都是日志抓出来的</h2>
+<div class="card">
+<h3>错 1 · v1.16b 的分支是死代码（<code>else if</code> 挂错了父节点）</h3>
+<pre>if (pc &amp;&amp; pc-&gt;cameraRoot) { …匹配/接管… }
+else if (snapPcEverMatched &amp;&amp; snapLockHave &amp;&amp; &lt;异族&gt;) { ++snapPcReject; return false; }</pre>
+<p>那个 <code>else</code> 属于 <b>「没有 PlayerCamera」</b> 那条臂 ⇒ 只有参考不可用时才会执行，
+而参考一直是可用的。整局 <code>snapPcReject = 0</code>。<b>它看起来在保护什么，实际等于不存在。</b>
+v1.17 已删除。</p>
+</div>
+<div class="card">
+<h3>错 2 · <code>proj00=1</code> 那个桶里装了两个写者</h3>
+<pre>FAM[1] proj00=1  span=(974.79,901.49,86.68)  stepSum=542149.75  last 四秒只挪 1.9</pre>
+<p><code>proj00 == 1.0</code> 对 1e-4 的容差是<b>精确相等</b>，所以所有单位投影并桶。桶里至少两个相距约 1000 单位的
+写者互相跳 ⇒ 它能在没有相机运动的情况下满足 v1.11 的 <code>kCamForeignMoveTol(200)</code>，
+而 <b>v1.00g 的同族 step-break 会因为这个跳变把锚交给它</b>。记为 <b>L32</b>。</p>
+</div>
+
+<h2>四、这局为什么还是不能判定冻结</h2>
+<pre>[CAM] acc #6093 pos=(-243.05,-415.31,118.56) move=0.0000 path=71.82
+       devVP=15.0006 detVP=-2.52504 magVP=15.0006 consecJmp=0
+心跳 frozen=30/34  clipDev=0.000061  clipW=1.000000  det3=1.000000  ⇒  clipToPrevClip = I</pre>
+<p>这一次 <code>I</code> <b>是正确的</b>：相机真值 <code>eye</code> 在 22:23:10 → 14.5 的五次采样里字节不变。
+相机没动，<code>clipToPrevClip</code> 就该是单位阵。</p>
+<p>场上唯一的「动」是 <code>FAM[2] span=(0.0005,0.0036,0.0712)</code>——z 方向 7 厘米，即<b>待机呼吸</b>。</p>
+<div class="hl">
+<p class="big">⇒ 世界段只有 2.2 秒 / 34 帧，玩家站着没动。<b>「玩家没动」与「锁在停着的写者上」在日志里是同一个形状。</b></p>
+</div>
+
+<h2>五、v1.17 改了什么（唯一行为改动：一道守卫）</h2>
+<p>还有两条路会把锚交给非相机写者：<b>空槽获取</b>（22:02 局就是它拿到 <code>0.149184</code> 的）
+和 <b>v1.00g 的同族 step-break</b>。一道守卫同时盖住三条路：</p>
+<pre>bool pcIsThis = false;                      // 这一个到达者就是活相机
+const bool pcKnown = snapPcRefSeen &gt; 0u;    // 参考在最近 kPcRefHoldSec 秒内匹配过
+
+// 真值块内，命中时：snapPcRefSeen = kPcRefHoldSec;  pcIsThis = true;
+// accept 路径最前：
+if (pcKnown &amp;&amp; !pcIsThis) { ++snapPcReject; return false; }</pre>
+<p><code>snapPcRefSeen</code> 是<b>秒级闩锁</b>（命中置 2，每秒减 1）⇒ 参考一旦不再匹配，
+2 秒内退回 v1.17 之前的行为 —— <b>这道门不可能把锁锁死</b>。同时新增运动见证：</p>
+<pre>eyeD=…  PC_STILL  - the live camera did not move: an unchanged picture is CORRECT here
+eyeD=…  PC_MOVING - the live camera is walking</pre>
+
+<h2>六、下一局判据表（全部可判定）</h2>
+<table>
+<tr><th style="width:38%">看到</th><th style="width:26%">结论</th><th>下一步</th></tr>
+<tr><td><code>PC_MOVING</code> + <code>eyeD</code> 明显 &gt; 0，<code>path</code>/<code>matChanges</code> 同步增长</td>
+<td class="g">源与装配都对，<b>冻结已修</b></td><td>进下一步：DLSS5 上屏验证、20/30 系</td></tr>
+<tr><td><code>PC_MOVING</code> 但 <code>path</code> 仍冻（<code>move=0.0000</code>）</td>
+<td class="a">源对了、<b>装配</b>错了</td>
+<td>换官方 <code>recalculateCameraMatrices()</code> / <code>calcCameraToPrevCamera()</code>（原点平移消 fp32 精度）</td></tr>
+<tr><td><code>PC_STILL</code>（<code>eyeD≈0</code>）</td><td class="r"><b>这一局作废</b>，不是 bug</td>
+<td>重跑，必须走动</td></tr>
+<tr><td><code>rej</code> 暴涨且 <code>ref</code> 长期为 0</td><td class="k">参考不可用 ⇒ 退回旧行为</td>
+<td>看 <code>best=</code> 是否恒几百 ⇒ 相机不在 CB 里，改用 PlayerCamera 位姿自建</td></tr>
+</table>
+<div class="hl">
+<p class="big">前置条件：进世界后停留 ≥15 秒，并且真的走路。</p>
+<p class="k">22:22 只有 2.2 秒且没动 —— 不满足这个条件的话，下一局还是什么也证明不了。
+另外：<b>「进游戏动不了」和「画面冻结」是两件事</b>。输入钩子只在 ImGui 菜单（END 键）可见时吞输入，
+世界段 <code>menuBlock=0 frames=0</code> ⇒ 不是它。</p>
+</div>
+
+<h2>七、诚实边界</h2>
+<table>
+<tr><th style="width:32%">项</th><th>状态</th></tr>
+<tr><td>冻结是否修好</td><td class="r"><b>未证</b> —— 相机没动，无法判定</td></tr>
+<tr><td>DLSS5 输出上屏</td><td class="a"><code>status=initialized frames=719</code> 只证在跑，<b>上屏未证</b></td></tr>
+<tr><td>RTX 20/30 支持</td><td class="r">一行未写（<code>grep -i xess</code> = 0）</td></tr>
+<tr><td><code>CameraProj[0][0]</code> ↔ <code>CameraProjUnjittered[0][0]</code> 互为倒数</td>
+<td class="k">仍未解释（<code>1.1918</code>↔<code>0.8391</code>、<code>6.70312</code>↔<code>0.149184</code>）。
+抖动只改千分之几，不可能产生倒数 ⇒ 先做成探针再改。</td></tr>
+</table>
+
+<p class="sub" style="margin-top:28px">回退 v1.16：<code>src/backup-v1.17-20260919-222922/</code>（DLL <code>b21bd0f3…</code>）·
+纯 2x 可玩：INI <code>Provider=0</code> + <code>MFGMaxFramesOverride=0</code> ·
+本局日志：<code>docs/runlogs/2026-09-19-2222-v1.16-pc-takeover-works-world-2s-static.log</code> ·
+账本第 29 章</p>
+
+</div>
+</body>
+</html>
