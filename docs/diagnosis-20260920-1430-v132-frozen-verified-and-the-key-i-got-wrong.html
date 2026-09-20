@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DFG 诊断 · 14:17 局（v1.32 第二跑）：FROZEN 首次触发，以及我改错了键</title>
+<style>
+  :root{
+    --bg:#14161a; --panel:#1b1e24; --panel2:#20242c; --line:#2c313b;
+    --fg:#e6e9ef; --dim:#9aa4b4; --acc:#7fc4a3; --warn:#e8b45c; --bad:#e8756b;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Courier New",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:15px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1180px;margin:0 auto;padding:28px 22px 64px}
+  h1{font-size:25px;line-height:1.35;margin:0 0 6px}
+  h1 .sub{display:block;font-size:14px;color:var(--dim);font-weight:400;margin-top:6px}
+  h2{font-size:18px;margin:34px 0 10px;padding-left:10px;border-left:3px solid var(--acc)}
+  h3{font-size:15px;margin:20px 0 8px;color:var(--dim);font-weight:600}
+  p{margin:8px 0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:14px 0}
+  .card.hi{border-color:#3a6b56}
+  .card.me{border-color:#6b5238}
+  .card.bad{border-color:#6b3a3a}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:14px 0}
+  .kpi{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:12px 14px}
+  .kpi .v{font:600 20px/1.25 var(--mono);color:var(--acc)}
+  .kpi .v.warn{color:var(--warn)} .kpi .v.bad{color:var(--bad)}
+  .kpi .k{font-size:12.5px;color:var(--dim);margin-top:5px}
+  code,pre{font-family:var(--mono)}
+  pre{background:#0f1115;border:1px solid var(--line);border-radius:8px;
+      padding:12px 14px;overflow:auto;font-size:13px;line-height:1.5;margin:10px 0}
+  code{background:#0f1115;border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:13px}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:var(--dim);font-weight:600;font-size:13px}
+  td.num{font-family:var(--mono);text-align:right;white-space:nowrap}
+  .ok{color:var(--acc)} .no{color:var(--bad)} .w{color:var(--warn)}
+  ul{margin:8px 0 8px 18px;padding:0} li{margin:5px 0}
+  .tag{display:inline-block;font:600 11.5px/1 var(--mono);padding:3px 7px;border-radius:5px;
+       border:1px solid var(--line);background:var(--panel2);color:var(--dim);margin-right:6px}
+  .tag.ok{color:var(--acc);border-color:#3a6b56} .tag.no{color:var(--bad);border-color:#6b3a3a}
+  .tag.w{color:var(--warn);border-color:#6b5238}
+  footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);color:var(--dim);font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>14:17 局 · v1.32 第二跑
+  <span class="sub">FROZEN 判据首次触发并双向验证 &nbsp;·&nbsp; 以及我上一轮当作「2x 对照」的那次改动是空操作</span>
+</h1>
+
+<div class="card hi">
+  <p><b>一句话</b>：这一局的价值有一半来自它「不是对照」——你要的 4x 一直精确在跑，
+  <code>FROZEN</code> 第一次真的触发了（五次）并受过双向检验，
+  世界区在 8 秒里只是低振幅抖动、没有推进；同时我上一轮把
+  <code>MFGMaxFramesOverride 3→0</code> 说成「2x 对照」是<b>错的</b>，
+  它是空操作 —— 你为它白跑了一趟。</p>
+</div>
+
+<h2>① `FROZEN` 第一次触发，五次</h2>
+<pre>[SCREEN] #32 band=F8832F973D7AE6C3 lum=101.34 dLum=+76.97 bandSame=0 oursSame=0 ring=8/8
+[SCREEN] #33 band=F8832F973D7AE6C3 lum=101.34 dLum=-0.00 bandSame=1 oursSame=1
+[SCREEN] #34 band=F8832F973D7AE6C3 lum=101.35 dLum=+0.00 bandSame=2 oursSame=0
+[SCREEN] #35 band=F8832F973D7AE6C3 lum=101.35 dLum=+0.00 bandSame=3 oursSame=0
+[SCREEN] FROZEN for 3 captures: the world band (overlay excluded) is byte-identical on
+         every one of them (hash=F8832F973D7AE6C3 ...) while our own colorOut changed
+         on all of them and our Present was entered 683 times.</pre>
+<p>本局五次：<code>#33–#35</code>、<code>#37–#39</code>、<code>#40</code>（第 4 张）、
+<code>#43–#45</code>、<code>#46</code>（第 4 张）。</p>
+<p><b>这是第五个「按构造不可能触发的仪器」被修好了</b>，而且首跑即触发。
+v1.31 的 <code>same=</code> 数的是<b>整图</b>哈希，而我们自己的覆盖层每张都在变
+⇒ 71 个采样全是 0，判据永远到不了门槛。v1.32 改成只哈希<b>世界区</b>
+（<code>kScrBandY0=57</code> / <code>kScrBandY1=316</code>），字段改名
+<code>bandSame=</code>。</p>
+
+<h2>② 判据的双向验证 —— 这次不是「我说它成立」</h2>
+<p>把它拿到 BMP 上逐行分区，两组预测必须<b>同时</b>成立才算数：</p>
+<table>
+<thead><tr><th>配对</th><th><code>band=</code></th><th>band 内差异字节</th><th>band 外差异字节</th></tr></thead>
+<tbody>
+<tr><td>#34 vs #35</td><td>相同</td><td class="num ok">0</td><td class="num">0</td></tr>
+<tr><td>#33 vs #34</td><td>相同</td><td class="num ok">0</td><td class="num">183</td></tr>
+<tr><td>#37 vs #38</td><td>相同</td><td class="num ok">0</td><td class="num">66</td></tr>
+<tr><td>#43 vs #44</td><td>相同</td><td class="num ok">0</td><td class="num">60</td></tr>
+<tr><td>#45 vs #46</td><td>相同</td><td class="num ok">0</td><td class="num">119</td></tr>
+<tr><td>#35 vs #39</td><td class="no">不同</td><td class="num">81177</td><td class="num">23915</td></tr>
+<tr><td>#39 vs #41</td><td class="no">不同</td><td class="num">92846</td><td class="num">27385</td></tr>
+</tbody></table>
+<p><b>6/6 band 内为 0，3/3 band 不同时 band 内数万字节不同</b> —— 两个方向都成立。
+证据图：<code>docs/runlogs/2026-09-20-1417-v132-frozen-verified/PROOF_band_verification.png</code></p>
+<p><span class="tag w">补充</span>band 不同时的差异<b>幅度很小</b>（放大 3 倍仍暗），
+而三个样本并排看是同一个玩家背影 / 同一堆火 / 同一个 NPC，位置姿态都没动。
+准确说法是：<b>世界区在 2–3 个「几乎一样的画面」之间低振幅抖动，而不是推进。</b>
+与 14:03 局（世界区 14.8 s <b>逐字节完全相同</b>）不矛盾，差别只是量级。</p>
+
+<h2>③ 我改错了键 —— 这次改动是空操作</h2>
+<div class="card me">
+<p>14:03 局之后我把 INI 的 <code>MFGMaxFramesOverride</code> 从 <code>3</code> 改成 <code>0</code>，
+并说「这就是 2x 对照」。依据是 INI 第 95 行的注释
+「<i>The Streamline runtime reports numFramesToGenerateMax=1 on Ada</i>」。</p>
+<p><b>那行注释是过期的。</b>本局日志第 30 行写的是：</p>
+<pre>[14:17:42.163] [Streamline] MFG override disabled (INI MFGMaxFramesOverride=0) - hardware max 6x</pre>
+<p>硬件上报的是 <b>6x</b>，不是 1。于是 <code>ask=4</code> 原样通过：</p>
+<pre>FPS probe: real=33.4 | DLSSG | hwMax=6 ask=4 accepted=4 | cfgProvider=1
+4x SNAPSHOT ... (live4x: +28 flips for +7 Present entries over the last 200 ms
+DLSS-G actual presentation count: 4x (maximum generated frames=5, status=0)
+perf.csv 末行   198,39786.53,30.47,4,Ada</pre>
+<p><b>⇒ 本局仍是 4x。<code>0</code> 和 <code>3</code> 在这台机器上是同一个结果。</b>
+真正决定倍数的键是 <code>DLSSGFramesToGenerate</code>（<code>1=2x, 2=3x, 3=4x</code>）；
+<code>MFGMaxFramesOverride</code> 只改上报<b>上限</b>，上限不低于请求时改了也没有效果。</p>
+<p><b>为什么这个错误值得记</b>：它不是读错日志，也不是写错代码 —— 是我
+<b>读了一段注释就当成了事实</b>，而且没做那个唯一能证伪它的动作：
+<b>在本局日志里找这个开关实际生效的那一行</b>。14:03 局的日志里本来就有
+<code>MFG override ... hardware max Nx</code>，我没去读。⇒ 记为 <b>L72</b>。</p>
+</div>
+
+<h3>改对了的键（已生效，等你跑）</h3>
+<div class="grid">
+  <div class="kpi"><div class="v">DLSSGFramesToGenerate=1</div><div class="k">= 2x（INI 第 88–92 行的语义表）</div></div>
+  <div class="kpi"><div class="v">f5c7f5d9707a7dcc4eee52b086732d83</div><div class="k">新 md5（改前 c44d9709…）</div></div>
+  <div class="kpi"><div class="v">改了几行 = 1</div><div class="k">纯 CRLF 保持，20658 B 不变</div></div>
+  <div class="kpi"><div class="v">bak-control-2x-real-20260920-142041</div><div class="k">备份与改前逐字节相同</div></div>
+</div>
+<p><b>回退 = 该行改回 3。</b><span class="tag w">限度</span><code>ask=2 accepted=2</code> 是<b>推断</b>
+（INI 语义表 + 实测 <code>3 ⇒ ask=4</code> 的线性关系），本身<b>未被实测</b> ⇒ 首跑按校准读。</p>
+<p class="w">★ 另注：构建的 POST_BUILD 会把这个 INI 覆盖回 mod 目录（<code>copy_if_different</code>）
+⇒ 本次改动只在<b>不重新构建</b>时有效。</p>
+
+<h2>④ 我方这一侧：仍是精确的 4.00</h2>
+<div class="table-scroll">
+<table>
+<thead><tr><th>来源</th><th>读数</th></tr></thead>
+<tbody>
+<tr><td>我方 <code>FPS probe</code></td><td><code>hwMax=6 ask=4 accepted=4 | cfgProvider=1</code></td></tr>
+<tr><td>我方 <code>4x SNAPSHOT</code></td><td><code>live4x: +28 flips for +7 Present entries over the last 200 ms</code> = 4.00</td></tr>
+<tr><td>Transfusion 驱动侧</td><td><code>4x (maximum generated frames=5, status=0)</code>、<code>[PERF] 4x | Kernel: Ada | FPS: 33.3</code></td></tr>
+<tr><td>perf.csv 末行</td><td><code>198,39786.53,30.47,4,Ada</code></td></tr>
+</tbody></table>
+</div>
+
+<h2>⑤ 时间线与结束方式（与上一局同构）</h2>
+<pre>14:17:32.182   启动
+14:18:01.852   MENU EDGE open=1 serial=2
+14:18:15.994   MENU EDGE open=0 serial=639        &lt;-- 进世界
+               同 1 ms: [MFG] probe edge ... step advertised=4x accepted=4x latched=1
+14:18:16.226   Transfusion 首次报 4x
+14:18:19.307   #35 FROZEN (bandSame=3)
+14:18:23.399   [INPUT] *** ALT+F4 (quit) ***  [12 73 A4] = 2 个物理键, foreground: 1
+14:18:23.459   日志停
+
+世界段 = 7.405 秒          （上一局 15.456 s；仍短于 8 秒）</pre>
+<p>五来源崩溃复核全为零：WER <code>AppCrash</code> 最新 <b>9/18 19:16</b>；
+Crash Logger <b>9/18 19:34</b>；<code>CrashDumps\*.dmp</code> <b>9/18 19:16</b>；
+<code>nvlddmkm</code> TDR 无新记录；Application 1000/1002 无输出。
+<b>⇒ 与前两局相同：被终止，不是崩的，不是 TDR。</b></p>
+
+<h2>⑥ 两块仪器的矛盾重现（L68）</h2>
+<table>
+<thead><tr><th>仪器</th><th>它测什么</th><th>本局读数</th></tr></thead>
+<tbody>
+<tr><td><code>[PIXEL]</code></td><td><code>colorOutWrapped</code> 中心 64×64，<b>全分辨率</b></td>
+    <td class="ok">47/47 全在变（<code>chg=1</code>，hash 每次都不同）</td></tr>
+<tr><td><code>[SCREEN] band=</code></td><td>DWM 合成结果，<b>六倍下采样</b>到 640×360 后的世界区</td>
+    <td class="no">只在 3 个值之间循环</td></tr>
+</tbody></table>
+<p>与 14:03 局同构。L68 的处置仍然适用：先确认两者是不是同一个对象、同一个分辨率 —— <b>不是</b>。
+<b>故障被夹在这两者之间，这一点现在是两局一致的。</b></p>
+
+<h2>⑦ 未证（不假装）</h2>
+<ul>
+<li><b>「世界为什么冻」仍未证。</b>已排除的只是「我们这一侧不健康」。</li>
+<li><b>2x 对照本身仍未跑</b> —— 它是本局之后才改好的（见 ③）。</li>
+<li><b><code>band=</code> 从未在「画面确实在动」的状态下被校准过</b>（L69）：
+它至今只见过载入/菜单的巨变和世界段的冻结，没有一次是「世界在动」。</li>
+<li>底部 316–359 行（12%）不在 band 内 ⇒ 若冻结的差异只出现在屏幕下部，<code>band=</code> 看不到。<b>限度照写。</b></li>
+<li>本局多出来的那点低振幅抖动来源未证（候选：DLSS-G 插值每次略有不同 / 捕获时序抖动）。</li>
+<li><code>[MFG] debug CHECK</code> 本局 <b>0 行</b>（与 14:03 一致）；13:26 局那条
+<code>dlssgOk=0 blocked=2393</code> 不是常驻，它是否会在下一帧恢复<b>仍未读</b>。</li>
+</ul>
+
+<h2>⑧ 下一局请这样跑（把范围砍一半）</h2>
+<div class="card hi">
+<ol>
+<li>进世界后<b>站着别动数满 15 秒</b> —— 答「<b>2x 画面活不活</b>」。</li>
+<li><b>再走两步 / 转一下鼠标 10 秒</b> —— 答「<code>band=</code> 这台仪器认不认得动」（L69 的校准）。</li>
+<li>然后退。<b>看到「卡住」也别立刻 Alt+F4，等够时间。</b></li>
+</ol>
+<p>判据：<b>2x 画面活了 ⇒ 冻结在 4x / Transfusion 内核；2x 仍死 ⇒ 冻结在 DLSSG 路径本身</b>
+（下一步查 D3D11↔D3D12 定序与 <code>colorOutWrapped</code>）。</p>
+<p class="w">世界段短于 8 秒等于又白跑 —— 本局 7.405 s、上一局 15.456 s，再往前八局是 2.0–6.1 s。</p>
+</div>
+
+<footer>
+账本第 47 章（含 47.7）· <code>MFG_MASTER_NOTES.md</code> 394,988 B 纯 LF<br>
+证据目录 <code>docs/runlogs/2026-09-20-1417-v132-frozen-verified/</code><br>
+归档六件套 <code>docs/runlogs/2026-09-20-1417-v132-the-control-that-was-not.*</code><br>
+判据与回退路径已写进工作记忆与 <code>framegen-diagnosis</code> 技能。
+</footer>
+
+</div>
+</body>
+</html>
