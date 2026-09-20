@@ -6293,3 +6293,205 @@ crash report. Every key down right now: [12 73 A4] (3 vk, 2 physical). Our windo
 - **2x 对照局（`MFGMaxFramesOverride=0`）** 仍未跑；**Transfusion 隔离实验**仍未跑。
 - **谁按的 ALT+F4** 仍未证。
 - v1.32 **一局都没跑** ⇒ `band=`/`bandSame=` 首跑按校准读（L53）。
+
+# 第 46 章 · 14:03 局（v1.32 首跑）：世界在光天化日之下没动，而我们的 4x 一直在走
+
+> 这是本项目**第一次**用两块互相独立的仪器同时量到「我们这一侧每一帧都在推进，玩家看到的那块画面 14.8 秒里一个字节没变」。
+> v1.32 的两个新读数（`band=`、可直接打开的 BMP）在这一局全部第一次出现，并且**两个缺陷都被证实修好了**。
+
+## 46.1 这一局是什么
+
+| | |
+|---|---|
+| 版本 | **v1.32**（DLL `92789663936404e3f1b54e301b3064a6`，1,394,688 B，build == MO2 部署） |
+| 启动 | `14:03:04.610` |
+| 进菜单 | `14:03:36.442`（`MENU EDGE open=1`） |
+| **进世界** | **`14:03:58.455`**（`MENU EDGE open=0 serial=932`） |
+| **结束** | **`14:04:13.911` ALT+F4（前台，2 个物理键 `[12 73 A4]`）** |
+| **世界段** | **15.456 s —— 近十局里最长的一局**（此前 2.0/2.1/2.5/3.0/3.2/4.1/5.7/6.1/2.36） |
+| 屏幕采样 | 80 张，`#1`–`#80`，**`bmp=ok` 80/80** |
+| 崩溃 | **无**（ALT+F4 是最后一行；五来源零记录） |
+
+## 46.2 v1.32 的两个修复，在真实数据上验证通过
+
+**① BMP 头（v1.31 的 `biSize` 从来没写）**：抽样 12 张（#45/#70–#80）全部被 PIL **直接打开为 640×360 RGB**。
+对照：v1.31 写的旧布局被 PIL 拒绝。⇒ 修好，且是真数据上验证的。
+
+**② `band=` 的世界区哈希**：我用 Python 独立重算（FNV-1a over BMP 第 57–315 行）与插件读数逐样本对插：
+
+| 插件 `band=` | 我手算 | 样本 |
+|---|---|---|
+| `68A9790A00777FA5` | `F31CE3A1C308AF93` | #45 |
+| `533A2F28880801B2` | `C4499BE3A746FE36` | #67 |
+| `807C2959A1C4FC8B` | `43CCE8831C71B9D1` | #68 #69 #73 |
+| `7BB57A2E3F385015` | `53E71374A20F16B5` | #70 #71 #74 #75 #78 #79 #80 |
+| `43C2C790FEBB6720` | `CEF2F34CC92EB966` | #72 |
+| `8F0101B3A63B3CD7` | `AC724EC6E2CF62E5` | #76 #77 |
+
+**绝对值不同（插件哈希 BGRA 4 字节/像素，我哈希 BGR 3 字节），但分组 6/6 完全一一对应。**
+⇒ `band=` 可信，且**不用信我们的代码也能从文件复现**。
+
+★ **`kScrBandY0 = 360*16/100 = 57`、`kScrBandY1 = 360*88/100 = 316`**（`DX12SwapChain.cpp:1058-1059`），
+DIB 是 BGRA top-down；BMP 与哈希来自**同一次捕获**（`WriteScreenBmp(s_scrBits, ...)` 紧跟哈希之后）。
+
+## 46.3 世界段：40 个采样、6 张不同画面、3 张占绝大多数
+
+进世界后（`lum≈101.7`）40 个采样，跨度 **14.80 s**（379 ms/采样），`frames` 从 942 涨到 1449：
+
+| band 值 | 张数 |
+|---|---|
+| `7BB57A2E3F385015` | 16 |
+| `807C2959A1C4FC8B` | 11 |
+| `8F0101B3A63B3CD7` | 10 |
+| `68A9790A00777FA5` / `533A2F28880801B2` / `43C2C790FEBB6720` | 各 1 |
+
+换图间隔全部落在 **244 / 448 / 469 ms** 的量化格上（采样节奏所致），换图之间 `bandSame` 到过 **2**。
+
+## 46.4 ★ 决定性的那张对比：#41 与 #80 相隔 14.8 秒
+
+| | |
+|---|---|
+| 整图不同像素 | **572 / 230400 = 0.248%** |
+| 其中 >16 级 | 283（0.12%） |
+| **这 572 个像素的行分布** | **只在第 0–11 行**（`rows {0:5, 1:22, 2:27, 3:27, 4:24, 5:79, 6:78, 7:78, 8:79, 9:79, 10:69, 11:5}`） |
+| 列分布 | 第 1–63 列（124 px）+ 第 512–609 列（448 px） |
+
+⇒ **世界区（第 13–359 行）在第 0 与第 14.80 秒之间逐字节完全相同。**
+唯一在动的是两块**文字**：左上角的游戏载入通告，和右上角一个**第三方 OSD**（`FPS 39 | CPU 61% | GPU 10 | 延迟 …ms`）。
+
+**我做过并否定的两个替代解释**：
+- **不是整体位移**：把 #80 与 #77 做 5×5 整数位移补偿，`(0,0)` 残差最优（mean 3.333 / 2166 px>16），
+  任一非零位移都更差（mean 8.5–19.7）。⇒ 不是缩放/相位抖动。
+- **不是撕裂**：差异是弥散小振幅（每行 >16 的像素只有 10–35 个，共 315 行），没有水平接缝。
+
+## 46.5 ★★ `[SCREEN] ours=` 就是 `[PIXEL] hash=` —— 我在 v1.31 把同一个量当成了两个
+
+同一时刻的两个读数：
+
+```
+[SCREEN] #59 band=… ours=329B6FF11315AAF7        (watchdog, 14:04:06.7)
+[PIXEL]  #59 hash=329B6FF11315AAF7 chg=1 …       (main log,  14:04:06.7)
+```
+
+⇒ `ours=` **不是覆盖层哈希**。它是 `g_colorOutHash`（`DX12SwapChain.cpp:621` 注释：
+"the hash of the image we hand to DLSS-G, published by PixelProbeTick"），
+而 `PixelProbeTick()`（`2155`）采的是 **`colorOutWrapped` 的中心 64×64**
+（`2191-2197`，注释明写「With DLSS-G on, Streamline presents colorOutWrapped, not the engine backbuffer」）。
+
+**v1.31 的文档把 `ours=` 写成「我们自己的 colorOut」并解释成覆盖层——错。正确语义 = 呈现给玩家的那张纹理的中心块。**
+本局它 `chg=1` **80/80**（哈希每 500 ms 都不同），`changed` 从 28 一路加到 41。
+
+**⇒ 两个仪器对同一件事给出了相反的答案**：
+- `[PIXEL]`（全分辨率、中心 64×64、读的是 `colorOutWrapped`）：**每 500 ms 都在变**
+- `[SCREEN]`（桌面 3840×2160 六倍下采样到 640×360，读的是 DWM 合成出来的屏幕）：**14.8 秒不变**
+
+**这条矛盾本身是本局最有价值的读数**，它把故障夹在「`colorOutWrapped` 的内容」与「屏幕上的像素」之间。
+两个候选：(a) DLSS-G 的输出在几张近乎相同的图之间循环（世界根本没推进）；
+(b) 纹理在变，但合成的屏幕没跟上。
+
+## 46.6 我们这一侧：精确 4.00，一直走到 ALT+F4 前 76 ms
+
+```
+[46330465] 14:04:13.595 frames=1449 lastPr=2979 … focus=1 alive=1 presentAge=4ms
+[46330708] 14:04:13.837 frames=1457 lastPr=3011 … focus=1 alive=1 presentAge=11ms
+```
+242 ms 内 `+8 frames / +32 flips` ⇒ **4.00**。
+
+**三个互不相同的来源同时说 4x**：
+
+| 来源 | 读数 |
+|---|---|
+| 我方 DXGI | `frames 942→1449`（507 次 Present / 14.8 s = **34.3/s**）、`lastPr` 恰 4 倍 |
+| 我方探针 | `[FrameGen] FPS probe: real=34.2 \| DLSSG \| cap~=136.7 (=real*4, COMPUTED not measured) \| hwMax=6 ask=4 accepted=4 \| cfgProvider=1` |
+| Transfusion（驱动侧） | `DLSS-G actual presentation count: 4x (maximum generated frames=5, status=0)`；`[PERF] 4x \| Kernel: Ada \| FPS: 34.5`；perf.csv 末行 `376,53965.62,30.49,4,Ada` |
+| 我方 XRAY | `4x SNAPSHOT … (live4x: +36 flips for +9 Present entries over the last 200 ms slice)`；`panel=132 flips/s` |
+
+**`hwMax=6 ask=4 accepted=4`** —— 请求被接受（对照 9/19 22:54 局：请求根本没发出去）。
+
+## 46.7 «不是崩溃» 与本局一起成立的「游戏是活的」
+
+- **五来源零记录**：WER / Crash Logger / CrashDumps / `nvlddmkm` / Application 1000-1002 —— 本局无一条；结束时是 **ALT+F4（前台）**，日志 1 ms 后停。
+- **第三方模组在最后一秒还在写日志**：`ShadowLimitFix.log` 14:04:13.811/.896、`DynamicSnow.log` 14:04:13.190。
+- **游戏钟以恰好 20× 走**：`hrs 12.34650 → 12.40909`（11.116 s 内涨 0.06259 h = 225.3 游戏秒 ⇒ 20.27×，正是默认 timescale）。
+- `paused=0`、`ld=0`、`fade=0`。
+
+⇒ **主循环活着、钟在走、渲染在出帧（34 fps），但世界内容不推进。** 这两件事必须同时成立才是本局的形状。
+
+## 46.8 `debug CHECK` 本局 **0 次** —— 44.9 的悬案部分落定
+
+本局全日志 `[MFG] debug CHECK` = **0 行**，而主日志有：
+`[FrameGen] DLSSG diag: fgOn=true dlssgOk=true token=0x7ffa981a9d88 fail=0`。
+⇒ 13:26 局那条 `dlssgOk=0 blocked=2393 unblocked=1` **不是常驻的**；本局没有出现。
+
+## 46.9 右上角那个 OSD 不是我们的（顺便纠正一条）
+
+它写的是 `FPS 39 \| CPU 61% \| GPU 10 \| 延迟 …ms`。当前源码里**没有任何一条字符串常量包含 `CPU` 或 `GPU %`**
+（`grep -E '"(FPS\|CPU\|GPU)'` 在 `src/*.cpp` 只命中注释与备份目录）。我们的覆盖层只打
+`"%.0f FPS  [%.0f real x%.0f reported]"`（`ImguiMenu.cpp:217`）。
+⇒ 那块 OSD 是**第三方**（RTSS/NVIDIA 之类，含中文「延迟」标签）。
+
+而且我们的 ImGui 覆盖层**画在 `swapChainBufferWrapped` 上、在 fence 之前**，
+注释原话：「插帧启用时菜单会进 DLSSG 输入」（`DX12SwapChain.cpp:1740-1746`）
+⇒ **它和世界一起冻结是必然的**，与「覆盖层还在动所以画面没死」不能互证。
+
+## 46.10 9/19 那次对照其实早就跑过 —— 就写在 INI 自己的表头里
+
+`DynamicShaderFrameGen.ini` 第 7–11 行（v1.21 时期写下的）：
+
+```
+;   22:54  Provider=1, 4x requested   picture completely fixed, game unplayable
+;   23:22  Provider=1, NR suppressed  same freeze (so NR is not the cause)
+;   23:38  Provider=0 (FSR3)          picture alive, 2x only, flicker
+; => the freeze belongs to the DLSSG path, not to frame generation as such.
+```
+
+并且第 24–27 行已经点出机制候选：
+「dlssg 4x presented **while the image did not change**，D3D12 队列读 `swapChainBufferWrapped`，
+而引擎是从 D3D11 写它的，两者之间没有任何定序 —— **That is a stale-colour-buffer mechanism.**」
+
+⇒ **本局的形状与这段 9/19 的记录完全一致**，而 `InteropFenceWait=1` 已经在生效。
+所以要么这条定序没真的起作用，要么还有第三个机制。
+
+## 46.11 本局的动作：把 4x 与 DLSSG 拆开（四天来第一次做这个 2x 对照）
+
+已知 (a) 冻结属于 DLSSG 路径（9/19）、(b) 4x 的请求确实被接受。
+还缺最后一步：**冻结是「DLSSG 本身」还是「4x（Transfusion 提供的 Ada 内核）」？**
+
+INI 已改（带备份、只改 1 行、CRLF 保持）：
+
+| 键 | 前 | 后 |
+|---|---|---|
+| `Provider` | 1 | **1**（不动） |
+| `DLSSGFramesToGenerate` | 3 | **3**（不动） |
+| **`MFGMaxFramesOverride`** | **3** | **0** |
+
+`0 = off, follow the hardware report exactly`（INI 第 98 行）⇒ Ada 上硬件自报 1 ⇒ **2x，原生 DLSS-G，不需要外部内核**。
+备份：`DynamicShaderFrameGen.ini.bak-control-2x-20260920-141141`（**已验证与改前逐字节相同**）。
+INI md5：`efce89119d840670e519d219749a6476` → `c44d97096ea82b765fac7c10c7ef9068`。
+
+**判据（写在这里，方便下一局照读）**：
+
+| 看到的 | 结论 |
+|---|---|
+| 2x 局画面**活了**（世界区每次采样都变） | 冻结在 **4x / Transfusion 内核**，不在 DLSSG 本身 → 下一步隔离 Transfusion |
+| 2x 局画面**仍死**（世界区仍旧不动） | 冻结在 **DLSSG 路径本身** → 下一步查 D3D11↔D3D12 定序与 `colorOutWrapped` |
+
+## 46.12 本局新增的方法论
+
+- **L68**：**两个仪器对同一现象给出相反读数时，先查它们测的是不是同一个对象、同一个分辨率，再决定信谁。**
+  本局 `[PIXEL]`（全分辨率、中心 64×64、读 `colorOutWrapped`）说「每 500 ms 都在变」，
+  `[SCREEN]`（六倍下采样、读 DWM 合成结果）说「14.8 s 没变」。这不是噪声，是**故障被夹在两者之间**。
+- **L69**：**从未在「已知活着」的配置上校准过的仪器，不能用来宣布「死了」。**
+  `band=` 到今天为止见过的唯一世界状态就是「不动」；**必须**在某一局里亲眼看到它随玩家移动而变，
+  这句话才成立。这就是为什么下一局的协议里加了「走两步」。
+- **L70**：**一次运行可以同时回答两个独立问题**，只要它们在时间上可分离
+  （先站着 15 s 答「2x 会不会冻」，再走 10 s 答「仪器认不认得动」）。
+- **L71**：**同一个量在两处打印时，先确认它们是不是同一个量**。`ours=` 与 `hash=` 同值这件事，
+  v1.31 的文档解释错了整整一轮（把 DLSS-G 输出的中心块当成了自己的覆盖层）。
+
+## 46.13 还没证的（不要假装）
+
+- **「世界为什么不动」仍未证。** 本局只证明：我方 Present 每帧在推进、4x 精确、游戏主循环活着、世界内容不推进。
+- **2x 对照局一次都没跑过**（INI 刚改好，下一局才是它）。
+- **`band=` 从未在画面确实在动的状态被校准过**（L69）。
+- Transfusion 隔离（`DINPUT8.dll` → `DINPUT8.dll.transfusion-off`）一次没跑。

@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DFG 诊断 · 2026-09-20 14:03 局（v1.32 首跑）</title>
+<style>
+  :root{
+    --bg:#12141a; --card:#1b1e27; --card2:#22262f; --line:#2e3440;
+    --fg:#e8ebf2; --dim:#98a1b4; --dim2:#6f7a8d;
+    --red:#ff6b6b; --amber:#ffc266; --green:#4ade80; --blue:#6cb6ff; --violet:#b294ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:15px/1.68 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:1000px;margin:0 auto;padding:34px 22px 70px}
+  h1{font-size:25px;margin:0 0 6px;letter-spacing:.2px}
+  .sub{color:var(--dim);font-size:13.5px;margin-bottom:26px}
+  h2{font-size:17.5px;margin:34px 0 12px;padding-left:11px;border-left:3px solid var(--blue)}
+  h3{font-size:15px;margin:22px 0 8px;color:var(--dim)}
+  p{margin:9px 0}
+  code{background:#0d0f14;border:1px solid var(--line);border-radius:4px;padding:1px 5px;
+       font:12.8px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#cfe3ff}
+  pre{background:#0d0f14;border:1px solid var(--line);border-radius:8px;padding:13px 15px;overflow-x:auto;
+      font:12.8px/1.62 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#cfe3ff;margin:11px 0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:11px;padding:17px 19px;margin:15px 0}
+  .card.hero{border-color:#3d4a63;background:linear-gradient(180deg,#1d2230,#1a1d26)}
+  .k{display:inline-block;min-width:96px;color:var(--dim2);font-size:12.6px}
+  table{width:100%;border-collapse:collapse;margin:11px 0;font-size:13.6px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12.4px;letter-spacing:.3px}
+  tr:last-child td{border-bottom:none}
+  .num{font-variant-numeric:tabular-nums}
+  .tag{display:inline-block;font-size:11.6px;padding:2px 8px;border-radius:999px;
+       border:1px solid var(--line);color:var(--dim);margin-right:6px}
+  .g{color:var(--green)} .r{color:var(--red)} .a{color:var(--amber)} .b{color:var(--blue)} .v{color:var(--violet)}
+  .big{font-size:21px;font-weight:600;letter-spacing:.2px}
+  ul{margin:8px 0 8px 20px;padding:0}
+  li{margin:6px 0}
+  .foot{margin-top:38px;padding-top:16px;border-top:1px solid var(--line);color:var(--dim2);font-size:12.4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>14:03 局 · v1.32 首跑</h1>
+  <div class="sub">2026-09-20 14:03:04 → 14:04:13 · 世界段 <b>15.456 s</b>（近十局最长）· DLL <code>92789663936404e3f1b54e301b3064a6</code> · 无崩溃</div>
+
+  <div class="card hero">
+    <div class="big">世界在光天化日之下没动，而我们的 4x 一直在走。</div>
+    <p style="margin-top:12px;color:var(--dim)">
+      这是本项目第一次用两块<b>互相独立</b>的仪器同时量到：我们这一侧每一帧都在推进（精确 4.00，走到 ALT+F4 前 76 ms），
+      而玩家看到的那块画面在 <b>14.80 秒</b>里<b>逐字节不变</b>。
+    </p>
+  </div>
+
+  <h2>一、决定性读数：#41 与 #80 相隔 14.8 秒</h2>
+  <table>
+    <tr><th>量</th><th>结果</th></tr>
+    <tr><td>整图不同的像素</td><td class="num"><b>572 / 230,400 = 0.248%</b></td></tr>
+    <tr><td>其中差值 &gt;16 级</td><td class="num">283（0.12%）</td></tr>
+    <tr><td><b>这 572 个像素在哪</b></td><td><b class="a">只在第 0–11 行</b>（列 1–63 共 124 px、列 512–609 共 448 px）</td></tr>
+    <tr><td>世界区（第 13–359 行）</td><td class="r"><b>逐字节完全相同</b></td></tr>
+  </table>
+  <p>唯一在动的两块东西都是<b>文字</b>：左上角游戏的载入通告，右上角一个<b>第三方 OSD</b>。画面里有<b>一堆火</b>和一个 NPC —— 14.8 秒里一个像素没动。</p>
+
+  <h3>我做过并否定的两个替代解释</h3>
+  <ul>
+    <li><b>不是位移</b>：5×5 整数位移补偿后 <code>(0,0)</code> 残差最优（mean 3.333）；任一非零位移都更差（8.5–19.7）。</li>
+    <li><b>不是撕裂</b>：差异弥散、小振幅（每行 &gt;16 的像素只有 10–35 个），没有水平接缝。</li>
+  </ul>
+
+  <h2>二、★ 两个仪器给出了相反的答案</h2>
+  <table>
+    <tr><th>仪器</th><th>测什么</th><th>读数</th></tr>
+    <tr>
+      <td><code>[PIXEL]</code></td>
+      <td>全分辨率、<code>colorOutWrapped</code> 的中心 64×64（<b>呈现给玩家的那张</b>）</td>
+      <td class="g"><b>每 500 ms 都在变</b>（<code>chg=1</code> 80/80，哈希每次不同）</td>
+    </tr>
+    <tr>
+      <td><code>[SCREEN] band=</code></td>
+      <td>桌面 3840×2160 六倍下采样到 640×360、DWM 合成出来的屏幕</td>
+      <td class="r"><b>14.8 秒不变</b></td>
+    </tr>
+  </table>
+  <p>这不是噪声，<b>这本身就是最有价值的读数</b>：故障被夹在「<code>colorOutWrapped</code> 的内容」与「屏幕上的像素」之间。
+  两个候选：(a) DLSS-G 的输出在几张近乎相同的图之间循环；(b) 纹理在变，合成的屏幕没跟上。</p>
+
+  <h3>顺手纠正我自己的一个错误（v1.31 的文档写错了）</h3>
+  <p>同一时刻：<code>[SCREEN] ours=329B6FF11315AAF7</code> 与 <code>[PIXEL] hash=329B6FF11315AAF7</code> —— <b>同一个量</b>。
+  <code>ours=</code> 是 <code>g_colorOutHash</code>（<code>DX12SwapChain.cpp:621</code>），采的是 <code>colorOutWrapped</code> 的中心块，
+  <b>不是</b>我们自己的覆盖层哈希。v1.31 把它解释成覆盖层，错了一整轮。</p>
+  <p>而我们的 ImGui 覆盖层<b>画在 <code>swapChainBufferWrapped</code> 上、在 fence 之前</b>，「插帧启用时菜单会进 DLSSG 输入」
+  ⇒ <b>它和世界一起冻结是必然的</b>，不能再用「覆盖层还在动」来证明画面没死。</p>
+
+  <h2>三、我们这一侧：三个来源同时说 4x</h2>
+  <table>
+    <tr><th>来源</th><th>读数</th></tr>
+    <tr><td>我方 DXGI</td><td class="num"><code>frames 942→1449</code>（507 次 Present / 14.8 s = <b>34.3/s</b>）；末两 tick <b>+8 frames / +32 flips / 242 ms = 4.00</b></td></tr>
+    <tr><td>我方探针</td><td><code>FPS probe: real=34.2 | DLSSG | hwMax=6 ask=4 accepted=4 | cfgProvider=1</code></td></tr>
+    <tr><td>Transfusion（驱动侧）</td><td><code>DLSS-G actual presentation count: 4x (maximum generated frames=5, status=0)</code>；<code>[PERF] 4x | Kernel: Ada | FPS: 34.5</code>；perf.csv 末行 <code>376,53965.62,30.49,4,Ada</code></td></tr>
+  </table>
+  <p><code>hwMax=6 ask=4 accepted=4</code> ⇒ 请求被接受（对照 9/19 22:54 局：请求根本没发出去）。</p>
+
+  <h2>四、游戏是活的，世界是死的（两件事必须同时成立）</h2>
+  <ul>
+    <li><b>第三方模组在最后一秒仍在写日志</b>：<code>ShadowLimitFix.log</code> 14:04:13.811/.896、<code>DynamicSnow.log</code> 14:04:13.190。</li>
+    <li><b>游戏钟以恰好 20× 走</b>：<code>hrs 12.34650 → 12.40909</code>（11.116 s 内 225.3 游戏秒 = 20.27×，正是默认 timescale）。</li>
+    <li><code>paused=0</code>、<code>ld=0</code>、<code>fade=0</code>；Transfusion 报渲染 <b>34 fps</b>。</li>
+    <li><b>五来源零崩溃记录</b>；结束时是 <b>ALT+F4（前台，2 个物理键）</b>，日志 1 ms 后停。</li>
+  </ul>
+
+  <h2>五、9/19 那次对照其实早就跑过 —— 就写在 INI 自己的表头里</h2>
+  <pre>;   22:54  Provider=1, 4x requested   picture completely fixed, game unplayable
+;   23:22  Provider=1, NR suppressed  same freeze (so NR is not the cause)
+;   23:38  Provider=0 (FSR3)          picture alive, 2x only, flicker
+; =&gt; the freeze belongs to the DLSSG path, not to frame generation as such.</pre>
+  <p>并且第 24–27 行已经点出机制候选：「dlssg 4x presented <b>while the image did not change</b>，
+  D3D12 队列读 <code>swapChainBufferWrapped</code> 而引擎从 D3D11 写它，两者之间没有定序 —— <b>a stale-colour-buffer mechanism</b>。」
+  而 <code>InteropFenceWait=1</code> 已经在生效。</p>
+
+  <h2>六、这一局的动作：把 4x 与 DLSSG 拆开</h2>
+  <p>已知 (a) 冻结属于 DLSSG 路径；(b) 4x 的请求<b>确实被接受</b>。还缺最后一步：
+  <b>冻结是「DLSSG 本身」还是「4x（Transfusion 的 Ada 内核）」？</b></p>
+  <table>
+    <tr><th>键</th><th>前</th><th>后</th></tr>
+    <tr><td><code>Provider</code></td><td>1</td><td>1（不动）</td></tr>
+    <tr><td><code>DLSSGFramesToGenerate</code></td><td>3</td><td>3（不动）</td></tr>
+    <tr><td><b><code>MFGMaxFramesOverride</code></b></td><td><b>3</b></td><td class="a"><b>0</b></td></tr>
+  </table>
+  <p><code>0 = follow the hardware report exactly</code> ⇒ Ada 上硬件自报 1 ⇒ <b>2x，原生 DLSS-G，不需要外部内核</b>。
+  备份 <code>…ini.bak-control-2x-20260920-141141</code>（已验证与改前逐字节相同）；INI md5 <code>efce8911…</code> → <code>c44d9709…</code>。</p>
+
+  <h3>下一局的判据表（照读）</h3>
+  <table>
+    <tr><th>看到的</th><th>结论</th></tr>
+    <tr><td class="g">2x 局画面<b>活了</b>（世界区每次采样都变）</td><td>冻结在 <b>4x / Transfusion 内核</b>，不在 DLSSG 本身 → 下一步隔离 Transfusion</td></tr>
+    <tr><td class="r">2x 局画面<b>仍死</b>（世界区仍旧不动）</td><td>冻结在 <b>DLSSG 路径本身</b> → 下一步查 D3D11↔D3D12 定序与 <code>colorOutWrapped</code></td></tr>
+    <tr><td class="b">站住不动时死、<b>走动时变</b></td><td><code>band=</code> 仪器<b>通过校准</b>（L69），冻结真实存在</td></tr>
+  </table>
+
+  <h2>七、这一轮学到的方法论</h2>
+  <ul>
+    <li><b>L68</b>：两个仪器对同一现象给出相反读数时，<b>先查它们测的是不是同一个对象、同一个分辨率</b>，再决定信谁。</li>
+    <li><b>L69</b>：<b>从未在「已知活着」的配置上校准过的仪器，不能用来宣布「死了」。</b> <code>band=</code> 到今天为止见过的世界状态只有「不动」。</li>
+    <li><b>L70</b>：一次运行可以同时回答两个独立问题，只要它们在时间上可分离（先站 15 s，再走 10 s）。</li>
+    <li><b>L71</b>：同一个量在两处打印时，先确认它们是不是同一个量。</li>
+  </ul>
+
+  <h2>八、还没证的（不假装）</h2>
+  <ul>
+    <li><b>「世界为什么不动」仍未证。</b> 本局只证明我方在推进、4x 精确、主循环活着、世界内容不推进。</li>
+    <li><b>2x 对照局一次都没跑过</b>（INI 刚改好，下一局才是它）。</li>
+    <li><b><code>band=</code> 从未在画面确实在动的状态被校准过</b>。</li>
+    <li>Transfusion 隔离（<code>DINPUT8.dll</code> → <code>DINPUT8.dll.transfusion-off</code>）一次没跑。</li>
+  </ul>
+
+  <div class="foot">
+    证据：<code>docs/runlogs/2026-09-20-1403-v132-world-frozen-in-the-broad-daylight.*</code>（六件套）·
+    证据图 <code>SHEET_three_dominant_plus_singletons.png</code> / <code>DIFF_041_vs_080_x10.png</code> /
+    <code>CMP_080_vs_077.png</code> / <code>CORNERS_080_x3.png</code> ·
+    账本第 46 章 · 屏幕原图 <code>…/SKSE/DFG_screens/screen_001..080.bmp</code>（v1.32 起可直接打开）
+  </div>
+
+</div>
+</body>
+</html>
