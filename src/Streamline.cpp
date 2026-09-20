@@ -2407,19 +2407,28 @@ namespace FrameGen
 				SKSE::log::warn("[Streamline] Reflex render cap auto: DISABLED (refresh rate unknown) - over-submit is possible");
 			}
 			opts.frameLimitUs = capFps ? (1000000u / capFps) : 0u;
-			static std::uint32_t lastCapFps = 0;
-			static std::uint32_t lastCapMult = 0;
-			// The whole Reflex FLIP cap block is gated on this static pair, not on
-			// the block being re-entered, so the log is edge-driven either way.
-			if (capFps != lastCapFps || capMult != lastCapMult) {
+			// v1.29 -- this gate was a pair of plain statics:
+			//     static std::uint32_t lastCapFps = 0, lastCapMult = 0;
+			//     if (capFps != lastCapFps || capMult != lastCapMult) { ... log ... }
+			// Two threads reach ReflexSleep (this plugin's Present path runs on both
+			// and Streamline's own trace shows two tids reaching the sibling call),
+			// and a two-word store is not atomic: one thread writes lastCapFps while
+			// the other reads lastCapMult, both see a change, and the edge-driven
+			// line fires on EVERY frame.  The 12:26 run is the proof -- 4823
+			// "Reflex cap check" lines on a single load screen, every one of them
+			// printing the same 159 flip fps and the same 2x.  A line that carries
+			// its values refutes itself when it repeats with identical values: the
+			// detector is torn, the value never moved.  One packed atomic word and
+			// an exchange, so exactly one thread sees the old value per real edge.
+			const std::uint32_t capSig = (capFps << 4) | (capMult & 0x0Fu);
+			static std::atomic<std::uint32_t> lastCapSig{ 0xFFFFFFFFu };
+			if (lastCapSig.exchange(capSig) != capSig) {
 				const bool capConfirmed = (dlssgAcceptedFrames != 0);
 				SKSE::log::info("[Streamline] Reflex FLIP cap = {} fps ({}us) - panel {}Hz, {} flips per real frame => ~{} presented fps, ~{:.1f} rendered fps (v1.12: the cap is the FLIP rate){}{}",
 					capFps, opts.frameLimitUs, Get().refreshRate, capMult, capFps,
 					capFps / static_cast<double>(capMult),
 					capFps ? "" : "  [UNLIMITED - over-submit possible]",
 					capConfirmed ? "" : "  [UNCONFIRMED - using the 2x floor, v1.04]");
-				lastCapFps = capFps;
-				lastCapMult = capMult;
 			}
 		}
 		opts.useMarkersToOptimize = featurePCL;   // PCL marker 优化（Reflex 激活必需）
@@ -2459,17 +2468,29 @@ namespace FrameGen
 			lastReflexValid = true;
 		}
 
-		// 缓存比较：选项变化才下发（CS applyReflexOptionsIfChanged 同款）
-		static sl::ReflexOptions lastOpts{};
-		static bool lastValid = false;
-		if (!lastValid || std::memcmp(&lastOpts, &opts, sizeof(opts)) != 0) {
+		// v1.29 -- the same torn edge as the flip-cap block above, except this gate
+		// decides whether slReflexSetOptions is CALLED, not merely whether a line
+		// is printed.  The 12:26 run carried 4896 "Reflex options applied" lines --
+		// one per frame, through a load screen and into the world -- while the
+		// three fields it prints (mode=1 frameLimitUs=6289 markers=true) never
+		// changed once.  memcmp over a multi-word struct that a second thread is
+		// concurrently writing can never be a change detector, and the struct may
+		// carry padding no writer initialises, which would break it even
+		// single-threaded.  Compare the three fields this function actually sets,
+		// packed into one atomic word, and let exchange pick the one caller that
+		// sees a real change.  Same predicate, no race, and the runtime stops
+		// being reconfigured on every frame.
+		const std::uint64_t optsSig =
+			(static_cast<std::uint64_t>(static_cast<std::uint32_t>(opts.mode) & 0xFFFFu) << 40)
+			| (static_cast<std::uint64_t>(opts.frameLimitUs) << 1)
+			| (opts.useMarkersToOptimize ? 1ull : 0ull);
+		static std::atomic<std::uint64_t> lastOptsSig{ ~0ull };
+		if (lastOptsSig.exchange(optsSig) != optsSig) {
 			if (SL_FAILED(r, slReflexSetOptions(opts)))
 				SKSE::log::warn("[Streamline] slReflexSetOptions failed: {}", (int)r);
 			else
 				SKSE::log::info("[Streamline] Reflex options applied (mode={} frameLimitUs={} markers={})",
 					static_cast<int>(opts.mode), opts.frameLimitUs, opts.useMarkersToOptimize);
-			lastOpts = opts;
-			lastValid = true;
 		}
 
 		if (SL_FAILED(r, slReflexSleep(*frameToken)))

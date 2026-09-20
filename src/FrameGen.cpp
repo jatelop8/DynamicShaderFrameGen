@@ -1542,6 +1542,10 @@ namespace FrameGen
 					static float s_inCurPrev[2] = { 0.0f, 0.0f };
 					static bool s_inCurHave = false;
 					static int s_inFg = -1;
+					// v1.29: the full-VK scan's two readings. kbHeld is what is down at the
+					// instant of this sample; the [INPUT] line below records transitions,
+					// which is the only part of this that survives a 1 Hz sample.
+					static int s_inKbHeld = 0;
 					static float s_plrPos[3] = { 0.0f, 0.0f, 0.0f };
 					static float s_plrPrev[3] = { 0.0f, 0.0f, 0.0f };
 					static bool s_plrHave = false;
@@ -1589,6 +1593,38 @@ namespace FrameGen
 						if (::GetAsyncKeyState(VK_LBUTTON) & 0x8000) keys |= 64u;
 						if (::GetAsyncKeyState(VK_RBUTTON) & 0x8000) keys |= 128u;
 						s_inKeys |= keys;
+						// v1.29 -- the mask above can only prove a NEGATIVE.  Sixteen runs
+						// in a row printed os=0x0 and every one of them was read as "the
+						// user never touched the keyboard", but the mask holds eight keys
+						// (W A S D Space Shift LMB RMB), and a player whose picture looks
+						// frozen reaches for ESC or Alt+F4 first -- neither is in it.
+						// "Not those eight" was being promoted to "no input at all", and
+						// the whole input-witness verdict rests on that inference.
+						// Scan the full VK space once a second instead: 255 batched
+						// GetAsyncKeyState calls cost nothing next to a 4K frame, and they
+						// turn the verdict from an accusation into a measurement.
+						// Known limit, stated rather than hidden: this is a 1 Hz sample,
+						// so a key tapped and released entirely between two samples is
+						// missed.  Holding W for the protocol's ten seconds cannot be.
+						{
+							static int s_kbLast = 0;
+							int held = 0;
+							int lastVk = 0;
+							for (int vk = 1; vk < 256; ++vk) {
+								if (::GetAsyncKeyState(vk) & 0x8000) {
+									++held;
+									lastVk = vk;
+								}
+							}
+							s_inKbHeld = held;
+							if (lastVk != s_kbLast) {
+								SKSE::log::info("[INPUT] vk 0x{:02X} -> 0x{:02X} ({} held, fg={}) - any line here means the keyboard "
+									"reaches this process, so an os=0x0 further down is a measurement and not a blind spot",
+									static_cast<unsigned>(s_kbLast), static_cast<unsigned>(lastVk),
+									held, s_inFg);
+								s_kbLast = lastVk;
+							}
+						}
 						
 						POINT pt{};
 						if (::GetCursorPos(&pt)) {
@@ -1672,22 +1708,23 @@ namespace FrameGen
 					}
 					SKSE::log::info("[CAM] PC v1.19: read={} match={} adopt={}/{} rej={} ref={} "
 						"best={:.2f} at proj00={:.6g} eye=({:.2f},{:.2f},{:.2f}) eyeD={:.2f} "
-						"in(os=0x{:x} dc={:.0f}/{} fg={}) "
+						"in(os=0x{:x} dc={:.0f}/{} fg={} kb={}) "
 						"plr=({:.1f},{:.1f},{:.1f}) plrD={:.2f} "
 						"LIVE paused={} ld={} fade={} hrs={:.5f} hrsD={:.6f} rawD={:.6f} {} {}",
 						snapPcRead, snapPcMatch, snapPcAdoptSec, snapPcAdopt, snapPcReject,
 						snapPcRefSeen,
 						snapPcSawAny ? snapPcBestDist : -1.0f, snapPcBestProj,
 						snapPcLast[0], snapPcLast[1], snapPcLast[2], snapPcEyeStep,
-						s_inKeys, s_inDist, s_inMoves, s_inFg,
+						s_inKeys, s_inDist, s_inMoves, s_inFg, s_inKbHeld,
 						s_plrPos[0], s_plrPos[1], s_plrPos[2], s_plrStep,
 						s_livePaused ? 1 : 0, s_liveLd ? 1 : 0, s_liveFade ? 1 : 0,
 						s_liveHrs, s_liveHrsD, s_liveRawD,
 						snapPcEyeStep <= kCamMoveEps ? "PC_STILL" : "PC_MOVING",
-						(s_inKeys != 0u || s_inMoves != 0u)
+						(s_inKeys != 0u || s_inMoves != 0u || s_inKbHeld > 0)
 							? "INPUT_SEEN - input reached the game, so a still eyeD here is a frozen world"
 							: "INPUT_NONE - nothing was pressed this second, so this run cannot say whether input works");
 					s_inKeys = 0u;
+					s_inKbHeld = 0;
 					s_inDist = 0.0f;
 					s_inMoves = 0u;
 					s_plrStep = 0.0f;

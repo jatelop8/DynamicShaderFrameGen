@@ -816,6 +816,62 @@ namespace FrameGen
 							: 0LL,
 						cpuDelta,
 						(stalled && (tick % 5) == 0) ? "   <== RENDER THREAD STALLED" : "");
+					// v1.29 -- the one question no field in this file has ever answered:
+					// is the PANEL advancing?  frames= counts our own Present entries and
+					// lastPr= counts our own swapchain's flips, and on the 12:26 run both
+					// climbed (98 entries and 392 flips in 2.86 s = 137 flips/s = exactly
+					// 4x) while the user was looking at a picture he called frozen.  Both
+					// are our side of the fence.  A flip counter that stalls is
+					// unambiguous evidence from the other side, so say it out loud; and
+					// snapshot the moment the multiplier lands on 4x plus the first 3 s
+					// after it, because that is the entire window the user has been
+					// reporting on (each of the last six runs ended inside 6 s of world
+					// time, so a rate that only ever gets printed once a minute is a rate
+					// that has never been seen).
+					{
+						static unsigned long long s_prevFlipPr = 0;
+						static unsigned long long s_prevFlipMs = 0;
+						static int s_frozenTicks = 0;
+						static bool s_saw4x = false;
+						static long long s_4xAtMs = 0;
+						// "the multiplier really is 4x" needs a test that cannot fire on a load
+						// screen, where frames and lastPr are both tiny and their ratio means
+						// nothing.  Both must be warm AND the flip counter must run well ahead
+						// of our own Present count; 3x of frames is the conservative form of
+						// "about 4 flips per real frame".
+						const bool warm4x = frames > 200ull && lastPr > frames * 3ull;
+						if (warm4x && !s_saw4x) {
+							s_saw4x = true;
+							s_4xAtMs = nowMs;
+							std::fprintf(f, "[%lld] [XRAY] 4x SNAPSHOT t=0 frames=%llu lastPr=%llu cpuD=%llums "
+								"silent=%lldms presentAge=%lldms fence=%s queued=%llu dsync=%llu msg=%d\n",
+								nowMs, static_cast<unsigned long long>(frames), lastPr, cpuDelta,
+								silent,
+								(g_presentEnteredMs.load() > 0) ? (nowMs - g_presentEnteredMs.load()) : 0LL,
+								fenceTxt, queued, dsync, msgOk);
+						} else if (warm4x && s_saw4x && (nowMs - s_4xAtMs) < 3000LL && (tick % 5) == 0) {
+							const unsigned long long dFlip = (lastPr >= s_prevFlipPr) ? (lastPr - s_prevFlipPr) : 0ull;
+							const unsigned long long dMs = (nowMs > (long long)s_prevFlipMs) ? (unsigned long long)(nowMs - (long long)s_prevFlipMs) : 0ull;
+							std::fprintf(f, "[%lld] [XRAY] 4x probe +%lldms frames=%llu lastPr=%llu "
+								"panel=%llu flips/s cpuD=%llums silent=%lldms stage=%s\n",
+								nowMs, nowMs - s_4xAtMs,
+								static_cast<unsigned long long>(frames), lastPr,
+								dMs ? (dFlip * 1000ull / dMs) : 0ull, cpuDelta, silent, self.lastStage());
+						}
+						if (s_prevFlipPr != 0 && lastPr <= s_prevFlipPr && warm4x) {
+							if (++s_frozenTicks >= 5) {
+								std::fprintf(f, "[%lld] [XRAY] FLIP COUNTER FROZEN for %d ticks - our Present is still being "
+									"entered (frames=%llu) but nothing has reached the panel (lastPr stuck at %llu). "
+									"The picture on screen is not advancing.\n",
+									nowMs, s_frozenTicks, static_cast<unsigned long long>(frames), lastPr);
+								s_frozenTicks = 0;
+							}
+						} else {
+							s_frozenTicks = 0;
+						}
+						s_prevFlipPr = lastPr;
+						s_prevFlipMs = (unsigned long long)nowMs;
+					}
 					std::fflush(f);
 					std::fclose(f);
 				}

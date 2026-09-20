@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DFG v1.29 - 12:26 局：第二次世界活了，而我的两个"边沿"检测器是撕裂的</title>
+<style>
+  :root{
+    --bg:#101217; --panel:#171a21; --panel2:#1d2129; --line:#2b303a;
+    --tx:#e6e9ef; --tx2:#a8b0bf; --tx3:#737d8d;
+    --ok:#31b57a; --warn:#e0a33a; --bad:#e05c5c; --info:#4f9de0; --acc:#8b7fe8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);
+    font:15px/1.75 "Segoe UI","Microsoft YaHei",system-ui,sans-serif;}
+  .wrap{max-width:1080px;margin:0 auto;padding:38px 26px 70px}
+  h1{font-size:24px;line-height:1.45;margin:0 0 8px;letter-spacing:.2px}
+  .sub{color:var(--tx3);font-size:13.5px;margin-bottom:30px}
+  h2{font-size:17.5px;margin:38px 0 12px;padding-left:11px;
+    border-left:3px solid var(--acc);line-height:1.4}
+  h3{font-size:14.5px;margin:22px 0 8px;color:var(--tx2);font-weight:600}
+  p{margin:9px 0}
+  code{background:#0b0d11;border:1px solid var(--line);border-radius:4px;
+    padding:1.5px 5px;font:12.5px/1.5 Consolas,"Courier New",monospace;color:#c9d4e4}
+  pre{background:#0b0d11;border:1px solid var(--line);border-radius:7px;
+    padding:13px 15px;overflow-x:auto;margin:11px 0;
+    font:12.5px/1.65 Consolas,"Courier New",monospace;color:#c9d4e4}
+  table{width:100%;border-collapse:collapse;margin:13px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:var(--tx2);font-weight:600;font-size:12.5px}
+  td.num{font-family:Consolas,monospace;font-variant-numeric:tabular-nums}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:9px;
+    padding:16px 19px;margin:15px 0}
+  .big{border-left:3px solid var(--acc)}
+  .good{border-left:3px solid var(--ok)}
+  .bad{border-left:3px solid var(--bad)}
+  .warn{border-left:3px solid var(--warn)}
+  ul{margin:9px 0;padding-left:22px}
+  li{margin:5px 0}
+  .k{color:var(--ok)} .r{color:var(--bad)} .y{color:var(--warn)} .b{color:var(--info)}
+  .tiny{font-size:12.5px;color:var(--tx3)}
+  .pill{display:inline-block;border:1px solid var(--line);border-radius:20px;
+    padding:1px 9px;font-size:11.5px;color:var(--tx2);background:var(--panel2);
+    margin-right:6px;font-family:Consolas,monospace}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>12:26 局：<span class="k">第二次</span>世界真的活了 —— 而我两个「边沿」检测器是<span class="r">撕裂</span>的</h1>
+<div class="sub">
+  DynamicShaderFrameGen · 跑 v1.28（DLL md5 <code>4184e1c8…</code>）·
+  2026-09-20 12:26:56 → 12:29:35 · 归档 <code>docs/runlogs/2026-09-20-1226-v128-tbd.*</code>
+</div>
+
+<div class="card big">
+  <h3 style="margin-top:0">先说三件最要紧的</h3>
+  <ul>
+    <li><span class="k">这一局不是「老样子」。</span>它与 03:17 那局（第一次世界活了）在仪器上<b>逐字段相同</b>：
+      <code>eye=(-243.05,-415.31,118.56)</code>、<code>proj00=0.8391</code>、<code>hrsD=0.0056</code>、
+      <b>DXGI 实测 <code>FLIPS per real frame = 4.00</code></b>。<b>4x 已经复现两次。</b></li>
+    <li><span class="y">世界段只有 4.06 秒</span>（其中 4x 生效 3.86 秒），然后<b>五份日志在同一 90 毫秒内全部停止</b>，
+      且没有任何 shutdown / 析构行 ⇒ <b>进程是被强制结束的，不是自己死的</b>。</li>
+    <li><span class="r">这 4 秒里没有任何一处显示卡死</span>：watchdog <code>silent</code> 全程 1~30 ms、
+      DXGI 137 翻转/秒、PIXEL 每个样本都不同。<b>我看不到你看到的画面 —— 这是本轮唯一真正的障碍。</b></li>
+  </ul>
+</div>
+
+<h2>一、时间线（每一条都有时间戳）</h2>
+<table>
+  <tr><th style="width:180px">时刻</th><th>事件</th><th style="width:280px">证据</th></tr>
+  <tr><td class="num">12:26:56.508</td><td>SKSE 加载 DLL</td><td class="tiny">日志头</td></tr>
+  <tr><td class="num">12:27:08.5</td><td>swapchain / interop ready</td><td class="tiny">D3D12 FG swapchain created</td></tr>
+  <tr><td class="num">12:27:08.6</td><td>最后一次进入我方 Present（本段共 1 次）</td><td><code>frames=1</code></td></tr>
+  <tr><td class="num">12:27:08.6→12:27:30.0</td><td><b>21.4 秒无 Present</b></td>
+      <td><code>dt max=21426.80ms</code>（见第二节）</td></tr>
+  <tr><td class="num">12:27:30.003</td><td><code>MENU EDGE open=1 serial=2</code>；PIXEL 开始采样；frames 从 1 跳到 135</td>
+      <td class="tiny">watchdog 12:27:32.775</td></tr>
+  <tr><td class="num">12:27:30→12:29:30</td><td><b>加载屏 2 分钟</b>，2x，4822 帧，<b>全程无停顿</b></td>
+      <td><code>at 2x</code> × 4822</td></tr>
+  <tr><td class="num">12:29:30.928</td><td><code>MENU EDGE open=0 serial=4822</code> 闸门释放</td>
+      <td class="tiny">同毫秒 <code>Applied fixed multiplier: 4x (eOk)</code></td></tr>
+  <tr><td class="num">12:29:31.133</td><td><b><code>DLSSG presented per real frame = 4</code></b></td><td class="tiny">Transfusion + 我方双份</td></tr>
+  <tr><td class="num">12:29:31.163</td><td><code>[OVERLAY] world clock started</code></td><td class="tiny">v1.28 新加的覆盖层计时</td></tr>
+  <tr><td class="num">12:29:32.598</td><td><code>FLIPS per real frame = 3.03</code></td><td class="tiny">DXGI 自己的计数</td></tr>
+  <tr><td class="num">12:29:34.609</td><td><b><code>FLIPS per real frame = 4.00</code></b></td>
+      <td class="tiny">DXGI lastPresentCount 5021→5297 vs 我方 Present 4878→4947</td></tr>
+  <tr><td class="num r">12:29:34.991</td><td><b>全部日志在此瞬间停止</b></td>
+      <td class="tiny">五份日志最后一行都落在 12:29:34.9~35.0</td></tr>
+</table>
+
+<h2>二、我上一轮把「21 秒零 Present」写成了未解之谜 —— 那个答案早就写在我自己的代码里</h2>
+
+<div class="card warn">
+  <p><code>src/DX12SwapChain.cpp:719-722</code>，v0.63 留下的原文：</p>
+  <pre>21:54 那次运行在约 20s 装载里 frames 恒为 1、stage 恒为 "d3d11 Wait"，看门狗连打 19 行
+RENDER THREAD STALLED —— 全是假警报。判据收紧：渲染线程必须「曾经跑顺过」（frames&gt;=60）
+才允许报卡死，未达标只记 silent（装载期的正常表现）。</pre>
+  <p>⇒ 装载期 <code>frames=1</code> + <code>stage="d3d11 Wait"</code> <b>是已知的正常现象</b>，
+  而且当时就已经处理了（<code>warm = frames &gt;= 60</code>）。</p>
+  <p>本轮第一次把它<b>量化</b>：<code>dt min/avg/max=17.74/29.53/21426.80ms</code>
+  —— <b>不是「20 秒没进 Present」，是「有一帧真的跑了 21.4 秒」。</b></p>
+  <p class="tiny">零翻转只说明「我们的 FG swapchain 还没被用上」（装载期游戏走原生 D3D11 swapchain），
+  不是「引擎卡住」。而且 frames 从 1 跳到 135 发生在 <code>MENU EDGE open=1</code> 的同一秒
+  ⇒ 链路是跟着菜单打开的，不是自己恢复的。</p>
+</div>
+
+<h2>三、真正修掉的东西：两个「变化才打」的日志，值一次都没变</h2>
+
+<table>
+  <tr><th>日志</th><th>一局打了多少次</th><th>它打印的值变了吗</th><th>根因</th></tr>
+  <tr>
+    <td><code>Reflex cap check (v1.12)</code></td>
+    <td class="num r">4960</td>
+    <td class="k">没有 —— 4822 次全是 <code>159 flip fps … at 2x</code></td>
+    <td>两个 plain static 被两个线程读写</td>
+  </tr>
+  <tr>
+    <td><code>Reflex options applied</code></td>
+    <td class="num r">4896</td>
+    <td class="k">没有 —— 全是 <code>mode=1 frameLimitUs=6289 markers=true</code></td>
+    <td>同上 + <code>memcmp</code> 比多字结构</td>
+  </tr>
+</table>
+
+<div class="card bad">
+  <h3 style="margin-top:0">第二个更严重：它决定的是「要不要调用」，不只是「要不要打印」</h3>
+  <pre>static sl::ReflexOptions lastOpts{};
+static bool lastValid = false;
+if (!lastValid || std::memcmp(&lastOpts, &opts, sizeof(opts)) != 0) {
+    slReflexSetOptions(opts);   // ← 每帧被调用
+    ...
+}</pre>
+  <p>两个字宽的写不是原子的：一个线程写 <code>lastCapFps</code> 的同时另一个读 <code>lastCapMult</code>，
+  <b>两边都「看到变化」⇒ 边沿检测器退化成每帧触发。</b>
+  本插件 Present 路径两个 tid 都走（Transfusion 自己的 trace 也显示两个 tid 到达姊妹调用）。</p>
+  <p><b>修法</b>：把签名打包成一个 <code>std::atomic</code> 字，用 <code>exchange</code> 比较 ——
+  一次真边沿只有一个线程能拿到旧值。</p>
+  <p class="tiny">这不是改变设计，是<b>恢复</b>设计：v0.35 的原注释写的就是「选项变化才 slReflexSetOptions
+  （缓存比较，CS 同款）」。<b>缓存比较从未生效过。</b></p>
+</div>
+
+<div class="card big">
+  <p><b>本轮最省时间的一条推理</b>：</p>
+  <p style="font-size:16px"><b>一行日志如果把自己的值一起打出来，那么当它带着同样的值重复时，
+  它就自我否证了 —— 坏的是判据，不是值。</b></p>
+  <p class="tiny">下次看到「变化才打」的日志在刷屏，第一件事是把它打印的值读出来，
+  而不是去查它测的东西。（账本 L60）</p>
+</div>
+
+<h2>四、两个测不到东西的仪器，换掉了</h2>
+
+<h3>4.1 输入见证只能证明「不是那八个键」</h3>
+<p>原来的掩码是 <code>W A S D Space Shift LMB RMB</code>。<b>16 局连续打出 <code>os=0x0</code>，
+每一局都被读成「用户没碰过键盘」。</b></p>
+<div class="card warn">
+  <p>但那个掩码<b>只能证明否定命题「不是那八个键」</b>。一个觉得画面卡死的玩家，
+  最先按的是 <b>ESC 或 Alt+F4 —— 两个都不在掩码里。</b></p>
+  <p>于是「不是这八个」被静默升级成「完全没有输入」，而整个输入见证的结论就架在这个越界推论上。</p>
+  <p><b>修法</b>：每秒扫全 <code>vk 1..255</code>，<code>kb=</code> 打印当前按住的键数，
+  并在<b>任何键变化</b>时打一条 <code>[INPUT] vk 0x.. -&gt; 0x.. (N held, fg=1)</code>。</p>
+  <p class="tiny">已写明的局限：1 Hz 采样，两次采样之间按一下就松开的键会被漏掉；
+  协议要求的「按住 W 十秒」漏不掉。</p>
+</div>
+
+<h3>4.2 屏幕上到底有没有新帧 —— 从来没有仪器回答过</h3>
+<p><code>frames=</code> 数的是<b>我们的</b> Present 进入次数，<code>lastPr=</code> 数的是<b>我们的</b>
+swapchain 翻转次数 —— <b>两个都在我们这一侧。</b>
+本局两者都在涨（2.86 秒里 98 次进入、392 次翻转 = 137 翻转/秒 = 正好 4x），
+而你说画面是卡的。<b>这个矛盾才是本轮真正的待办。</b></p>
+<p>新增两条：</p>
+<ul>
+  <li><code>[XRAY] 4x SNAPSHOT t=0</code> —— 倍数落到 4x 的那一 tick（判据
+    <code>frames&gt;200 &amp;&amp; lastPr&gt;frames*3</code>，登录界面 <code>lastPr≈2×frames</code> 达不到，
+    不会误触），随后 3 秒内每 5 tick 一条 <code>4x probe</code>，带<b>实测面板翻转率</b>。</li>
+  <li><code>[XRAY] FLIP COUNTER FROZEN for N ticks</code> —— <code>lastPr</code> 连续 5 tick 不涨
+    而 <code>frames</code> 仍在涨。</li>
+</ul>
+<p class="tiny">为什么必须在这一秒级窗口里打：最近 6 局每一局都在世界时间 6 秒内结束，
+所以「一分钟才打一次」的速率等于从未被看到过。</p>
+
+<h2>五、我仍然不知道的事（不许假装已修）</h2>
+<div class="card bad">
+  <ul>
+    <li><b>v1.29 一局都没跑过。</b>四条改动全部只有静态验证（构建 + 二进制串 + 行尾），
+      四个新读数一个都没出现过。</li>
+    <li><b>「4x 导致卡死」仍未证，而且这一局是反证。</b>4x 生效后的 3.86 秒里
+      DXGI 实测 137 翻转/秒、silent ≤ 30 ms、画面每 500 ms 完全不同。</li>
+    <li><b>2x 对照局一次都没跑过</b>（<code>MFGMaxFramesOverride=0</code>）。
+      只有它也复现同样现象，才能说 4x 无关。</li>
+    <li><b>你看到的画面内容，仍然没有任何仪器覆盖。</b>PIXEL 读的是
+      <code>colorOut(presented)</code>，不是屏幕。两台仪器都在栅栏的这一侧。</li>
+    <li><b>Transfusion 隔离实验一次都没跑。</b></li>
+  </ul>
+</div>
+
+<h2>六、下一局（只有一件事必须先做到）</h2>
+<div class="card good">
+  <ul>
+    <li>进世界后<b>站着别动，数满 30 秒</b>再退 —— 不用按 W，不用做任何事。</li>
+    <li><b>如果画面卡住 / 变形 / 全黑，等够 30 秒再退</b>，并且记住它长什么样。</li>
+    <li>退出前如果覆盖层写着 <code>enough - you can exit now</code>，说明满 20 秒了。</li>
+  </ul>
+  <p class="tiny">最近 6 局世界段是 2.1 / 3.0 / 3.2 / 2.5 / 6.1 / <b>4.1</b> 秒 ——
+  4 秒的读数太短，任何速率、任何趋势都算不出来。</p>
+</div>
+
+<div class="sub" style="margin-top:34px">
+  账本 <code>MFG_MASTER_NOTES.md</code> 第 42 章 · 补丁
+  <code>tools/patch_v129_torn_edges_and_blind_witnesses.py</code> ·
+  DLL <code>7fbb36293cb0ca17521374f9015fb082</code>（1,384,448 B，build == 部署处）
+</div>
+
+</div></body></html>
