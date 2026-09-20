@@ -24,6 +24,7 @@
 
 // v0.62: watchdog needs its own file handle + the Documents path
 #include <cstdio>
+#include <cstring>   // v1.31: std::memcpy, now that the screen probe writes a BMP header
 #include <shlobj.h>
 
 #include <SKSE/SKSE.h>
@@ -647,6 +648,89 @@ namespace FrameGen
 		return g_watchdogLogPath;
 	}
 
+	// ==================== v1.31: THE SCREEN, AS AN IMAGE ====================
+	//
+	// v1.30 hashed the screen and asked one question -- "did it hold one image
+	// while our own image took three" -- and the 13:26 run answered nothing,
+	// because `distinct` counts distinct hashes in an 8-sample RING, so a ring
+	// that spans a load fade is eight distinct hashes no matter what happened.
+	// It printed 8/8 through the fade, 8/8 in the menu and 8/8 in the world, and
+	// the only two samples inside the world read lum=100.93 and lum=100.93.
+	//
+	// A hash answers "did it change".  It cannot answer "is what changed the
+	// game", and that question has now cost four days.  So write the pixels out
+	// and look at them.  The directory is a rolling ring of 96 files so it never
+	// grows without bound, and the log line carries the file name of the capture
+	// it describes -- an image nobody can find is the same as no image (L58).
+	static char g_screenDumpDir[MAX_PATH * 2] = {};
+	static bool g_screenDumpReady = false;
+
+	const char* ScreenDumpDir()
+	{
+		if (!g_screenDumpReady) {
+			g_screenDumpReady = true;
+			std::string p;
+			char buf[MAX_PATH] = {};
+			if (SUCCEEDED(::SHGetFolderPathA(nullptr, CSIDL_PERSONAL, nullptr, 0, buf))) {
+				p = buf;
+				p += "\\My Games\\Skyrim Special Edition\\SKSE\\DFG_screens";
+			} else {
+				p = "DFG_screens";
+			}
+			::CreateDirectoryA(p.c_str(), nullptr);
+			std::snprintf(g_screenDumpDir, sizeof(g_screenDumpDir), "%s", p.c_str());
+		}
+		return g_screenDumpDir;
+	}
+
+	// 24-bit bottom-up BMP.  The DIB section this reads is 32-bit BGRA top-down,
+	// which is why the whole picture is not just an fwrite of the buffer.
+	// Returns false unless every byte landed, so a missing file can never read
+	// as "the screen was fine".
+	bool WriteScreenBmp(const void* a_bits, int a_w, int a_h, unsigned a_idx)
+	{
+		if (!a_bits || a_w <= 0 || a_h <= 0 || a_w > 2048)
+			return false;
+		char path[MAX_PATH * 2] = {};
+		std::snprintf(path, sizeof(path), "%s\\screen_%03u.bmp", ScreenDumpDir(), a_idx % 96u);
+		std::FILE* bf = std::fopen(path, "wb");
+		if (!bf)
+			return false;
+		const int rowBytes = a_w * 3;
+		const int pad = (4 - (rowBytes % 4)) % 4;
+		const unsigned datasize = static_cast<unsigned>((rowBytes + pad) * a_h);
+		unsigned char hdr[54] = {};
+		const unsigned fsize = 54u + datasize;
+		const unsigned off = 54u;
+		const unsigned short planes = 1u, bpp = 24u;
+		hdr[0] = 'B'; hdr[1] = 'M';
+		std::memcpy(hdr + 2, &fsize, 4);
+		std::memcpy(hdr + 10, &off, 4);
+		std::memcpy(hdr + 14, &a_w, 4);
+		std::memcpy(hdr + 18, &a_h, 4);
+		std::memcpy(hdr + 26, &planes, 2);
+		std::memcpy(hdr + 28, &bpp, 2);
+		std::memcpy(hdr + 34, &datasize, 4);
+		bool ok = (std::fwrite(hdr, 1, sizeof(hdr), bf) == sizeof(hdr));
+		const auto* px = static_cast<const unsigned char*>(a_bits);
+		static unsigned char row[4096];
+		for (int y = a_h - 1; y >= 0 && ok; --y) {
+			const auto* src = px + static_cast<std::size_t>(y) * static_cast<std::size_t>(a_w) * 4u;
+			int o = 0;
+			for (int x = 0; x < a_w; ++x) {
+				row[o++] = src[x * 4 + 0];
+				row[o++] = src[x * 4 + 1];
+				row[o++] = src[x * 4 + 2];
+			}
+			for (int i = 0; i < pad; ++i)
+				row[o++] = 0;
+			if (std::fwrite(row, 1, static_cast<std::size_t>(o), bf) != static_cast<std::size_t>(o))
+				ok = false;
+		}
+		std::fclose(bf);
+		return ok;
+	}
+
 	// v0.73: the only thread allowed to touch the fences besides the render thread,
 	// and it does nothing else. It samples ONLY while the render thread has already
 	// been silent for over 1.5 s, so ordinary play never has a non-owning thread
@@ -901,6 +985,16 @@ namespace FrameGen
 						s_prevFrames = frames;
 					}
 
+					// v1.31: FLUSH BEFORE THE CAPTURE.  This loop opened the file,
+					// wrote every line of the tick, and only flushed at the very end
+					// -- and the GDI blit below is the one call in it that can block,
+					// precisely when the game window is losing activation.  On 13:26
+					// the last line in this file is 110 ms before the game lost focus
+					// and the next tick never arrived, so one blocked blit would have
+					// discarded that whole tick's readings without a trace.  The lines
+					// above are now on disk before anything that can stall is called.
+					std::fflush(f);
+
 					// ========================== v1.30: THE SCREEN ==========================
 					//
 					// Every field in this file is on our side of the fence.  frames= counts
@@ -934,8 +1028,20 @@ namespace FrameGen
 					// prints [SCREEN] ERROR.  ForceBorderless forces Windowed=TRUE, so the
 					// capture does include this game -- but that is a claim about the INI,
 					// not a measurement, and the two lines above are how it gets checked.
-					if ((tick % 5) == 3) {
-						static const int kScrDim = 64;
+					// v1.31: 1 Hz normally, 2.5 Hz while the flip counter has run
+					// away from our own Present count -- the only reading in this file
+					// that says frame generation is genuinely live.  Every one of the
+					// last eight runs was in the world for 2.0 to 6.1 seconds, so a
+					// 1 Hz capture has at most six frames of the only window anybody
+					// has ever reported on.
+					const bool scrBurst = (frames > 60ull) && (lastPr > frames + 8ull);
+					if (((tick % 5) == 3) || (scrBurst && ((tick % 2) == 0))) {
+						// v1.31: 64x64 was enough for a hash and useless for an eye.
+						// 640x360 HALFTONE keeps the layout readable: black load
+						// screen, menu, world, and a torn or doubled frame are all
+						// distinguishable at this size.
+						static const int kScrW = 640;
+						static const int kScrH = 360;
 						static std::uint64_t s_scrHash[8] = {};
 						static std::uint64_t s_scrPix[8] = {};
 						static float         s_scrLum[8] = {};
@@ -955,8 +1061,8 @@ namespace FrameGen
 							} else {
 								BITMAPINFO bi{};
 								bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-								bi.bmiHeader.biWidth = kScrDim;
-								bi.bmiHeader.biHeight = -kScrDim;   // negative: rows top-down
+								bi.bmiHeader.biWidth = kScrW;
+								bi.bmiHeader.biHeight = -kScrH;   // negative: rows top-down
 								bi.bmiHeader.biPlanes = 1;
 								bi.bmiHeader.biBitCount = 32;
 								bi.bmiHeader.biCompression = BI_RGB;
@@ -989,12 +1095,12 @@ namespace FrameGen
 								const int vw = ::GetSystemMetrics(SM_CXVIRTUALSCREEN);
 								const int vh = ::GetSystemMetrics(SM_CYVIRTUALSCREEN);
 								const BOOL ok = (vw > 0 && vh > 0)
-									? ::StretchBlt(s_scrDc, 0, 0, kScrDim, kScrDim, sd, vx, vy, vw, vh, SRCCOPY)
+									? ::StretchBlt(s_scrDc, 0, 0, kScrW, kScrH, sd, vx, vy, vw, vh, SRCCOPY)
 									: FALSE;
 								::ReleaseDC(nullptr, sd);
 								if (ok) {
 									const auto* px = static_cast<const std::uint8_t*>(s_scrBits);
-									const std::size_t nPx = static_cast<std::size_t>(kScrDim) * kScrDim;
+									const std::size_t nPx = static_cast<std::size_t>(kScrW) * static_cast<std::size_t>(kScrH);
 									std::uint64_t h2 = 1469598103934665603ull;   // FNV-1a
 									std::uint64_t lsum = 0;
 									for (std::size_t i = 0; i < nPx * 4u; ++i) {
@@ -1028,15 +1134,41 @@ namespace FrameGen
 										if (!sSeen) ++sDistinct;
 										if (!pSeen) ++pDistinct;
 									}
+									// v1.31: CONSECUTIVE-SAMPLE identity, and the picture
+									// itself.  `distinct` is a ring statistic and cannot see
+									// a freeze that begins inside the ring -- it read 8/8
+									// through a fade, in the menu and in the world alike.
+									// same= counts captures IDENTICAL TO THE ONE BEFORE,
+									// which is what "the picture stopped" actually means;
+									// oursSame= is the same count for our own colorOut, so
+									// one number can be read against the other.  dLum= is
+									// the magnitude, because a frozen image with a live FPS
+									// overlay keeps drifting by a fraction of a level and
+									// that fraction is the whole difference between "the
+									// game froze" and "only the overlay is moving".
+									static std::uint64_t s_scrPrevHash = 0ull;
+									static std::uint64_t s_scrPrevOurs = 0ull;
+									static float         s_scrPrevLum = -1.0f;
+									static std::uint32_t s_scrSame = 0u;
+									static std::uint32_t s_scrOursSame = 0u;
+									const std::uint64_t oursNow = g_colorOutHash.load();
+									const float dLum = (s_scrPrevLum < 0.0f) ? 0.0f : (slum - s_scrPrevLum);
+									s_scrSame = (s_scrPrevHash != 0ull && h2 == s_scrPrevHash) ? (s_scrSame + 1u) : 0u;
+									s_scrOursSame = (s_scrPrevOurs != 0ull && oursNow == s_scrPrevOurs) ? (s_scrOursSame + 1u) : 0u;
+									s_scrPrevHash = h2;
+									s_scrPrevOurs = oursNow;
+									s_scrPrevLum = slum;
+									const bool bmpOk = WriteScreenBmp(s_scrBits, kScrW, kScrH, s_scrSeq);
 									const HWND probeW = reinterpret_cast<HWND>(g_probeHwnd.load());
 									const int isFg = (probeW && ::GetForegroundWindow() == probeW) ? 1 : 0;
-									std::fprintf(f, "[%lld] [SCREEN] #%u hash=%016llX lum=%.2f distinct=%u/%u "
-										"ours=%016llX ourDistinct=%u fg=%d frames=%llu\n",
+									std::fprintf(f, "[%lld] [SCREEN] #%u hash=%016llX lum=%.2f dLum=%+.2f "
+										"same=%u oursSame=%u ring=%u/%u ours=%016llX fg=%d frames=%llu %s\n",
 										nowMs, s_scrSeq, static_cast<unsigned long long>(h2),
-										static_cast<double>(slum), sDistinct, s_scrFill,
-										static_cast<unsigned long long>(g_colorOutHash.load()),
-										pDistinct, isFg,
-										static_cast<unsigned long long>(frames));
+										static_cast<double>(slum), static_cast<double>(dLum),
+										s_scrSame, s_scrOursSame, sDistinct, s_scrFill,
+										static_cast<unsigned long long>(oursNow),
+										isFg, static_cast<unsigned long long>(frames),
+										bmpOk ? "bmp=ok" : "bmp=FAILED (no file for this line)");
 									if (slum < 0.05f) {
 										if (++s_scrBlind == 10 && !s_scrBlindSaid) {
 											s_scrBlindSaid = true;
@@ -1051,7 +1183,12 @@ namespace FrameGen
 									}
 									// The verdict this instrument exists for, and the first one in
 									// this project that is about the screen rather than about us.
-									if (s_scrFill >= 8u && sDistinct <= 1u && pDistinct >= 3u && slum > 3.0f) {
+									// v1.31: the verdict is now the consecutive count, not
+									// the ring statistic.  s_scrSame >= 7 means seven captures
+									// in a row were byte-identical -- seven seconds of one
+									// image -- while our own colorOut changed on all of them.
+									// The ring version could never fire for the reason above.
+									if (s_scrSame >= 7u && s_scrOursSame <= 1u && slum > 3.0f) {
 										std::fprintf(f, "[%lld] [SCREEN] STALE over %u s: the SCREEN has shown ONE image "
 											"(hash=%016llX lum=%.1f) while our own colorOut took %u different values in "
 											"the same window, with our Present entered %llu times. What the player "
@@ -1060,6 +1197,23 @@ namespace FrameGen
 											static_cast<unsigned long long>(s_scrHash[(s_scrAt + s_scrFill - 1u) % 8u]),
 											static_cast<double>(s_scrLum[(s_scrAt + s_scrFill - 1u) % 8u]),
 											pDistinct, static_cast<unsigned long long>(frames));
+									}
+									// v1.31: the FROZEN verdict, and the one this whole probe was
+									// built for.  Three captures in a row byte-identical while our
+									// own image changed on every one of them: the panel is
+									// flipping (frames= is still climbing), we are still drawing,
+									// and what is on the screen is not any of it.  This is the
+									// first criterion in this project that can see the failure
+									// the user has been describing since the 15th.
+									if (s_scrSame >= 3u && s_scrOursSame <= 1u && slum > 3.0f) {
+										std::fprintf(f, "[%lld] [SCREEN] FROZEN for %u captures: the screen is byte-identical "
+											"on every one of them (hash=%016llX lum=%.2f dLum=%+.2f) while our own colorOut "
+											"changed on all of them and our Present was entered %llu times. The panel is "
+											"advancing and the picture in it is not - this is what the player sees.\n",
+											nowMs, s_scrSame,
+											static_cast<unsigned long long>(h2),
+											static_cast<double>(slum), static_cast<double>(dLum),
+											static_cast<unsigned long long>(frames));
 									}
 								}
 							}

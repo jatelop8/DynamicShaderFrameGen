@@ -298,6 +298,77 @@ namespace FrameGen
 		static std::chrono::steady_clock::time_point pressTime;
 		static bool longFired = false;
 
+		// ---- v1.31: WHO ENDED THE LAST RUN ----
+		//
+		// Twenty runs end 1.5-6 s after the world loads and not one of them carries
+		// a WER report, a Crash Logger entry, an nvlddmkm event or a minidump --
+		// which is the shape of a process that was QUIT or KILLED and the opposite
+		// of a process that crashed.  The 13:26 run is the first whose last second
+		// says anything at all: 0xA4 (LeftAlt) went down at 13:26:45.648, and at
+		// 13:26:46.590 DirectionalMovement logged "WM_ACTIVATEAPP: Game lost focus.
+		// Clearing inputs." and our own log stopped within 110 ms of it.  Alt alone
+		// does not throw focus.
+		//
+		// The 1 Hz witness below cannot settle this: a chord held for a few hundred
+		// milliseconds can fall entirely between two samples, and its "held" count
+		// counts one physical Alt as two keys.  This runs from Present instead --
+		// every frame, ~35 Hz -- collapses the aliases, prints the real key set, and
+		// names the combination out loud.  Naming it matters: "the game was killed"
+		// and "the player quit" are different findings, and only one is our bug.
+		{
+			static const char* s_lastCombo = nullptr;
+			static unsigned long long s_lastSig = 0ull;
+			bool kd[256] = {};
+			int raw = 0, phys = 0, lo = 0;
+			char list[80] = {};
+			unsigned long long sig = 1469598103934665603ull;
+			for (int vk = 1; vk < 256; ++vk) {
+				if (GetAsyncKeyState(vk) & 0x8000) {
+					kd[vk] = true;
+					++raw;
+					sig ^= static_cast<unsigned long long>(vk);
+					sig *= 1099511628211ull;
+					if (lo + 4 < static_cast<int>(sizeof(list))) {
+						static const char* kHx = "0123456789ABCDEF";
+						if (lo)
+							list[lo++] = ' ';
+						list[lo++] = kHx[(vk >> 4) & 0xF];
+						list[lo++] = kHx[vk & 0xF];
+						list[lo] = 0;
+					}
+				}
+			}
+			phys = raw;
+			if ((kd[0xA4] || kd[0xA5]) && kd[0x12]) --phys;
+			if ((kd[0xA0] || kd[0xA1]) && kd[0x10]) --phys;
+			if ((kd[0xA2] || kd[0xA3]) && kd[0x11]) --phys;
+			const bool alt = kd[0x12] || kd[0xA4] || kd[0xA5];
+			const bool ctl = kd[0x11] || kd[0xA2] || kd[0xA3];
+			const char* combo = nullptr;
+			if (alt && kd[VK_F4])          combo = "ALT+F4 (quit)";
+			else if (alt && kd[VK_TAB])    combo = "ALT+TAB (unfocus)";
+			else if (alt && kd[VK_RETURN]) combo = "ALT+ENTER (exclusive/windowed toggle)";
+			else if (alt && kd[VK_ESCAPE]) combo = "ALT+ESC";
+			else if (alt && kd[VK_SPACE])  combo = "ALT+SPACE";
+			else if (ctl && kd[VK_ESCAPE]) combo = "CTRL+ESC";
+			else if (kd[VK_F4] && !alt)    combo = "F4 (alone)";
+			if (combo && combo != s_lastCombo) {
+				const HWND fw = GetForegroundWindow();
+				DWORD fp = 0;
+				if (fw)
+					GetWindowThreadProcessId(fw, &fp);
+				SKSE::log::info("[INPUT] *** {} *** is down at this frame. This is a combination that quits or "
+					"unfocuses the game and it is the first thing to check when a run ends with no crash report. "
+					"Every key down right now: [{}] ({} vk, {} physical). Our window is foreground: {}",
+					combo, list[0] ? list : "none", raw, phys, (fp == GetCurrentProcessId()) ? 1 : 0);
+			}
+			s_lastCombo = combo;
+			if (sig != s_lastSig) {
+				s_lastSig = sig;
+				SKSE::log::info("[INPUT] key set now [{}] ({} vk down, {} physical keys)", list[0] ? list : "none", raw, phys);
+			}
+		}
+
 		const bool down = (GetAsyncKeyState(VK_HOME) & 0x8000) != 0;
 		if (down) {
 			if (!held) {
@@ -1546,6 +1617,10 @@ namespace FrameGen
 					// instant of this sample; the [INPUT] line below records transitions,
 					// which is the only part of this that survives a 1 Hz sample.
 					static int s_inKbHeld = 0;
+					// v1.31: keys that can actually move the player. "a key was down"
+					// and "the player tried to move" are different sentences and only
+					// the second one makes a still eyeD an accusation.
+					static int s_inMvKeys = 0;
 					static float s_plrPos[3] = { 0.0f, 0.0f, 0.0f };
 					static float s_plrPrev[3] = { 0.0f, 0.0f, 0.0f };
 					static bool s_plrHave = false;
@@ -1607,22 +1682,41 @@ namespace FrameGen
 						// so a key tapped and released entirely between two samples is
 						// missed.  Holding W for the protocol's ten seconds cannot be.
 						{
+							// v1.31: this used to print the HIGHEST vk that was down as
+							// "{} held", and the two numbers in that sentence disagreed
+							// with each other.  The 13:26 run printed "vk 0x00 -> 0xA4
+							// (2 held)" when the only key in the entire session was
+							// LeftAlt, because GetAsyncKeyState reports VK_MENU (0x12) and
+							// VK_LMENU (0xA4) separately for ONE physical key.  "(2 held)"
+							// therefore read as a chord and was not one -- and whether a
+							// second key was down is exactly what decides whether the run
+							// ended by ALT+F4 or by ALT alone.  Report the set and the
+							// physical count, and say which keys could have moved the
+							// player.
 							static int s_kbLast = 0;
-							int held = 0;
-							int lastVk = 0;
+							int raw = 0, phys = 0, mv = 0;
+							bool kd[256] = {};
 							for (int vk = 1; vk < 256; ++vk) {
 								if (::GetAsyncKeyState(vk) & 0x8000) {
-									++held;
-									lastVk = vk;
+									kd[vk] = true;
+									++raw;
 								}
 							}
-							s_inKbHeld = held;
-							if (lastVk != s_kbLast) {
-								SKSE::log::info("[INPUT] vk 0x{:02X} -> 0x{:02X} ({} held, fg={}) - any line here means the keyboard "
-									"reaches this process, so an os=0x0 further down is a measurement and not a blind spot",
-									static_cast<unsigned>(s_kbLast), static_cast<unsigned>(lastVk),
-									held, s_inFg);
-								s_kbLast = lastVk;
+							phys = raw;
+							if ((kd[0xA4] || kd[0xA5]) && kd[0x12]) --phys;
+							if ((kd[0xA0] || kd[0xA1]) && kd[0x10]) --phys;
+							if ((kd[0xA2] || kd[0xA3]) && kd[0x11]) --phys;
+							if (kd['W'] || kd['A'] || kd['S'] || kd['D'] ||
+								kd[VK_UP] || kd[VK_DOWN] || kd[VK_LEFT] || kd[VK_RIGHT] || kd[VK_SPACE])
+								++mv;
+							s_inKbHeld = phys;
+							s_inMvKeys += mv;
+							if (raw != s_kbLast) {
+								SKSE::log::info("[INPUT] key set changed: {} vk down, {} physical keys, {} of them can move "
+									"the player (fg={}) - any line here means the keyboard reaches this process, so an "
+									"os=0x0 further down is a measurement and not a blind spot",
+									raw, phys, s_inMvKeys, s_inFg);
+								s_kbLast = raw;
 							}
 						}
 						
@@ -1758,11 +1852,21 @@ namespace FrameGen
 						s_livePaused ? 1 : 0, s_liveLd ? 1 : 0, s_liveFade ? 1 : 0,
 						s_liveHrs, s_liveHrsD, s_liveRawD,
 						snapPcEyeStep <= kCamMoveEps ? "PC_STILL" : "PC_MOVING",
-						(s_inKeys != 0u || s_inMoves != 0u || s_inKbHeld > 0)
-							? "INPUT_SEEN - input reached the game, so a still eyeD here is a frozen world"
-							: "INPUT_NONE - nothing was pressed this second, so this run cannot say whether input works");
+						// v1.31: this used to accept ANY input as evidence, and on the
+						// 13:26 run the only key in the session was LeftAlt -- which does
+						// not move a character -- while the line still read "INPUT_SEEN
+						// - a still eyeD here is a frozen world".  That is L61 again: a
+						// criterion whose conclusion is wider than what it measured.  A
+						// movement key was held, or the mouse moved, or the run cannot
+						// say.
+						(s_inMvKeys > 0 || s_inMoves != 0u)
+							? "INPUT_MOVE_SEEN - a movement key was down this second, so a still eyeD here is a frozen world"
+							: (s_inKbHeld > 0 || s_inKeys != 0u
+								   ? "INPUT_NONMOVE - keys were down but none of them can move the player, so this says nothing about whether the world responds"
+								   : "INPUT_NONE - nothing was pressed this second, so this run cannot say whether input works"));
 					s_inKeys = 0u;
 					s_inKbHeld = 0;
+					s_inMvKeys = 0;
 					s_inDist = 0.0f;
 					s_inMoves = 0u;
 					s_plrStep = 0.0f;

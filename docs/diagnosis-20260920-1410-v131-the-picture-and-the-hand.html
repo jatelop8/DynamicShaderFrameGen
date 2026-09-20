@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DFG v1.31 - 13:26 局：4x 真的上台了，然后游戏丢失了焦点</title>
+<style>
+  :root{
+    --bg:#101217; --panel:#171a21; --panel2:#1d2129; --line:#2b303a;
+    --tx:#e6e9ef; --tx2:#a8b0bf; --tx3:#737d8d;
+    --ok:#31b57a; --warn:#e0a33a; --bad:#e05c5c; --info:#4f9de0; --acc:#8b7fe8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);
+    font:15px/1.75 "Segoe UI","Microsoft YaHei",system-ui,sans-serif;}
+  .wrap{max-width:1080px;margin:0 auto;padding:38px 26px 70px}
+  h1{font-size:24px;line-height:1.45;margin:0 0 8px;letter-spacing:.2px}
+  .sub{color:var(--tx3);font-size:13.5px;margin-bottom:30px}
+  h2{font-size:17.5px;margin:38px 0 12px;padding-left:11px;
+    border-left:3px solid var(--acc);line-height:1.4}
+  h3{font-size:14.5px;margin:22px 0 8px;color:var(--tx2);font-weight:600}
+  p{margin:9px 0}
+  code{background:#0b0d11;border:1px solid var(--line);border-radius:4px;
+    padding:1.5px 5px;font:12.5px/1.5 Consolas,"Courier New",monospace;color:#c9d4e4}
+  pre{background:#0b0d11;border:1px solid var(--line);border-radius:7px;
+    padding:13px 15px;overflow-x:auto;margin:11px 0;
+    font:12.5px/1.65 Consolas,"Courier New",monospace;color:#c9d4e4}
+  table{width:100%;border-collapse:collapse;margin:13px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:var(--tx2);font-weight:600;font-size:12.5px}
+  td.num{font-family:Consolas,monospace;font-variant-numeric:tabular-nums}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:9px;
+    padding:16px 19px;margin:15px 0}
+  .big{border-left:3px solid var(--acc)}
+  .good{border-left:3px solid var(--ok)}
+  .bad{border-left:3px solid var(--bad)}
+  .warn{border-left:3px solid var(--warn)}
+  ul{margin:9px 0;padding-left:22px}
+  li{margin:5px 0}
+  .k{color:var(--ok)} .r{color:var(--bad)} .y{color:var(--warn)} .b{color:var(--info)}
+  .tiny{font-size:12.5px;color:var(--tx3)}
+  .pill{display:inline-block;border:1px solid var(--line);border-radius:20px;
+    padding:1px 9px;font-size:11.5px;color:var(--tx2);background:var(--panel2);
+    margin-right:6px;font-family:Consolas,monospace}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>v1.31 · 13:26 局：4x 真的上台了，然后游戏丢失了焦点</h1>
+<div class="sub">
+  跑的是 v1.30（DLL <code>40704c8c…</code>）· 13:25:16 启动 → 13:26:46.6 全部日志停止 · 世界段 <b>1.5 秒</b><br>
+  证据目录：<code>docs/runlogs/2026-09-20-1326-v130-4x-latched-then-the-game-lost-focus.*</code>（六件套）
+</div>
+
+<div class="card big">
+  <b>一句话：这一局不是「4x 卡死」，是 <span class="k">4x 正常工作</span>，然后 <span class="y">游戏丢了焦点</span>，然后日志停止。</b>
+  <p class="tiny" style="margin-bottom:0">
+    4x 上台、presented=4、面板 139 flips/s、34.4 real fps、游戏时钟在走、paused=0——
+    日志里<b>没有一行</b>像卡死。而进程消失的三条独立否证说明它<b>不是崩的</b>。
+  </p>
+</div>
+
+<h2>1. 4x 确实在跑，而且是在呈现的</h2>
+<pre>[13:26:45.052] [MFG] probe edge: menu guard released, SetDLSSGOptions resumes on this frame.
+                     step advertised=4x accepted=4x latched=1
+[13:26:45.052] [Streamline] MFG probe: runtime ACCEPTED 4x (3 interpolated frames)
+                            | runtimeReportsMax=6x overrideAsksMax=6x blocked=0
+[13:26:45.252] [Streamline] DLSSG presented per real frame = 4 (status=0)
+[13:26:46.009] [XRAY] serial=2427 menu=2393 world=34 ...
+                      presented all=0/12/0/0/54/0/0/0 world=0/12/0/0/54/0/0/0
+                      mult(acc/pres)=4/4  real=30.27ms  hrsD 在走  paused=0
+[44082295] [XRAY] 4x SNAPSHOT t=0 frames=2406 lastPr=2418
+                  (live4x: +19 flips for +6 Present entries over the last 200 ms slice)
+[44082741] [XRAY] 4x probe +446ms frames=2422 lastPr=2482 panel=139 flips/s live4x=1</pre>
+<p>
+  世界段 66 帧里 <b>54 帧是在 4x 槽上呈现的</b>。Transfusion 独立佐证：
+  <code>DLSS-G actual presentation count: 4x (maximum generated frames=5)</code>、
+  <code>[PERF] 4x | Kernel: Ada | FPS: 34.4</code>。
+</p>
+<p class="tiny">
+  附带一条：v1.30 修掉的那个「<b>按构造不可能触发</b>」的累积比判据（<code>lastPr &gt; frames*3</code>），
+  <b>首跑就触发了</b>。四台仪器从全灭变成全部有读数。
+</p>
+
+<h2>2. 「不是崩溃」现在有五条互相独立的证据</h2>
+<table>
+<tr><th>来源</th><th>9/18</th><th>9/19</th><th>9/20</th></tr>
+<tr><td>WER <code>AppCrash_SkyrimSE.exe</code></td><td>3 份</td><td class="num">0</td><td class="num">0</td></tr>
+<tr><td>Crash Logger <code>SKSE/crash-*.log</code></td><td>最后 5 份全是</td><td class="num">0</td><td class="num">0</td></tr>
+<tr><td><b>新增</b> <code>%LOCALAPPDATA%\CrashDumps\SkyrimSE.exe.*.dmp</code></td><td>3 份 18:23/19:04/19:16</td><td class="num">0</td><td class="num">0</td></tr>
+<tr><td><b>新增</b> System 日志 <code>nvlddmkm</code> 错误（TDR）</td><td colspan="3">最近一次是 <b>9/15</b>。9/19、9/20 一次都没有</td></tr>
+<tr><td>Application 日志 1000 / 1002</td><td colspan="3">13:10–13:35 <b>零条</b></td></tr>
+</table>
+<p class="tiny">
+  本机 PowerShell 对这些事件查询<b>静默返回空</b>（已实测），必须走 <code>wevtutil</code>：
+  <code>wevtutil qe System /q:"*[System[Provider[@Name='nvlddmkm']]]" /c:10 /rd:true /f:text</code>
+</p>
+
+<h2>3. 死亡前 0.95 秒有一次 LeftAlt，死亡那一刻游戏「丢失焦点」</h2>
+<pre>[13:26:45.648] [INPUT] vk 0x00 -> 0xA4 (2 held, fg=1)
+[13:26:46.590] [DMK] WM_ACTIVATEAPP: Game lost focus. Clearing inputs.   ← DirectionalMovement
+[13:26:46.590] [DMKUpdate] Received type=LeftAlt value=0 / Sent type=LeftAlt value=0</pre>
+<p>
+  DirectionalMovement 是往会话里转发按键的模组，它的日志是<b>第三方</b>对「游戏丢焦点」的独立记录。
+  它自己的最后一行与我们的最后一行相隔 <b>110 ms</b>。
+</p>
+
+<div class="card bad">
+  <b>而我必须承认：<code>(2 held)</code> 是我自己的扫描在重复计数。</b>
+  <p style="margin-bottom:0">
+    <code>GetAsyncKeyState</code> 对<b>同一个物理 Alt</b> 会同时报告 <code>VK_MENU (0x12)</code> 与
+    <code>VK_LMENU (0xA4)</code>；Shift（0x10/0xA0/0xA1）、Ctrl（0x11/0xA2/0xA3）同理。
+    所以 <code>2 held</code> 时，实际可能只有 <b>一个</b>键 —— 而「第二个键在不在」恰恰决定这一局是
+    <b class="r">ALT+F4 退出</b>还是<b class="y">ALT 单独按下</b>。又是一个 L61。
+  </p>
+</div>
+
+<h2>4. 我的 <code>[SCREEN]</code> 判据在原理上不成立</h2>
+<p>74 个采样，<b>每一个</b>都是 <code>distinct=8/8</code>：加载淡出 8/8、菜单 8/8、世界 8/8。</p>
+<pre>[44082295] [SCREEN] #73 hash=899CCF386BE74EC8 lum=100.93 distinct=8/8 ours=A4110C0648902D2C ourDistinct=5
+[44083350] [SCREEN] #74 hash=C0A1CFCA8D01D28C lum=100.93 distinct=8/8 ours=EDCD53D17F0537A5 ourDistinct=6</pre>
+<p>
+  <code>distinct</code> 数的是「8 个环样本里有几个不同哈希」，而<b>一个横跨任何转变的环，
+  按构造就是 8 个不同哈希</b>。它在回答「最近八秒里发生过任何事吗」，不是「屏幕有没有变」。
+  真正重要的那两个采样：<b>lum 一模一样（100.93），哈希不同</b> —— 这既可能是画面在动，
+  也可能是<b>世界冻了、只有左上角 FPS 覆盖层在跳</b>。一个哈希分不出来。
+</p>
+<p class="tiny">
+  另一半：<code>[SCREEN] STALE</code> 要求 <code>sDistinct&lt;=1</code>，而 <code>sDistinct</code> 永远到不了 1
+  ⇒ <b>这条判据在世界上一次都不可能触发</b>。第四个「按构造不可能触发」的仪器。
+</p>
+
+<h2>5. v1.31 改了什么（不碰帧生成路径）</h2>
+<table>
+<tr><th>#</th><th>改动</th><th>为什么</th></tr>
+<tr>
+  <td class="num">1</td>
+  <td><b>屏幕存成图片</b>：每次采样写一个 640×360 BMP 到<br>
+      <code>&lt;我的文档&gt;\My Games\Skyrim Special Edition\SKSE\DFG_screens\screen_NNN.bmp</code><br>
+      环形 96 个文件（自覆盖），<b>文件名进日志</b></td>
+  <td>哈希回答「变了没有」，回答不了「变出来的是不是游戏」。<br>
+      一张没人找得到的图等于没有图（L58）。</td>
+</tr>
+<tr>
+  <td class="num">2</td>
+  <td>判据换成<b>连续样本同一性</b>：<code>same=</code> / <code>oursSame=</code> / <code>dLum=</code><br>
+      <code>same&gt;=7 &amp;&amp; oursSame&lt;=1</code> → STALE<br>
+      <code>same&gt;=3 &amp;&amp; oursSame&lt;=1</code> → <b>FROZEN</b></td>
+  <td><code>same</code> 才是「画面停住了」的定义；<code>oursSame</code> 是必须的护栏——
+      菜单里我们的 colorOut 哈希会连续重复 11 次（<code>1C6B76BA62059E4D</code>），
+      没有它就会在菜单里误报。</td>
+</tr>
+<tr>
+  <td class="num">3</td>
+  <td>采样 1 Hz → 有 4x 时 <b>2.5 Hz</b></td>
+  <td>最近八局世界段 2.0/2.1/2.5/3.0/3.2/4.1/5.7/6.1 秒，1 Hz 只有 2~6 张，
+      而 <code>same&gt;=3</code> 至少要 3 张。</td>
+</tr>
+<tr>
+  <td class="num">4</td>
+  <td><b><code>fflush</code> 提到 GDI 捕获之前</b></td>
+  <td>原顺序：先把整 tick 的行写完，<code>fflush</code> 在循环末尾；
+      而 GDI blit 是这个循环里唯一会阻塞的调用 ⇒ <b>一次阻塞会静默吃掉整个 tick 的读数</b>。
+      本局本文件最后一行在丢焦点前 110 ms、下一 tick 从未到达，正是这个形状。</td>
+</tr>
+<tr>
+  <td class="num">5</td>
+  <td><b>逐帧（~35 Hz）按键组合检测</b>（挂在 <code>PollHomeKey</code>）：
+      展开别名、打印真实键集、点名
+      <code>ALT+F4 (quit)</code> / <code>ALT+TAB (unfocus)</code> / <code>ALT+ENTER</code> /
+      <code>ALT+ESC</code> / <code>CTRL+ESC</code> / <code>F4</code></td>
+  <td>1 Hz 采样会整段漏掉一个几百毫秒的按键组合。<b>「进程被杀」和「玩家自己退出」
+      是两个不同的结论，只有一个是我们的 bug。</b></td>
+</tr>
+<tr>
+  <td class="num">6</td>
+  <td><code>INPUT_SEEN</code> → <code>INPUT_MOVE_SEEN</code>（必须有能移动角色的键或鼠标动过），
+      否则 <code>INPUT_NONMOVE</code></td>
+  <td>本局唯一的键是 LeftAlt —— 它不能移动角色 —— 而这一行仍写着
+      「INPUT_SEEN - a still eyeD here is a frozen world」。拿 Alt 当「世界没响应」的证据，是 L61。</td>
+</tr>
+</table>
+
+<h2>6. 交付前两遍检查</h2>
+<h3>第一遍 · 手脚</h3>
+<ul>
+  <li>16 个锚点 <b>每条 <code>count==1</code></b>；干跑 → <code>--apply</code> → 逐符号回读（11 + 7 个符号）</li>
+  <li>旧串已消失：<code>kScrDim</code>、<code>distinct&lt;=1</code>、<code>vk 0x{:02X} -&gt; 0x{:02X}</code>、<code>INPUT_SEEN</code></li>
+  <li>构建 0 error。第一次编译失败是我自己的错：补丁脚本里 <code>\n</code> 少转义一层，
+      <b>字符串常量里进了真换行</b>（<code>error C2001</code>），已修</li>
+  <li>DLL <b>1,394,176 B · <code>e02600bb0c5d94226df78d84acf6dec6</code></b>，<b>build == MO2 部署目录</b>（双份逐字节相同）</li>
+  <li>11 个新串在二进制里；INI <b>未动</b>（<code>efce8911…</code>，358 行纯 CRLF，双份一致）</li>
+  <li>行尾：<code>src/DX12SwapChain.cpp</code> 纯 LF（CR=0）、<code>src/FrameGen.cpp</code> 纯 CRLF</li>
+</ul>
+<h3>第二遍 · 脑子</h3>
+<ul>
+  <li><b>反向假设</b>：若「4x 卡死」为真，日志会长什么样？——会看到 <code>FLIP COUNTER FROZEN</code>、
+      panel flips/s 掉到 0、或 <code>hrsD</code> 停住。<b>本局一条都没有</b>，而且 panel=139 flips/s 是 4x 的精确预期值。</li>
+  <li><b>空集不能当健康</b>：<code>bmp=FAILED</code> 与 <code>[SCREEN] ERROR/BLIND</code> 都是自证行；
+      <code>WriteScreenBmp</code> 只有全部字节写成功才返回 true。</li>
+  <li><b>这条路径真的会走到吗</b>：<code>PollHomeKey</code> 由 Present 每帧调用（本局 <code>frames</code> 涨到 2442）⇒ 会走到。</li>
+  <li><b>用户会不会白跑</b>：会 —— 这是本轮唯一没解决的问题。<b>世界段必须超过 3 秒</b>，<code>FROZEN</code> 才有意义。</li>
+  <li><b>未跑过的东西一律标「未证」</b>：<code>WriteScreenBmp</code>、<code>same</code>/<code>FROZEN</code>、
+      组合检测 <b>一局都没跑过</b>（L53：首跑按「校准」读）。</li>
+</ul>
+
+<h2>7. 下一局要读的四件事</h2>
+<table>
+<tr><th>看到</th><th>结论</th></tr>
+<tr><td><code>[INPUT] *** ALT+F4 (quit) ***</code> 且键集含 <code>73</code></td>
+    <td><b>这一局是用户自己退的</b> —— 「进程被终止」从此有主语</td></tr>
+<tr><td><code>[INPUT] *** ALT+TAB (unfocus) ***</code></td>
+    <td>游戏被切到后台，Skyrim 会停渲染 ⇒ <b>「卡死」可能是切出去造成的</b></td></tr>
+<tr><td>键集只有 <code>[12 A4]</code>（Alt 单独）</td>
+    <td>焦点丢失不是 Alt 干的 ⇒ 继续查外部（杀进程审计）</td></tr>
+<tr><td><code>[SCREEN] FROZEN for N captures</code></td>
+    <td><b>★ 四天来第一次真正量到用户说的冻结</b>，而且有图可看</td></tr>
+<tr><td><code>DFG_screens\screen_*.bmp</code></td>
+    <td>直接看图：黑 / 冻 / 撕裂 / 重影，一眼可见</td></tr>
+</table>
+
+<div class="card warn">
+  <b>下一局协议（唯一要求）：进世界后站着别动，数满 30 秒再退。</b>
+  <p style="margin-bottom:0">
+    画面卡住 / 全黑 / 变形也一样<b>等够 30 秒</b>再退。最近八局世界段
+    <b>2.0 / 2.1 / 2.5 / 3.0 / 3.2 / 4.1 / 5.7 / 6.1 秒</b> —— 短于 3 秒，
+    新判据一次都不会触发，这一局又白跑。
+  </p>
+</div>
+
+<h2>8. 仍未证（不许假装）</h2>
+<ul>
+  <li><b>「4x 导致卡死」仍未证</b>，而且本局是<b>反证</b>。</li>
+  <li><b>2x 对照局（<code>MFGMaxFramesOverride=0</code>）仍然一次都没跑过</b> —— 四天里最大的方法论缺口。</li>
+  <li><b>世界段之后到底发生了什么仍未证</b>：本局只有「丢焦点」+「Alt 按下」两个读数，
+      谁先谁后、有没有第二个键，都要等 v1.31 的逐帧键集。</li>
+  <li><b>Transfusion 隔离实验</b>（<code>DINPUT8.dll</code> → <code>DINPUT8.dll.transfusion-off</code>，
+      <b>绝不能用 <code>.disabled</code></b>）仍然一次都没跑过。</li>
+  <li><b>v1.31 一局都没跑过。</b></li>
+</ul>
+
+<p class="tiny" style="margin-top:34px">
+  账本第 44 章 · 补丁 <code>tools/patch_v131_the_picture_and_the_hand.py</code> ·
+  归档 <code>docs/runlogs/2026-09-20-1326-v130-4x-latched-then-the-game-lost-focus.*</code>
+</p>
+
+</div>
+</body>
+</html>
