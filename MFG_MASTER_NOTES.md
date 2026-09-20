@@ -6135,3 +6135,24 @@ eyeD here is a frozen world`
 - **Transfusion 隔离实验**（`DINPUT8.dll` -> `DINPUT8.dll.transfusion-off`，**不能用 `.disabled`**）
   仍然一次都没跑过。
 - `WriteScreenBmp` 与 `s_scrSame`/`FROZEN` **一局都没跑过** ⇒ 首跑按「校准」读（L53）。
+
+## 44.9 补记（v1.31 归档时回读到、44.8 漏掉的一条读数）
+
+`[MFG] debug CHECK` 本局（13:26）**全日志只有 1 行**，就在世界入口那一毫秒：
+
+```
+[13:26:45.052] [28008] [W] [MFG] debug CHECK: Present skips SetDLSSGOptions even though the
+menu guard is not engaged (dlssgOk=0 blocked=2393 unblocked=1) - the ladder cannot be
+calibrated while this lasts
+```
+
+**同一毫秒**里 `[MFG] probe edge: menu guard released, SetDLSSGOptions resumes on this frame.
+step advertised=4x accepted=4x latched=1` 也在打 —— 两行在同 1 ms 内表面矛盾
+（一行说「跳过 SetDLSSGOptions」、一行说「本帧恢复」），**谁先谁后未证**。
+
+v1.30 已把 `debug CHECK` 的节奏从每 600 帧改到 **每 120 帧**（L47 的修法），
+但 120 帧 ≈ 3.5 s @34 real fps，而本局世界段只有 1.5 s ⇒ **下一个读数仍排在进程死后**
+⇒ `dlssgOk` 是否在下一帧恢复，**到现在仍未读**。44.8 漏了这条，此处补上。
+
+**教训（L47/L58 一族的又一小例）**：把节奏调快不一定等于「下一局就能读到」——
+还要**世界段活得够长**。改节奏和改运行协议必须一起改。
