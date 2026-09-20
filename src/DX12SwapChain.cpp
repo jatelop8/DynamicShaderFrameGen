@@ -703,11 +703,18 @@ namespace FrameGen
 		const unsigned fsize = 54u + datasize;
 		const unsigned off = 54u;
 		const unsigned short planes = 1u, bpp = 24u;
+		// v1.32: biSize was never written, so every field after it sat one slot
+		// early - width landed at 14 (where biSize belongs) and height at 18,
+		// leaving biHeight 0 - and ordinary readers rejected the files
+		// ("Unsupported BMP header type (640)").  Measured on all 71 files of the
+		// 13:47 run: not one was openable.  biSize = 40 for a BITMAPINFOHEADER.
+		const unsigned dibSize = 40u;
 		hdr[0] = 'B'; hdr[1] = 'M';
 		std::memcpy(hdr + 2, &fsize, 4);
 		std::memcpy(hdr + 10, &off, 4);
-		std::memcpy(hdr + 14, &a_w, 4);
-		std::memcpy(hdr + 18, &a_h, 4);
+		std::memcpy(hdr + 14, &dibSize, 4);
+		std::memcpy(hdr + 18, &a_w, 4);
+		std::memcpy(hdr + 22, &a_h, 4);
 		std::memcpy(hdr + 26, &planes, 2);
 		std::memcpy(hdr + 28, &bpp, 2);
 		std::memcpy(hdr + 34, &datasize, 4);
@@ -1042,6 +1049,14 @@ namespace FrameGen
 						// distinguishable at this size.
 						static const int kScrW = 640;
 						static const int kScrH = 360;
+						// v1.32: the band the overlay cannot reach.  Our own ImGui overlay (fps
+						// readout top right, loading notices top left) is drawn INTO this capture
+						// and redraws on every single sample, so a whole-frame hash can never
+						// repeat and `same` can never reach its threshold.  Measured on the 13:47
+						// run: 71 samples, same=0 on every one, while the band below the overlay
+						// was byte-identical across 1.40 s.  Hash this band: top 16%, bottom 12%.
+						static const int kScrBandY0 = (kScrH * 16) / 100;
+						static const int kScrBandY1 = (kScrH * 88) / 100;
 						static std::uint64_t s_scrHash[8] = {};
 						static std::uint64_t s_scrPix[8] = {};
 						static float         s_scrLum[8] = {};
@@ -1103,9 +1118,15 @@ namespace FrameGen
 									const std::size_t nPx = static_cast<std::size_t>(kScrW) * static_cast<std::size_t>(kScrH);
 									std::uint64_t h2 = 1469598103934665603ull;   // FNV-1a
 									std::uint64_t lsum = 0;
-									for (std::size_t i = 0; i < nPx * 4u; ++i) {
-										h2 ^= px[i];
-										h2 *= 1099511628211ull;
+									// v1.32: the band only - see kScrBandY0.  The DIB is BGRA top-down,
+									// so image row `by` starts at by*kScrW*4.
+									for (int by = kScrBandY0; by < kScrBandY1; ++by) {
+										const std::uint8_t* brow = px
+										+ static_cast<std::size_t>(by) * static_cast<std::size_t>(kScrW) * 4u;
+										for (int bx = 0; bx < kScrW * 4; ++bx) {
+											h2 ^= brow[bx];
+											h2 *= 1099511628211ull;
+										}
 									}
 									// DIB section is BGRA; sum B+G+R, skip A.
 									for (std::size_t i = 0; i + 3u < nPx * 4u; i += 4u)
@@ -1161,8 +1182,8 @@ namespace FrameGen
 									const bool bmpOk = WriteScreenBmp(s_scrBits, kScrW, kScrH, s_scrSeq);
 									const HWND probeW = reinterpret_cast<HWND>(g_probeHwnd.load());
 									const int isFg = (probeW && ::GetForegroundWindow() == probeW) ? 1 : 0;
-									std::fprintf(f, "[%lld] [SCREEN] #%u hash=%016llX lum=%.2f dLum=%+.2f "
-										"same=%u oursSame=%u ring=%u/%u ours=%016llX fg=%d frames=%llu %s\n",
+									std::fprintf(f, "[%lld] [SCREEN] #%u band=%016llX lum=%.2f dLum=%+.2f "
+										"bandSame=%u oursSame=%u ring=%u/%u ours=%016llX fg=%d frames=%llu %s\n",
 										nowMs, s_scrSeq, static_cast<unsigned long long>(h2),
 										static_cast<double>(slum), static_cast<double>(dLum),
 										s_scrSame, s_scrOursSame, sDistinct, s_scrFill,
@@ -1189,7 +1210,7 @@ namespace FrameGen
 									// image -- while our own colorOut changed on all of them.
 									// The ring version could never fire for the reason above.
 									if (s_scrSame >= 7u && s_scrOursSame <= 1u && slum > 3.0f) {
-										std::fprintf(f, "[%lld] [SCREEN] STALE over %u s: the SCREEN has shown ONE image "
+									std::fprintf(f, "[%lld] [SCREEN] STALE over %u s: the world band has shown ONE image "
 											"(hash=%016llX lum=%.1f) while our own colorOut took %u different values in "
 											"the same window, with our Present entered %llu times. What the player "
 											"sees is not advancing, and it is not the image we hand to DLSS-G.\n",
@@ -1206,7 +1227,7 @@ namespace FrameGen
 									// first criterion in this project that can see the failure
 									// the user has been describing since the 15th.
 									if (s_scrSame >= 3u && s_scrOursSame <= 1u && slum > 3.0f) {
-										std::fprintf(f, "[%lld] [SCREEN] FROZEN for %u captures: the screen is byte-identical "
+									std::fprintf(f, "[%lld] [SCREEN] FROZEN for %u captures: the world band (overlay excluded) is byte-identical "
 											"on every one of them (hash=%016llX lum=%.2f dLum=%+.2f) while our own colorOut "
 											"changed on all of them and our Present was entered %llu times. The panel is "
 											"advancing and the picture in it is not - this is what the player sees.\n",
