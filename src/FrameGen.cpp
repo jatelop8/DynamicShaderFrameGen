@@ -1706,16 +1706,54 @@ namespace FrameGen
 						const float pdz = snapPcLast[2] - snapPcPrevEye[2];
 						snapPcEyeStep = std::sqrt(pdx * pdx + pdy * pdy + pdz * pdz);
 					}
+					// v1.30 -- the input question, asked the other way round.
+					//
+					// v1.29 widened the mask from eight keys to all 255 and this run
+					// still printed kb=0 in all sixteen samples while dc= (the mouse)
+					// read 2006/1, 2155/1 and 2132/1.  Widening the mask cannot
+					// settle that: "no key out of 255 was down at this instant" and
+					// "the user did nothing" are still different sentences, and a
+					// 1 Hz sample has a one-second hole in it.
+					//
+					// GetLastInputInfo asks the OS the only question that matters --
+					// was there ANY input to this session -- and it is immune to
+					// which key it was, which is the whole point.  It returns a
+					// timestamp rather than a state, so 1 Hz is enough, and it covers
+					// the keyboard and the mouse together, which makes it a genuinely
+					// independent second reading of a quantity kb= has only ever
+					// reported as zero.
+					static DWORD s_lastInputTick = 0;
+					static DWORD s_lastInputAge = 0u;
+					{
+						LASTINPUTINFO lii{};
+						lii.cbSize = sizeof(LASTINPUTINFO);
+						if (::GetLastInputInfo(&lii)) {
+							const DWORD nowTick = ::GetTickCount();
+							s_lastInputAge = nowTick - lii.dwTime;
+							if (lii.dwTime != s_lastInputTick) {
+								const bool firstEver = (s_lastInputTick == 0u);
+								s_lastInputTick = lii.dwTime;
+								if (!firstEver) {
+									SKSE::log::info("[INPUT] system input {} ms ago - something was pressed or "
+										"clicked anywhere in this session within the last second (kb={} held, "
+										"os=0x{:x}, dc={:.0f}/{}). This is the OS's own answer and does not "
+										"depend on which key it was.",
+										s_lastInputAge, s_inKbHeld, s_inKeys,
+										static_cast<double>(s_inDist), s_inMoves);
+								}
+							}
+						}
+					}
 					SKSE::log::info("[CAM] PC v1.19: read={} match={} adopt={}/{} rej={} ref={} "
 						"best={:.2f} at proj00={:.6g} eye=({:.2f},{:.2f},{:.2f}) eyeD={:.2f} "
-						"in(os=0x{:x} dc={:.0f}/{} fg={} kb={}) "
+						"in(os=0x{:x} dc={:.0f}/{} fg={} kb={} ai={}) "
 						"plr=({:.1f},{:.1f},{:.1f}) plrD={:.2f} "
 						"LIVE paused={} ld={} fade={} hrs={:.5f} hrsD={:.6f} rawD={:.6f} {} {}",
 						snapPcRead, snapPcMatch, snapPcAdoptSec, snapPcAdopt, snapPcReject,
 						snapPcRefSeen,
 						snapPcSawAny ? snapPcBestDist : -1.0f, snapPcBestProj,
 						snapPcLast[0], snapPcLast[1], snapPcLast[2], snapPcEyeStep,
-						s_inKeys, s_inDist, s_inMoves, s_inFg, s_inKbHeld,
+						s_inKeys, s_inDist, s_inMoves, s_inFg, s_inKbHeld, s_lastInputAge,
 						s_plrPos[0], s_plrPos[1], s_plrPos[2], s_plrStep,
 						s_livePaused ? 1 : 0, s_liveLd ? 1 : 0, s_liveFade ? 1 : 0,
 						s_liveHrs, s_liveHrsD, s_liveRawD,

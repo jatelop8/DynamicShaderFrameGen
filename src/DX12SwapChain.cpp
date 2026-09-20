@@ -617,6 +617,12 @@ namespace FrameGen
 	// Never read a member from the watchdog thread -- it must not touch
 	// anything the render thread may be inside of.
 	static std::atomic<std::uintptr_t> g_probeHwnd{ 0 };
+	// v1.30: the hash of the image we hand to DLSS-G, published by PixelProbeTick
+	// so the watchdog can put it beside the hash of the screen.  The screen probe
+	// is the only witness in this file that is not ours, and it means nothing
+	// without a second reading to compare against: "the screen did not change" is
+	// a bug only if OUR image did.
+	static std::atomic<std::uint64_t> g_colorOutHash{ 0 };
 
 	// v0.73: the watchdog log path, resolved once at plugin load and kept in a plain
 	// char buffer. DllMain needs it during process detach, where calling
@@ -831,39 +837,60 @@ namespace FrameGen
 					{
 						static unsigned long long s_prevFlipPr = 0;
 						static unsigned long long s_prevFlipMs = 0;
+						static unsigned long long s_prevFrames = 0;
 						static int s_frozenTicks = 0;
 						static bool s_saw4x = false;
 						static long long s_4xAtMs = 0;
-						// "the multiplier really is 4x" needs a test that cannot fire on a load
-						// screen, where frames and lastPr are both tiny and their ratio means
-						// nothing.  Both must be warm AND the flip counter must run well ahead
-						// of our own Present count; 3x of frames is the conservative form of
-						// "about 4 flips per real frame".
-						const bool warm4x = frames > 200ull && lastPr > frames * 3ull;
-						if (warm4x && !s_saw4x) {
+						// v1.30 -- "the multiplier really is 4x" has to be a RATE.
+						//
+						// v1.29 asked for lastPr > frames*3, a CUMULATIVE ratio, and the
+						// 13:12 run shows why that can never fire: the flip counter only
+						// gets ahead of our Present count while 4x is actually live, so
+						// the cumulative test needs 4x to have been live for most of the
+						// session.  That run ended at lastPr=906 against frames=705, so
+						// the test wanted 2115 flips and was false for the whole session
+						// -- including the 2.2 s it was written for.  4x SNAPSHOT,
+						// 4x probe and FLIP COUNTER FROZEN all reported zero lines, and
+						// every one of those zeros was the instrument.
+						//
+						// The definition is not cumulative: it is 4 flips per real frame
+						// over the slice just gone.  At ~34 present-entries/s a 200 ms
+						// slice holds ~7 frames, so >=3 is conservative and cannot fire
+						// on a load screen (where the ratio is 1.00).
+						const unsigned long long dFlip =
+							(s_prevFlipPr != 0ull && lastPr >= s_prevFlipPr) ? (lastPr - s_prevFlipPr) : 0ull;
+						const unsigned long long dFrames =
+							(s_prevFrames != 0ull && frames >= s_prevFrames) ? (frames - s_prevFrames) : 0ull;
+						const bool live4x = (dFrames >= 3ull) && (dFlip >= dFrames * 3ull);
+						if (live4x && !s_saw4x) {
 							s_saw4x = true;
 							s_4xAtMs = nowMs;
 							std::fprintf(f, "[%lld] [XRAY] 4x SNAPSHOT t=0 frames=%llu lastPr=%llu cpuD=%llums "
-								"silent=%lldms presentAge=%lldms fence=%s queued=%llu dsync=%llu msg=%d\n",
+								"silent=%lldms presentAge=%lldms fence=%s queued=%llu dsync=%llu msg=%d "
+								"(live4x: +%llu flips for +%llu Present entries over the last 200 ms slice)\n",
 								nowMs, static_cast<unsigned long long>(frames), lastPr, cpuDelta,
 								silent,
 								(g_presentEnteredMs.load() > 0) ? (nowMs - g_presentEnteredMs.load()) : 0LL,
-								fenceTxt, queued, dsync, msgOk);
-						} else if (warm4x && s_saw4x && (nowMs - s_4xAtMs) < 3000LL && (tick % 5) == 0) {
-							const unsigned long long dFlip = (lastPr >= s_prevFlipPr) ? (lastPr - s_prevFlipPr) : 0ull;
+								fenceTxt, queued, dsync, msgOk, dFlip, dFrames);
+						} else if (s_saw4x && (nowMs - s_4xAtMs) < 3000LL && (tick % 5) == 0) {
 							const unsigned long long dMs = (nowMs > (long long)s_prevFlipMs) ? (unsigned long long)(nowMs - (long long)s_prevFlipMs) : 0ull;
 							std::fprintf(f, "[%lld] [XRAY] 4x probe +%lldms frames=%llu lastPr=%llu "
-								"panel=%llu flips/s cpuD=%llums silent=%lldms stage=%s\n",
+								"panel=%llu flips/s cpuD=%llums silent=%lldms stage=%s live4x=%d\n",
 								nowMs, nowMs - s_4xAtMs,
 								static_cast<unsigned long long>(frames), lastPr,
-								dMs ? (dFlip * 1000ull / dMs) : 0ull, cpuDelta, silent, self.lastStage());
+								dMs ? (dFlip * 1000ull / dMs) : 0ull, cpuDelta, silent, self.lastStage(),
+								live4x ? 1 : 0);
 						}
-						if (s_prevFlipPr != 0 && lastPr <= s_prevFlipPr && warm4x) {
+						// v1.30 -- no dependence on live4x any more.  The question is
+						// exactly "our Present ran and the flip counter did not move",
+						// and a precondition that requires 4x to be live would hide the
+						// case where 4x was requested and never arrived.
+						if (dFrames >= 3ull && dFlip == 0ull) {
 							if (++s_frozenTicks >= 5) {
 								std::fprintf(f, "[%lld] [XRAY] FLIP COUNTER FROZEN for %d ticks - our Present is still being "
-									"entered (frames=%llu) but nothing has reached the panel (lastPr stuck at %llu). "
-									"The picture on screen is not advancing.\n",
-									nowMs, s_frozenTicks, static_cast<unsigned long long>(frames), lastPr);
+									"entered (%llu times in the last 200 ms) but nothing has reached the swap chain "
+									"(lastPr stuck at %llu). The picture cannot be advancing.\n",
+									nowMs, s_frozenTicks, dFrames, lastPr);
 								s_frozenTicks = 0;
 							}
 						} else {
@@ -871,6 +898,172 @@ namespace FrameGen
 						}
 						s_prevFlipPr = lastPr;
 						s_prevFlipMs = (unsigned long long)nowMs;
+						s_prevFrames = frames;
+					}
+
+					// ========================== v1.30: THE SCREEN ==========================
+					//
+					// Every field in this file is on our side of the fence.  frames= counts
+					// our own Present entries.  lastPr= counts our own swap chain's flips,
+					// and a rising flip counter is not even evidence that the panel moved:
+					// with a flip queue, Present returns while nothing has scanned out.
+					// [PIXEL] hashes colorOut -- the D3D11 texture we hand TO DLSS-G, which
+					// is the input to frame generation, not the output.  cpuD measures our
+					// own process; silent and presentAge measure our own calls.  Not one of
+					// them has ever read the screen, and that gap is the whole of the
+					// disagreement: the user reports a frozen picture, the log reports 137
+					// flips a second, and both can be true at once.
+					//
+					// So read the screen.  StretchBlt the desktop into a 64x64 DIB once a
+					// second, hash it, and hold it beside the hash of our own colorOut.  If
+					// the screen shows ONE image across the whole window while our own
+					// image takes three or more values in that same window, then what the
+					// player sees is not what we are producing, and no amount of reading
+					// our side could ever have said so.
+					//
+					// It runs here, in the watchdog, for three reasons: it is 1 Hz, it is
+					// read-only GDI, and it sends no message to the game window -- all of
+					// which are the same requirements the rest of this thread already has.
+					// HALFTONE is on purpose: a nearest-neighbour 4K-to-64 downscale would
+					// sample 1 pixel in 60 and could miss a real change entirely.
+					//
+					// Known failure mode, stated rather than hidden: if the game ever runs
+					// exclusive fullscreen the desktop capture sees nothing, and silence
+					// would then read as health.  So a uniformly black capture is counted
+					// and [SCREEN] BLIND is printed, and a capture that cannot be created
+					// prints [SCREEN] ERROR.  ForceBorderless forces Windowed=TRUE, so the
+					// capture does include this game -- but that is a claim about the INI,
+					// not a measurement, and the two lines above are how it gets checked.
+					if ((tick % 5) == 3) {
+						static const int kScrDim = 64;
+						static std::uint64_t s_scrHash[8] = {};
+						static std::uint64_t s_scrPix[8] = {};
+						static float         s_scrLum[8] = {};
+						static std::uint32_t s_scrAt = 0u;
+						static std::uint32_t s_scrFill = 0u;
+						static std::uint32_t s_scrSeq = 0u;
+						static HDC           s_scrDc = nullptr;
+						static HBITMAP       s_scrBmp = nullptr;
+						static void*         s_scrBits = nullptr;
+						static bool          s_scrDead = false;
+						static int           s_scrBlind = 0;
+						static bool          s_scrBlindSaid = false;
+						if (!s_scrDead && !s_scrDc) {
+							HDC sd = ::GetDC(nullptr);
+							if (!sd) {
+								s_scrDead = true;
+							} else {
+								BITMAPINFO bi{};
+								bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+								bi.bmiHeader.biWidth = kScrDim;
+								bi.bmiHeader.biHeight = -kScrDim;   // negative: rows top-down
+								bi.bmiHeader.biPlanes = 1;
+								bi.bmiHeader.biBitCount = 32;
+								bi.bmiHeader.biCompression = BI_RGB;
+								void* bits = nullptr;
+								s_scrDc = ::CreateCompatibleDC(sd);
+								s_scrBmp = s_scrDc
+									? ::CreateDIBSection(sd, &bi, DIB_RGB_COLORS, &bits, nullptr, 0)
+									: nullptr;
+								if (s_scrDc && s_scrBmp && bits && ::SelectObject(s_scrDc, s_scrBmp)) {
+									s_scrBits = bits;
+									::SetStretchBltMode(s_scrDc, HALFTONE);
+									::SetBrushOrgEx(s_scrDc, 0, 0, nullptr);
+								} else {
+									s_scrDead = true;
+								}
+								::ReleaseDC(nullptr, sd);
+							}
+							if (s_scrDead) {
+								std::fprintf(f, "[%lld] [SCREEN] ERROR: the capture could not be created (dc=%d bmp=%d). "
+									"Every other field in this file stays on our side of the fence, so with this dead "
+									"this run contains no measurement of what the player sees - not one, either way.\n",
+									nowMs, s_scrDc ? 1 : 0, s_scrBmp ? 1 : 0);
+							}
+						}
+						if (s_scrDc && s_scrBits) {
+							HDC sd = ::GetDC(nullptr);
+							if (sd) {
+								const int vx = ::GetSystemMetrics(SM_XVIRTUALSCREEN);
+								const int vy = ::GetSystemMetrics(SM_YVIRTUALSCREEN);
+								const int vw = ::GetSystemMetrics(SM_CXVIRTUALSCREEN);
+								const int vh = ::GetSystemMetrics(SM_CYVIRTUALSCREEN);
+								const BOOL ok = (vw > 0 && vh > 0)
+									? ::StretchBlt(s_scrDc, 0, 0, kScrDim, kScrDim, sd, vx, vy, vw, vh, SRCCOPY)
+									: FALSE;
+								::ReleaseDC(nullptr, sd);
+								if (ok) {
+									const auto* px = static_cast<const std::uint8_t*>(s_scrBits);
+									const std::size_t nPx = static_cast<std::size_t>(kScrDim) * kScrDim;
+									std::uint64_t h2 = 1469598103934665603ull;   // FNV-1a
+									std::uint64_t lsum = 0;
+									for (std::size_t i = 0; i < nPx * 4u; ++i) {
+										h2 ^= px[i];
+										h2 *= 1099511628211ull;
+									}
+									// DIB section is BGRA; sum B+G+R, skip A.
+									for (std::size_t i = 0; i + 3u < nPx * 4u; i += 4u)
+										lsum += static_cast<std::uint64_t>(px[i]) + px[i + 1u] + px[i + 2u];
+									const float slum = static_cast<float>(lsum) / (static_cast<float>(nPx) * 3.0f);
+									++s_scrSeq;
+									s_scrHash[s_scrAt] = h2;
+									s_scrPix[s_scrAt] = g_colorOutHash.load();
+									s_scrLum[s_scrAt] = slum;
+									s_scrAt = (s_scrAt + 1u) % 8u;
+									if (s_scrFill < 8u)
+										++s_scrFill;
+									// Read the window in WRITE order.  v1.28 had to fix exactly
+									// this mistake in the pixel probe, where slot order is write
+									// order rotated by the write cursor.
+									std::uint32_t sDistinct = 0u;
+									std::uint32_t pDistinct = 0u;
+									for (std::uint32_t i = 0; i < s_scrFill; ++i) {
+										const std::uint64_t sHere = s_scrHash[(s_scrAt + i) % 8u];
+										const std::uint64_t pHere = s_scrPix[(s_scrAt + i) % 8u];
+										bool sSeen = false, pSeen = false;
+										for (std::uint32_t k = 0; k < i; ++k) {
+											if (s_scrHash[(s_scrAt + k) % 8u] == sHere) sSeen = true;
+											if (s_scrPix[(s_scrAt + k) % 8u] == pHere) pSeen = true;
+										}
+										if (!sSeen) ++sDistinct;
+										if (!pSeen) ++pDistinct;
+									}
+									const HWND probeW = reinterpret_cast<HWND>(g_probeHwnd.load());
+									const int isFg = (probeW && ::GetForegroundWindow() == probeW) ? 1 : 0;
+									std::fprintf(f, "[%lld] [SCREEN] #%u hash=%016llX lum=%.2f distinct=%u/%u "
+										"ours=%016llX ourDistinct=%u fg=%d frames=%llu\n",
+										nowMs, s_scrSeq, static_cast<unsigned long long>(h2),
+										static_cast<double>(slum), sDistinct, s_scrFill,
+										static_cast<unsigned long long>(g_colorOutHash.load()),
+										pDistinct, isFg,
+										static_cast<unsigned long long>(frames));
+									if (slum < 0.05f) {
+										if (++s_scrBlind == 10 && !s_scrBlindSaid) {
+											s_scrBlindSaid = true;
+											std::fprintf(f, "[%lld] [SCREEN] BLIND: ten consecutive captures are uniformly black. "
+												"Either the screen really is black or the capture cannot see the game "
+												"(exclusive fullscreen does this). Until this is resolved, a missing "
+												"[SCREEN] change is NO MEASUREMENT - never 'the screen was fine'.\n",
+												nowMs);
+										}
+									} else {
+										s_scrBlind = 0;
+									}
+									// The verdict this instrument exists for, and the first one in
+									// this project that is about the screen rather than about us.
+									if (s_scrFill >= 8u && sDistinct <= 1u && pDistinct >= 3u && slum > 3.0f) {
+										std::fprintf(f, "[%lld] [SCREEN] STALE over %u s: the SCREEN has shown ONE image "
+											"(hash=%016llX lum=%.1f) while our own colorOut took %u different values in "
+											"the same window, with our Present entered %llu times. What the player "
+											"sees is not advancing, and it is not the image we hand to DLSS-G.\n",
+											nowMs, s_scrFill - 1u,
+											static_cast<unsigned long long>(s_scrHash[(s_scrAt + s_scrFill - 1u) % 8u]),
+											static_cast<double>(s_scrLum[(s_scrAt + s_scrFill - 1u) % 8u]),
+											pDistinct, static_cast<unsigned long long>(frames));
+									}
+								}
+							}
+						}
 					}
 					std::fflush(f);
 					std::fclose(f);
@@ -1558,7 +1751,13 @@ namespace FrameGen
 			// SetDLSSGOptions/EvaluateDLSSG and resets the failure counter.
 			const bool debugOk = dlssgOk || menuBlock;
 			if (!debugOk && fgOn && fg.streamline.featureDLSSG) {
-				if ((++mfgWarned % 600u) == 1u) {
+				// v1.30: was every 600 frames (~17 s). On the 13:12 run this line
+				// fired exactly once, on the first unguarded frame, reading dlssgOk=0
+				// -- and the process was gone 2.2 s later, well before the next
+				// cadence, so "did our DLSS-G evaluation recover once 4x was live"
+				// was never asked. 120 frames is ~3.5 s and puts a reading inside the
+				// window the user actually gets.
+				if ((++mfgWarned % 120u) == 1u) {
 					// v1.28: the old text printed `menuBlock=0` as a literal and labelled the
 					// next argument `frames=`, but that argument is debugOk, not a frame
 					// count -- the line named a quantity it was not printing. This branch is
@@ -1604,7 +1803,13 @@ namespace FrameGen
 			// 帧号停滞 → token 不变/每 120 帧相同；插帧交替 → dlssgOk 振荡。
 			{
 				static std::atomic<int> dlssgDiag{ 0 };
-				if (++dlssgDiag % 120 == 0) {
+				// v1.30: was every 120 calls (~3.5 s at 34 present-entries/s). The
+				// 13:12 run put 4x live at 13:12:44.551 and the process was gone at
+				// 13:12:46.76, so the previous cadence put the next reading - the one
+				// that would say whether OUR EvaluateDLSSG succeeds once 4x is live -
+				// at ~13:12:47.3, after the process had already died. A cadence chosen
+				// for the load screen is useless in the window the user reports on.
+				if (++dlssgDiag % 20 == 0) {
 					SKSE::log::info("[FrameGen] DLSSG diag: fgOn={} dlssgOk={} token={:p} fail={}",
 						fgOn, dlssgOk, static_cast<const void*>(fg.streamline.frameToken),
 						dlssgFailCount.load());  // v0.66: atomic - fmt 不能直接格式化
@@ -1929,6 +2134,12 @@ namespace FrameGen
 					}
 				}
 				pixelProbeLastHash = h;
+				// v1.30: hand this sample to the watchdog, which samples the SCREEN
+				// once a second and compares the two.  This buffer is colorOut -- what
+				// we hand TO DLSS-G.  It is the input to frame generation, so it can
+				// never show whether the generated picture arrived; that is what the
+				// screen probe is for.
+				g_colorOutHash.store(h);
 
 				// v1.26 -- oscillation window. `changed` is incremented whenever this
 				// sample differs from the previous one, so an image that alternates
@@ -2072,7 +2283,16 @@ namespace FrameGen
 				// depends on the player walking has never once been reachable. What the
 				// player actually reports is a picture that flickers, and a picture that
 				// flickers is exactly what the change counter scores as healthy.
-				if (pixelProbeRingFill >= 8u && distinct <= 3u && revisits >= 1u &&
+				// v1.30 -- rev >= 1 was not enough, and the 13:12 run is the third
+				// false positive in a row.  It fired four times on the load screen
+				// with shape=[0 0 1 1 1 1 2 1], i.e. black, black, bright x4, ONE
+				// sample at 104.9 among neighbours at 104.0, bright.  That is a
+				// one-way black-to-bright ramp plus a 0.9/255 wobble, and a 0.9/255
+				// wobble is not "the image came back".  rev counts every non-adjacent
+				// pair of equal states, so a genuine alternation A,B,A,B,A,B,A,B
+				// scores 12 while a single blip scores 1: requiring 2 separates them
+				// without touching the sensitivity that matters.
+				if (pixelProbeRingFill >= 8u && distinct <= 3u && revisits >= 2u &&
 					pixelProbeFlickerFired < 4u) {
 					++pixelProbeFlickerFired;
 					SKSE::log::error("[PIXEL] FLICKER: the last 8 samples ({:.1f} s) hold only "

@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DFG v1.30 - 13:12 局：不是崩溃，是被终止；而「屏幕上是什么」终于有了仪器</title>
+<style>
+  :root{
+    --bg:#101217; --panel:#171a21; --panel2:#1d2129; --line:#2b303a;
+    --tx:#e6e9ef; --tx2:#a8b0bf; --tx3:#737d8d;
+    --ok:#31b57a; --warn:#e0a33a; --bad:#e05c5c; --info:#4f9de0; --acc:#8b7fe8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);
+    font:15px/1.75 "Segoe UI","Microsoft YaHei",system-ui,sans-serif;}
+  .wrap{max-width:1080px;margin:0 auto;padding:38px 26px 70px}
+  h1{font-size:24px;line-height:1.45;margin:0 0 8px;letter-spacing:.2px}
+  .sub{color:var(--tx3);font-size:13.5px;margin-bottom:30px}
+  h2{font-size:17.5px;margin:38px 0 12px;padding-left:11px;
+    border-left:3px solid var(--acc);line-height:1.4}
+  h3{font-size:14.5px;margin:22px 0 8px;color:var(--tx2);font-weight:600}
+  p{margin:9px 0}
+  code{background:#0b0d11;border:1px solid var(--line);border-radius:4px;
+    padding:1.5px 5px;font:12.5px/1.5 Consolas,"Courier New",monospace;color:#c9d4e4}
+  pre{background:#0b0d11;border:1px solid var(--line);border-radius:7px;
+    padding:13px 15px;overflow-x:auto;margin:11px 0;
+    font:12.5px/1.65 Consolas,"Courier New",monospace;color:#c9d4e4}
+  table{width:100%;border-collapse:collapse;margin:13px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:var(--tx2);font-weight:600;font-size:12.5px}
+  td.num{font-family:Consolas,monospace;font-variant-numeric:tabular-nums}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:9px;
+    padding:16px 19px;margin:15px 0}
+  .big{border-left:3px solid var(--acc)}
+  .good{border-left:3px solid var(--ok)}
+  .bad{border-left:3px solid var(--bad)}
+  .warn{border-left:3px solid var(--warn)}
+  ul{margin:9px 0;padding-left:22px}
+  li{margin:5px 0}
+  .k{color:var(--ok)} .r{color:var(--bad)} .y{color:var(--warn)} .b{color:var(--info)}
+  .tiny{font-size:12.5px;color:var(--tx3)}
+  .pill{display:inline-block;border:1px solid var(--line);border-radius:20px;
+    padding:1px 9px;font-size:11.5px;color:var(--tx2);background:var(--panel2);
+    margin-right:6px;font-family:Consolas,monospace}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>13:12 局：<span class="k">不是崩溃，是被终止</span> —— 4x 只在台上活了 <span class="r">2.21 秒</span></h1>
+<div class="sub">
+  DynamicShaderFrameGen · 跑 v1.29（DLL md5 <code>7fbb3629…</code>）·
+  2026-09-20 13:12:00 → 13:12:46.86 · 归档
+  <code>docs/runlogs/2026-09-20-1312-v129-terminated-not-crashed-4x-lived-2-seconds.*</code>
+</div>
+
+<div class="card big">
+  <h3 style="margin-top:0">先说三件最要紧的</h3>
+  <ul>
+    <li><span class="k">你说的「刚进去两秒」与日志逐字段吻合。</span>
+      4x 在 <code>13:12:44.551</code> 生效（Transfusion <code>Applied fixed multiplier: 4x</code>，
+      同一毫秒就是我方 <code>MENU EDGE open=0</code>），进程在
+      <code>13:12:46.76</code> 消失 —— <b>2.21 秒</b>。而且
+      <code>lastPr</code> 与 <code>frames</code> 的差值在末段是 <b>248 / 62 = 4.00</b>，
+      <span class="k">4x 第三次被实测到，精确的 4.00</span>。</li>
+    <li><span class="k">这一局游戏没有崩。</span>两条独立证据：
+      WER 的 SkyrimSE 崩溃报告最近三份全是 <b>9/18</b>、9/20 零份；
+      Crash Logger SSE 的 <code>crash-*.log</code> 最后五份也全是 <b>9/18</b>，
+      <b>9/19 和 9/20 一个都没有</b>。⇒ 进程是<b>被终止</b>的，
+      没有异常、没有 dump、没有析构。</li>
+    <li><span class="y">而日志里没有任何一行像「卡死」。</span>
+      watchdog 最后一行（进程消失前 200 ms）还是 <code>silent=5ms</code>、
+      <code>presentAge=-12ms</code>、<code>msg=1 alive=1</code>。
+      <b>「渲染在跑」和「画面在动」是两件事，而这个工程从来没有测过后者。</b></li>
+  </ul>
+</div>
+
+<h2>1. 时间线：4x 上台到进程消失，一共 2.21 秒</h2>
+
+<table>
+<tr><th style="width:150px">时刻</th><th>来源</th><th>内容</th></tr>
+<tr><td class="num">13:12:44.551</td><td>Transfusion</td><td><code>[OPTIONS] Game DLSS-G options: ... frames=3</code> → <code>Applied fixed multiplier: 4x, result=0 (eOk)</code></td></tr>
+<tr><td class="num">13:12:44.551</td><td>本插件</td><td><code>[XRAY] MENU EDGE open=0 serial=631</code> —— <b>世界入口与 4x 同一毫秒</b></td></tr>
+<tr><td class="num">13:12:44.747</td><td>Transfusion</td><td><code>DLSS-G actual presentation count: 4x (maximum generated frames=5, status=0)</code></td></tr>
+<tr><td class="num">13:12:45.454</td><td>Transfusion</td><td><code>[PERF] 4x | Kernel: Ada | FPS: 33.3 (30.08ms) | 1% Low: 32.2</code></td></tr>
+<tr><td class="num">13:12:46.759</td><td>watchdog</td><td><code>frames=705 silent=5ms ... lastPr=906 ... alive=1</code> —— <b>看门狗自己的最后一行</b></td></tr>
+<tr><td class="num">13:12:46.855</td><td>主日志</td><td>最后一行，此后五个文件同时停止</td></tr>
+</table>
+
+<h3>末段 1.83 秒的两个计数</h3>
+<table>
+<tr><th>时刻</th><th class="num">frames（我方 Present 入口）</th><th class="num">lastPr（DXGI 自己的计数）</th></tr>
+<tr><td class="num">13:12:44.931</td><td class="num">643</td><td class="num">658</td></tr>
+<tr><td class="num">13:12:46.759</td><td class="num">705</td><td class="num">906</td></tr>
+<tr><td><b>差值</b></td><td class="num"><b>+62</b></td><td class="num"><b>+248</b></td></tr>
+</table>
+<p class="tiny">248 / 62 = <b>4.00</b>。主日志里那条 <code>FLIPS per real frame = 3.57</code>
+的窗口（13:12:44.508 → 46.526）<b>跨在 4x 生效的前后</b>，被 1x 的部分稀释了 ——
+这是「用窗口量速率」的必然误差，不是异常。</p>
+
+<h2>2. 不是崩溃 —— 两条互相独立的证据</h2>
+
+<div class="card good">
+<table>
+<tr><th style="width:210px">仪器</th><th>读数</th><th style="width:88px">结论</th></tr>
+<tr>
+  <td>Windows 事件日志 / WER<br><span class="tiny">Application 日志 13:10–13:20</span></td>
+  <td>没有 Application Error、没有 AppHang 事件。<br>
+      <code>WER\ReportArchive</code> 里 <code>AppCrash_SkyrimSE.exe</code> 共三份，
+      <b>全部是 9 月 18 日</b>（19:16 / 19:04 / 18:23），9 月 20 日零份。</td>
+  <td class="k">不是崩溃</td>
+</tr>
+<tr>
+  <td>Crash Logger SSE<br><span class="tiny">Documents\...\SKSE\crash-*.log</span></td>
+  <td>共 20 份（<code>Max Crash Logs=20</code>，旧的已轮转）。最后五份是
+      <b>09-18 16:04 / 18:23 / 19:04 / 19:16 / 19:34</b>。
+      <b>9 月 19 日、9 月 20 日</b>各零份。</td>
+  <td class="k">不是崩溃</td>
+</tr>
+</table>
+<p style="margin-bottom:0">两条路径完全不同（WER 走 Windows 错误报告，Crash Logger 走 SKSE 插件），
+两天里所有「卡死」在<b>两边都没有留下痕迹</b>。而
+<code>TerminateProcess</code> 正好是这样：不留 WER 报告、不写 crash log、不调用任何析构。</p>
+</div>
+
+<h2>3. 那不是「卡死」—— 也没有任何一行像</h2>
+<pre>[43243629] 13:12:46.759 frames=705 silent=<b>5ms</b> stage=d3d11 Wait focus=1 fence=1401/1401
+           stim=179 queued=1 lastPr=906 dsync=0 msg=<b>1</b> alive=<b>1</b> presentAge=-12ms cpuD=156ms</pre>
+<p>渲染线程在进程消失前 <b>5 毫秒</b>还在正常跑。整段 <code>silent</code> 2–27 ms、
+<code>presentAge</code> ±27 ms、<code>fence</code> 两侧相等、<code>msg=1 alive=1</code>。
+<b>一条都不像卡住。</b></p>
+
+<div class="card warn">
+<h3 style="margin-top:0">顺手记下一个测量伪影（别再当异常读）</h3>
+<p style="margin-bottom:0"><code>presentAge=-4ms / -16ms / -12ms</code> 是负值。
+原因是 <code>nowMs</code> 在 watchdog 循环顶部取一次，而
+<code>SendMessageTimeoutA(..., 200ms)</code> 排在写这一行<b>之前</b> ——
+<code>nowMs</code> 相对 <code>g_presentEnteredMs</code> 最长可以过期 200 ms。
+<b>名字叫 age，参考点却是旧的。</b></p>
+</div>
+
+<h2>4. 我 v1.29 加的四台仪器：两台<span class="r">按构造就不可能触发</span></h2>
+
+<p>v1.29 给 <code>4x SNAPSHOT</code> / <code>4x probe</code> / <code>FLIP COUNTER FROZEN</code>
+配的前提条件是：</p>
+<pre>const bool warm4x = frames &gt; 200ull &amp;&amp; <b>lastPr &gt; frames * 3ull</b>;   // 累积比</pre>
+
+<p>这是<b>累积比</b>。而 <code>lastPr</code> 只有在 4x 活着的时候才会跑到
+<code>frames</code> 前面，所以「累积比 &gt; 3」等价于要求
+<b>「4x 已经活了整个会话的大部分时间」</b>。本局末态
+<code>lastPr=906</code> / <code>frames=705</code>，测试要 <code>lastPr &gt; 2115</code> ——
+<b>它要的那 2115 次翻转，在这个 2 秒的窗口里根本不存在。</b></p>
+
+<div class="card bad">
+<p style="margin:0"><b>四个读数一个都没出现，四个零全是仪器，不是现象。</b><br>
+<span class="tiny">这正是我自己写下的 L42「仪器必须自证运行过」的第四次踩坑 ——
+前三次是探针挂在永不执行的分支上，这一次是探针挂在一个<b>被它要测的现象所否证</b>的前置条件上。</span></p>
+</div>
+
+<p><b>L66（本轮新增）：一个仪器如果要求「我要测的那个现象已经成立」才启动，
+那它就永远测不到那个现象。</b></p>
+
+<p>修法有两处：把「4x 是活的」改回它本来该有的定义 —— <b>速率</b>
+（<code>dFlips / dFrames &gt;= 3</code> 在最近 200 ms 的切片上；34 次入口/秒 ⇒
+切片内约 7 帧，取 3 是保守的，装载期比值是 1.00 所以不可能误触发）；
+以及让 <code>FLIP COUNTER FROZEN</code> <b>去掉对 live4x 的依赖</b> ——
+它要问的是「我方 Present 在跑而翻转计数没动」，而一个要求「4x 必须活着」的
+前置条件，恰好会藏住「4x 被请求了但没到」这一种情况。</p>
+
+<h2>5. 第三条误报：0.9/255 的抖动不算「回来了」</h2>
+<p>v1.28 的回访判据（<code>revisits &gt;= 1</code>）本局触发 <b>4 次</b>，窗口逐字：</p>
+<pre>shape=[0 0 1 1 1 1 2 1]     亮度 0.0 / 0.0 / 104.0 ×4 / <b>104.9</b> / 104.0</pre>
+<p>这是<b>加载屏由黑转亮的一次单向渐变</b>，加上<b>一个比邻居亮 0.9/255 的样本</b>。
+<code>revisits</code> 数的是折叠序列里所有非相邻的相等对：
+一次真实的 <code>A,B,A,B,A,B,A,B</code> 得 <b>12</b>，单个毛刺得 <b>1</b>。
+所以门槛抬到 <b>2</b> 就能分开，且不动真正需要的灵敏度（实测对照，不是推理）。</p>
+
+<div class="card warn">
+<p style="margin:0"><b>★ 这是同一个探针的第三次误报</b>（v1.26、v1.27、v1.28 各一次），
+而<b>它一次真阳性都没有过</b>。它读的是 <code>colorOut</code> —— 交给 DLSS-G 的
+<b>输入</b>，所以从原理上看不见插帧之后的画面。它剩下的正当用途只有
+「我方这一侧有没有动」。</p>
+</div>
+
+<h2>6. 盲点有了准确的名字，而且比之前说的更大</h2>
+<table>
+<tr><th style="width:180px">读数</th><th>它到底测什么</th></tr>
+<tr><td class="num">frames=</td><td>我们自己的 Present 被进入了多少次</td></tr>
+<tr><td class="num">lastPr=</td><td>我们自己的 swapchain 翻转了多少次</td></tr>
+<tr><td class="num">[PIXEL]</td><td>我们交给 DLSS-G 的 D3D11 纹理（<b>输入</b>）的哈希</td></tr>
+<tr><td class="num">cpuD=</td><td>我们整个进程的 CPU 时间</td></tr>
+<tr><td class="num">silent= / presentAge=</td><td>我们自己函数调用之间的间隔</td></tr>
+</table>
+<p><b>没有任何一个读屏幕。</b>而且 <code>lastPr</code> 上涨<b>连「面板动了」都证明不了</b>：
+FLIP 模型下有翻转队列，Present 可以在任何东西扫出之前就返回。
+⇒ <b>「DXGI 报 137 翻转/秒」从来不是「画面在动」的证据</b> —— 这条我上一轮说得比实际强，纠正。</p>
+
+<h3>v1.30 因此加了屏幕探针</h3>
+<ul>
+  <li>在 watchdog 线程里每秒一次 <code>GetDC(NULL)</code> + <code>StretchBlt</code> 到
+      64×64 DIB，算哈希与平均亮度，与<b>我们自己 <code>colorOut</code> 的哈希</b>并排保存。
+      窗口按<b>写序</b>读（v1.28 在环形缓冲上犯过这个错）。</li>
+  <li><code>HALFTONE</code> 是有意的：最近邻在 4K→64 的降采样里只采到 1/60 的像素，
+      可能整片漏掉真实变化。</li>
+  <li>判据只有一条，也是这个工程里第一条<b>关于屏幕</b>而不是关于我们的判据：
+      <pre>窗口内 sDistinct &lt;= 1 &amp;&amp; pDistinct &gt;= 3   -&gt;   [SCREEN] STALE</pre></li>
+  <li>两条自证：捕获创建失败打 <code>[SCREEN] ERROR</code>；连续十次全黑打
+      <code>[SCREEN] BLIND</code>（独占全屏会让桌面捕获什么都看不到，
+      而<b>沉默会被读成健康</b>）。</li>
+</ul>
+
+<div class="card good">
+<p style="margin:0"><b>★ 顺带排除一条假设 —— 不需要再跑一局：</b>
+<code>DX12SwapChain.cpp:206 / 241</code> 里
+<code>CreateSwapChainForHwnd(commandQueue.get(), a_swapChainDesc.OutputWindow, ...)</code>
+用的是<b>游戏自己的窗口</b>。「FG swapchain 建在一个隐形窗口上、present 打到看不见的地方」
+不成立。</p>
+</div>
+
+<h2>7. 输入见证：换一个问法</h2>
+<p>本局 16 行 <code>[CAM] PC</code> 全是 <code>kb=0</code>（255 个 VK 全扫），
+而同一行的 <code>dc=</code>（鼠标位移/事件数）读到 <code>2006/1</code>、<code>2155/1</code>、<code>2132/1</code>。
+⇒ <b>鼠标到了，键盘没有。</b></p>
+<p>但「255 个键此刻都没按下」和「用户什么都没做」仍然是两句不同的话，
+而且 1 Hz 采样本身有 1 秒的洞。v1.30 加 <code>GetLastInputInfo</code>
+（<code>ai=&lt;距上次输入 ms&gt;</code>）：它问的是「这个会话里有没有任何输入」，
+<b>与是哪个键无关</b>，而且返回时间戳而不是状态，1 Hz 够用。</p>
+
+<h2>8. v1.30 改动清单（不碰帧生成路径）</h2>
+<table>
+<tr><th style="width:36px">#</th><th style="width:210px">位置</th><th>改动</th></tr>
+<tr><td>1</td><td><code>DX12SwapChain.cpp</code> watchdog</td><td><b>新增 <code>[SCREEN]</code> 探针</b>（上述）</td></tr>
+<tr><td>2</td><td><code>DX12SwapChain.cpp</code> watchdog</td><td><code>live4x</code> 改速率定义；<code>FLIP COUNTER FROZEN</code> 去掉 live4x 前提</td></tr>
+<tr><td>3</td><td><code>DX12SwapChain.cpp</code> PixelProbeTick</td><td>闪烁门槛 <code>revisits &gt;= 1u</code> → <code>&gt;= 2u</code></td></tr>
+<tr><td>4</td><td><code>FrameGen.cpp</code> [CAM] PC</td><td><code>ai=</code>（<code>GetLastInputInfo</code>）+ <code>[INPUT] system input … ms ago</code></td></tr>
+<tr><td>5</td><td><code>DX12SwapChain.cpp</code></td><td><code>DLSSG diag</code> 每 120 次 → <b>每 20 次</b></td></tr>
+<tr><td>6</td><td><code>DX12SwapChain.cpp</code></td><td><code>[MFG] debug CHECK</code> 每 600 帧 → <b>每 120 帧</b></td></tr>
+</table>
+<p class="tiny">第 5、6 条本身就是 L47 的新例子：旧节奏在为装载屏选的 3.5 秒/17 秒下，
+<b>下一个读数排在进程已经死掉之后</b> —— 为长窗口选的节奏，在用户真正报告的那个窗口里等于零。</p>
+
+<h2>9. 两遍检查</h2>
+<div class="card">
+<h3 style="margin-top:0">第一遍 · 手脚</h3>
+<ul>
+  <li>7 个锚点干跑全 <code>count==1</code>，<code>--apply</code> 后 post-check：
+      新串在、旧串（<code>revisits &gt;= 1u</code> / <code>lastPr &gt; frames * 3ull</code> /
+      <code>warm4x</code>）计数为 <b>0</b>。</li>
+  <li>行尾：<code>DX12SwapChain.cpp</code> <b>CRLF=0 CR=0</b>（纯 LF）；
+      <code>FrameGen.cpp</code> <b>CRLF==LF==CR</b>（纯 CRLF）。
+      <code>Edit</code> 工具两次改动后复查，未被转成 CRLF。</li>
+  <li>构建 <code>BUILD SUCCESS</code>，0 error。</li>
+  <li>DLL <b>1,389,056 B</b> md5 <code>40704c8cc78466a77884ccee3f9f4414</code>，
+      <b>build == MO2 部署目录</b>。</li>
+  <li>二进制内新串 4/4 在（<code>ai={}</code> / <code>[SCREEN] STALE over</code> /
+      <code>live4x: +%llu flips</code> / <code>system input {} ms ago</code>）。</li>
+  <li>INI <b>未动</b>：<code>efce89119d840670e519d219749a6476</code>，20658 B，358 行 CRLF。</li>
+</ul>
+<h3>第二遍 · 脑子</h3>
+<ul>
+  <li><b>反向假设</b>：那两条「边沿」日志的值如果真变了，日志文本会不同。本局
+      <code>Reflex cap check</code> 709 行里 <b>631 行 <code>at 2x</code> / 78 行 <code>at 4x</code></b>
+      —— 它是<b>每帧行</b>，值跟着倍数在切；而
+      <code>Reflex options applied</code> 从 4896 行掉到 <b>1 行</b>、
+      <code>Reflex FLIP cap</code> 只打 <b>2 行</b>（正好在 2x→4x 那一个边沿）。
+      ⇒ <b>v1.29 对 <code>slReflexSetOptions</code> 那个门做的原子修复生效了</b> ——
+      这是本轮唯一一处「上一版的修复被本局证实」。</li>
+  <li><b>A ≠ B</b>：<code>revisits &gt;= 1</code> 与 <code>&gt;= 2</code> 在同一段日志上判据相反
+      （1 vs 1）—— 实测对照。</li>
+  <li><b>这条路径真会走到吗</b>：<code>[SCREEN]</code> 挂在
+      <code>(tick % 5) == 3</code>，与 <code>SendMessageTimeoutA</code> 的
+      <code>(tick % 5) == 0</code> <b>错开</b>，避免两件慢事叠在同一次。</li>
+  <li><b>空集不能当健康</b>：<code>[SCREEN] ERROR</code> / <code>[SCREEN] BLIND</code>
+      就是为这一条写的。</li>
+  <li><b>用户会不会白跑</b>：<span class="r">会</span> —— 而这是本轮唯一没能解决的问题。
+      屏幕探针要 8 秒窗口才出 STALE，而最近 8 局的世界段是
+      2.1 / 3.0 / 3.2 / 2.5 / 6.1 / 5.7 / 4.1 / <b>2.0</b> 秒。</li>
+</ul>
+</div>
+
+<h2>10. 下一局（唯一的要求）</h2>
+<div class="card big">
+<p><b>进世界后站着别动，数满 30 秒再退。</b>不用按 W，不用做任何事。
+如果画面真的卡住 / 变形 / 全黑，<b>也等够 30 秒再退</b>，并顺手告诉我它长什么样。</p>
+<p style="margin-bottom:0" class="tiny">同时请留意覆盖层第二行 ——
+它会先写 <code>KEEP PLAYING, hold W for 10 s</code>，满 20 秒后写
+<code>enough - you can exit now</code>。<b>看到第二句再退。</b></p>
+</div>
+
+<h2>11. 仍未证（别假装做了）</h2>
+<ul>
+  <li><b>屏幕上到底是什么 —— 仍然未证</b>，但从 v1.30 起有仪器了。
+      首跑按「校准」读：先确认 <code>[SCREEN]</code> 每秒在打、
+      <code>distinct</code> 不是恒为 1、不是连续十次全黑。</li>
+  <li><b>「4x 导致卡死」仍未证</b>，而且现在多了一条更强的说明：
+      4x 之后进程是<b>被终止</b>的、不是崩的，日志里没有任何一行像卡死。
+      <b>2x 对照局（<code>MFGMaxFramesOverride=0</code>）仍然一次都没跑过。</b></li>
+  <li><b>Transfusion 隔离实验</b>（根目录 <code>DINPUT8.dll</code> →
+      <code>DINPUT8.dll.transfusion-off</code>，<b>绝不能用 <code>.disabled</code></b>）
+      <b>仍然一次都没跑过。</b></li>
+  <li><code>[MFG] debug CHECK</code> 本局报了 <code>dlssgOk=0</code>，
+      落在解除守卫后的<b>第一帧</b>；下一帧起是否恢复，旧节奏让它排在进程死亡之后
+      ⇒ <b>本局读不到</b>。</li>
+  <li><code>[PIXEL] VERDICT</code>（需相机移动）与仿射闸 <b>从未触发</b>。</li>
+</ul>
+
+<p class="tiny" style="margin-top:34px">
+生成于 2026-09-20 13:5x · 权威记录见 <code>MFG_MASTER_NOTES.md</code> 第 43 章 ·
+补丁 <code>tools/patch_v130_the_screen_and_the_dead_4x_test.py</code>
+</p>
+
+</div></body></html>
