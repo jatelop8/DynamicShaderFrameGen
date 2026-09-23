@@ -27,6 +27,16 @@ namespace
 		switch (a_msg->type) {
 		case SKSE::MessagingInterface::kDataLoaded:
 			SKSE::log::info("[FrameGen] Data loaded - frame generation plugin ready");
+			// v1.52：共存开关检查（默认两个都是 1 = 与 v1.51 行为完全一致）。
+			// CommunityShaders 会 detour/thunk 同一批引擎函数头，两边都以为自己是链头
+			// -> 跳转目标互相覆盖 -> EXCEPTION_BREAKPOINT（crash-2026-09-22-12-05-34）。
+			// 装了 CS 的整合包必须把 INI 里这两项改成 0。
+			if (!FrameGen::Get().settings.menuDrawHook || !FrameGen::Get().settings.pollInputHook) {
+				SKSE::log::warn("[FrameGen] LEGACY-HOOK SUPPRESSION ACTIVE: MenuDrawHook={} PollInputHook={} "
+					"- the engine hook(s) CommunityShaders also owns are NOT installed this run",
+					FrameGen::Get().settings.menuDrawHook ? 1 : 0,
+					FrameGen::Get().settings.pollInputHook ? 1 : 0);
+			}
 			// 输入开关键（Home）——DataLoaded 后 BSInputDeviceManager 可用
 			FrameGen::Get().InstallInputHook();
 			// v0.50（用户拍板拔掉 DLSS 超分）：移除 InstallDRSHook + InstallMainPostProcessingHook。

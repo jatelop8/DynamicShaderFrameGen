@@ -317,5 +317,72 @@ namespace FrameGen
 		float pixelProbeLum = 0.0f;
 		std::uint32_t pixelProbeFlickerFired = 0;
 		std::uint64_t pixelProbeArmedMs = 0;
+
+		// ---- v1.33 BACK-BUFFER PROBE ----
+		// The 19:11 run forced this. Two instruments disagreed for 28 s: [PIXEL]
+		// (colorOut -- the D3D11 copy of what we hand TO DLSS-G) took 74 distinct
+		// values while the [SCREEN] capture kept showing 3. That puts the break
+		// between them, and exactly one object sits between them that no
+		// instrument in this project has ever read: the D3D12 swap-chain back
+		// buffer DXGI actually flips. This probe hashes it.
+		//
+		// Three channels then read side by side, each compared only against its
+		// own history:
+		//   [PIXEL]  colorOut  = engine image (we hand this TO DLSS-G)
+		//   [BACKBUF] back buffer = the frame we ask DXGI to present
+		//   [SCREEN] desktop capture = what the panel displays
+		// A picture that changes in the first and not the third is not enough to
+		// localise anything; all three collapse the question to one of two edges.
+		//
+		// Same two-phase design as PixelProbeTick, for the same reason (v1.22
+		// copied and mapped in one call and never produced a single sample): the
+		// copy is recorded on the frame's own command list just before it closes,
+		// and harvested on a LATER tick once the fence reports that frame done.
+		// Nothing here ever waits; a sample that cannot be read is dropped and
+		// counted, never retried inside the same tick.
+		void BackBufferProbeHarvest();
+		void BackBufferProbeIssue(ID3D12GraphicsCommandList* a_cmdList, ID3D12Resource* a_backBuffer,
+			UINT a_frameIndex);
+		winrt::com_ptr<ID3D12Resource> backProbeReadback;
+		D3D12_PLACED_SUBRESOURCE_FOOTPRINT backProbeFootprint{};
+		UINT backProbeW = 0;                 // pixels hashed per row (padding excluded)
+		UINT backProbeH = 0;                 // rows hashed
+		std::uint32_t backProbeBytesPerPx = 4;
+		std::uint64_t backProbeLastMs = 0;
+		std::uint64_t backProbeLastHash = 0;
+		std::uint64_t backProbeFenceAtCopy = 0;   // fence value whose completion carries the copy
+		std::uint64_t backProbePendingSinceMs = 0;
+		// L39, the rule this project had to learn the hard way: an instrument that
+		// produces nothing looks exactly like a healthy one. Arm time plus a
+		// one-shot alarm, same as the D3D11 probe has.
+		std::uint64_t backProbeArmedMs = 0;
+		// v1.34: the self-witness below has to measure "we never got a chance to
+		// sample", not "no sample 15 s after the arming". On the 21:26 run it fired
+		// 20 s after arming while the loading screen was still up and Present had not
+		// been entered once -- it accused a probe that could not have produced
+		// anything. The clock now starts at the first Present entry, which is the
+		// first moment a sample is even possible.
+		std::uint64_t backProbeFirstPresentMs = 0;
+		// v1.34: WHICH of the swap chain's buffers this sample came from. The back
+		// buffer is an array and consecutive frames use different slots, so a series
+		// of samples reading a different slot each time shows "3 distinct hashes"
+		// while every slot is in fact frozen -- and the reverse can hide a rotation.
+		// Without this index the 3-value pattern cannot be told from slot rotation,
+		// which is exactly the ambiguity that made the previous run's [BACKBUF]
+		// evidence unreadable. 0xFFFFFFFF = no sample taken yet.
+		UINT backProbeFrameIndex = 0xFFFFFFFFu;
+		bool backProbeSelfWitnessFired = false;
+		std::uint32_t backProbeSamples = 0;
+		std::uint32_t backProbeChanged = 0;
+		std::uint32_t backProbeUnchanged = 0;
+		std::uint32_t backProbeDropped = 0;        // fence never reported the copy as done
+		std::uint32_t backProbeDeferred = 0;       // a copy was already in flight: skipped, not queued
+		std::uint32_t backProbeStreak = 0;
+		std::uint32_t backProbeMaxStreak = 0;
+		bool backProbeReady = false;
+		bool backProbeDisabled = false;
+		bool backProbePending = false;
+		UINT backProbeSrcW = 0;
+		UINT backProbeSrcH = 0;
 	};
 }

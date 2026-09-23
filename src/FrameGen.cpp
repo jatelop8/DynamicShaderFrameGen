@@ -182,6 +182,11 @@ namespace FrameGen
 			// （FP8 计算量减 ~75%）。0.5~0.75 推荐，越低越快但细节越少。
 			else if (key == "NRRenderScale")
 				nrTuning.renderScale = std::clamp(readFloat(line, 1.0f), 0.25f, 1.0f);
+			// v1.45：多层神经渲染层数。1 = 关闭（v1.44 行为）；2..kMaxNRLayers = 同一帧内
+			// 把神经渲染串联 N 遍（每层一个独立 NGX 实例，各有时域历史）。
+			else if (key == "NRLayers")
+				nrTuning.layers = std::clamp(static_cast<std::uint32_t>(readInt(line, 1)),
+					1u, NeuralRendering::kMaxNRLayers);
 			// v0.25：EnableDLSSNR/NRDirectTest/NR* 已移除（NR 改走 ReShade 外挂方案）
 			else if (key == "FpsOverlay")
 				settings.fpsOverlay = readBool(line, true);      // v0.24：FPS 显示器（默认开）
@@ -196,21 +201,59 @@ namespace FrameGen
 			// Ada/Ampere/Turing 内核，否则高倍率请求无内核可执行 -> 黑屏/卡死。
 			else if (key == "MFGMaxFramesOverride")
 				settings.mfgMaxFramesOverride = std::clamp(readInt(line, 0), 0, 5);
+			// v1.46：是否允许把 MFG 倍率写进第三方 DLSSG-Transfusion 的 json（默认 0 = 不碰）。
+			// 读在这里、写回在 SaveSettingsToIni —— 少一侧就会变成"设置粉碎机"（v1.21 教训）。
+			else if (key == "WriteTransfusionConfig")
+				settings.writeTransfusionConfig = readBool(line, false) ? 1u : 0u;
 			// v0.54：Reflex 渲染帧率上限（0 = 自动按 刷新率/总倍数 计算；见 Streamline::ReflexSleep）
 			else if (key == "ReflexFpsLimit")
 				settings.reflexFpsLimit = std::clamp(readInt(line, 0), 0, 480);
 			// v0.63：菜单期间不插帧（1=开，默认；0=旧行为，菜单也插帧 -> 菜单画面持续闪）
 			else if (key == "MenuDisableFrameGen")
 				settings.menuDisableFrameGen = readBool(line, true);
+			// v1.52 共存开关：与 CommunityShaders 抢同一个函数头时用来隔离冲突。
+			// 默认 1 = 与 v1.51 行为完全一致（不改任何现有部署的表现）。
+			else if (key == "MenuDrawHook") {
+				settings.menuDrawHook = readBool(line, true);
+				SKSE::log::info("[FrameGen] MenuDrawHook={} ({})", settings.menuDrawHook ? 1 : 0,
+					settings.menuDrawHook
+						? "MenuManager::DrawInterfaceStart is detoured"
+						: "MenuManager::DrawInterfaceStart NOT detoured - leave this at 0 when CommunityShaders is installed (it detours the same address)");
+			}
+			else if (key == "PollInputHook") {
+				settings.pollInputHook = readBool(line, true);
+				SKSE::log::info("[FrameGen] PollInputHook={} ({})", settings.pollInputHook ? 1 : 0,
+					settings.pollInputHook
+						? "BSInputDeviceManager::PollInputDevices is thunked"
+						: "BSInputDeviceManager::PollInputDevices NOT thunked - leave this at 0 when CommunityShaders is installed (it thunks the same address); the menu still works because ImGui polls the cursor itself");
+			}
 			// v1.21: switchable so one rebuild covers both behaviours of the
 			// interop fence, and so a run that wedges on it is reverted by editing
 			// one INI line instead of rebuilding.
 			else if (key == "InteropFenceWait")
 				settings.interopFenceWait = readBool(line, true);
+			// v1.44: which timeline the end-of-frame fence wait sits on. Logged at
+			// load for the same reason ForceBackBufferCopy is: once the frame rate
+			// settles the two modes look identical from the outside, so "was it even
+			// read" must not be confusable with "it was read and did nothing".
+			else if (key == "FenceWaitBusy") {
+				settings.fenceWaitBusy = readBool(line, false);
+				SKSE::log::info("[FrameGen] FenceWaitBusy={} ({})", settings.fenceWaitBusy ? 1 : 0,
+					settings.fenceWaitBusy
+						? "CPU polls d3d12Fence in Present - no CPU/GPU overlap"
+						: "wait queued on the D3D11 timeline - CPU returns at once");
+			}
 			else if (key == "MenuGuardFader")
 				settings.menuGuardFader = readBool(line, true);
 			else if (key == "PixelProbe")
 				settings.pixelProbe = readBool(line, true);
+			// v1.34 (T2): 强制写回后缓冲（默认 0 = 旧行为）。见 FrameGen.h 里的长注释。
+			else if (key == "ForceBackBufferCopy") {
+				settings.forceBackBufferCopy = readBool(line, false);
+				SKSE::log::info("[FrameGen] T2 ForceBackBufferCopy={} (1 = copy colorOut over the back buffer "
+					 "even when DLSS-G reports success)",
+					 settings.forceBackBufferCopy ? 1 : 0);
+			}
 			else if (key == "Sharpness") {
 				// v0.6.3：DLSS 超分锐化（0-1，0=关闭）
 				try {
@@ -400,6 +443,17 @@ namespace FrameGen
 		// v0.7.3：菜单打开时吞掉设备输入事件（CS 同款）——鼠标移动不再控制游戏视角，
 		// 只操作菜单。Home 长按检测走硬件轮询（GetAsyncKeyState）不受影响。
 		// 注意：菜单开时键盘事件也被吞（ImGui 键盘导航失效），鼠标操作完全正常。
+		//
+		// v1.52：这个 hook 与 CommunityShaders 的**同一个函数头**冲突，由
+		// PollInputHook 开关控制（默认 1 = 保持旧行为）。CS 在同一个偏移安装了它自己
+		// 的 thunk，两边都以为自己是链头 -> 跳转目标互相覆盖 -> EXCEPTION_BREAKPOINT。
+		if (!settings.pollInputHook) {
+			SKSE::log::warn("[FrameGen] PollInputDevices thunk SKIPPED (PollInputHook=0) - "
+				"required when CommunityShaders is installed: it thunks the same address. "
+				"Cost: the mouse can still turn the camera while our menu is open; the menu "
+				"itself still works (ImGui polls GetCursorPos/GetAsyncKeyState directly).");
+			return;
+		}
 		stl_ext::write_thunk_call<BSInputDeviceManager_PollInputDevices>(
 			REL::RelocationID(67315, 68617).address() + REL::Relocate(0x7B, 0x7B, 0x81));
 		SKSE::log::info("[FrameGen] PollInputDevices hook installed (menu freezes game input)");
@@ -423,6 +477,16 @@ namespace FrameGen
 
 	void FrameGen::InstallMenuHook()
 	{
+		// v1.52：与 CommunityShaders 的**同一个函数头**冲突，由 MenuDrawHook 开关控制
+		// （默认 1 = 保持旧行为）。CS 在 12:04:44 用 detour_thunk 抢了这个地址，本插件
+		// 50 秒后再 DetourAttach 同一地址 —— 两边都以为自己是链头。
+		// 关掉它没有功能损失：OnMenuDrawStart() 自 v0.50 起就是空函数（见下方注释）。
+		if (!settings.menuDrawHook) {
+			SKSE::log::warn("[FrameGen] MenuManagerDrawInterfaceStart detour SKIPPED (MenuDrawHook=0) - "
+				"required when CommunityShaders is installed: it detours the same address. "
+				"No functional loss: OnMenuDrawStart() has been a no-op since v0.50.");
+			return;
+		}
 		// v0.7.15：Detours detour（CS detour_thunk 同款）——函数开头安全 detour，
 		// DetourAttach 自动复制原指令到 trampoline。v0.7.13 用 write_branch<5> 是
 		// “重定向现有 jmp/call”的语义（返回值 = 原跳转目标），直接 patch 函数开头

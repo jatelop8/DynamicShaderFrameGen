@@ -57,3 +57,104 @@ perf.csv
 #                            outside this repo anyway.
 reports/
 _removed_*/
+
+# --- 2026-09-24: pre-publication cleanup -------------------------------------
+# MFG_MASTER_NOTES.md is a working ledger: local machine paths, full crash-log
+# transcripts, and session-by-session notes. It is a development journal, not
+# part of the plugin, and it has no place in the public source tree. Kept on
+# disk, not in the repo.
+MFG_MASTER_NOTES.md
+MFG_MASTER_NOTES.md.bak-*
+CHANGELOG.md.bak-*
+
+# docs/runlogs/ - debug screenshots (PNG) and per-chapter drafts. 170 files at
+# the time of writing, mostly one-off probes of a single run. Process artifacts.
+docs/runlogs/
+
+# tools/ one-off diagnostic scripts. The maintained tools are named explicitly
+# below and stay tracked; everything else in tools/ was written to answer one
+# question and is not maintained.
+tools/analyze_4k_run.py
+tools/analyze_band_run.py
+tools/append_checked.py
+tools/apply_2k_full_1851.py
+tools/apply_3x_1708.py
+tools/apply_4k_full_1808.py
+tools/apply_4k_res_1723.py
+tools/apply_4x_1721.py
+tools/apply_4xrecipe_1657.py
+tools/apply_flipfix_1647.py
+tools/apply_res_back_1750.py
+tools/band_bmp_diff.py
+tools/band_diff_magnitude.py
+tools/build_1936_board.py
+tools/build_2140_board.py
+tools/build_2151_board.py
+tools/cam_timeline_1631.py
+tools/check_ids_1597.py
+tools/check_transfusion_mult.py
+tools/clip_1842.py
+tools/cmp_1618_vs_1500.py
+tools/desk_2k_revert_probe_1900.py
+tools/desk_4k_probe_1815.py
+tools/diag_band_1647.py
+tools/diag_band_1647b.py
+tools/diag_display_gpu.py
+tools/diag_mult_check.py
+tools/diag_mult_check2.py
+tools/diag_mult_check3.py
+tools/diag_seq_1647.py
+tools/fix_indent_multilayer_145.py
+tools/flips_check.py
+tools/hb_1842.py
+tools/hb_1913.py
+tools/inventory_restart_knobs.py
+tools/make_cycle_figure.py
+tools/make_inworld_set.py
+tools/marker.py
+tools/obs_capture.py
+tools/obs_sharpness.py
+tools/patch_2151_board_add_live4x.py
+tools/patch_2151_board_v2.py
+tools/patch_ini_nr_fg_off_1.py
+tools/patch_multilayer_145.py
+tools/patch_v134_t2.py
+tools/patch_v135_menu_target_1.py
+tools/patch_v136_ini_writeback_1.py
+tools/patch_v136b_mfg_log_1.py
+tools/patch_v137_mfg_ladder_rearm_1.py
+tools/patch_v138_nr_renderscale_1.py
+tools/patch_v139_ini_note_1.py
+tools/patch_v139_ini_nr_fg_on_scale_1.py
+tools/patch_v139_nr_colorsubrect_1.py
+tools/patch_v140_nr_input_dims_1.py
+tools/patch_v141_nr_scaling_ratio_1.py
+tools/patch_v142_perfquality_at_evaluate_1.py
+tools/query_display.py
+tools/scan_logs_window.py
+tools/screen_1631.py
+tools/screen_watch.py
+tools/set_ini_key.py
+tools/set_transfusion_multiplier.py
+tools/state_1631.py
+tools/state_1723.py
+tools/three_runs_1631.py
+tools/tx_config_dump.py
+tools/tx_perf_tail.py
+tools/tx_set_multiplier.py
+tools/verify_v133.py
+tools/vis_1723.py
+tools/vis_1842.py
+tools/vis_1913.py
+tools/watch_mad_figure.py
+tools/watchdog_1631.py
+tools/wd_analyze.py
+tools/wd_sessions.py
+tools/wd_steady.py
+tools/world_frames_figure.py
+tools/world_run_1500.py
+tools/world_run_1500_index.txt
+tools/world_run_1500_ordered.py
+
+# tmpfrag/ - scratch fragments.
+tmpfrag/

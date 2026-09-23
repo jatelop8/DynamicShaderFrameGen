@@ -299,6 +299,13 @@ namespace FrameGen
 
 		std::uint32_t mfgProbeStep = 0;         // 阶梯探测当前档（0 = 未开始）
 		bool mfgProbeLatched = false;           // 已有一档被接受 → 停止下探
+
+		// v1.37: the multiplier the user actually asked for, tracked apart from
+		// mfgProbeStep. The ladder latches mfgProbeStep on its first accepted rung
+		// and only re-reads settings when that step is 0 or above the ceiling, so a
+		// value changed in the ImGui menu never reached the runtime. Comparing this
+		// against settings.dlssgFramesToGenerate is what makes such a change visible.
+		std::uint32_t mfgProbeRequestedStep = 0;   // v1.37: last requested step
 		// v0.79: shown in the “MFG probe” log line so LATCHED can be told apart
 		// from “the ladder has not finished descending yet”.
 		bool mfgProbeWasBlocked = false;        // 上一次探测是在菜单/守卫内 => 结果不可信

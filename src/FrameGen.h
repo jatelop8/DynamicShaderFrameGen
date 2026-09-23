@@ -119,8 +119,37 @@ namespace FrameGen
 		// NR write through D3D11 -- with no ordering at all, while the note at
 		// DX12SwapChain's "fence before" comment still says the design relies on
 		// that ordering. 1 = restore it (default), 0 = the v0.75 behaviour.
-		bool interopFenceWait = true;   // INI InteropFenceWait
-		// v1.21 -- THE FADER MENU IS NOT A MENU. IsMenuOpen("Fader Menu") is true
+	bool interopFenceWait = true;   // INI InteropFenceWait
+	// v1.44 -- FENCE WAIT MODE. This is the one knob that separates this build
+	// from the Sep 11 build at the end of Present(), and it is worth a setting
+	// rather than a constant because the two behaviours differ by a whole
+	// frame of CPU/GPU overlap.
+	//
+	// The end of every frame signals the shared fence on the D3D12 queue and
+	// then has to wait for it. d3d11Fence and d3d12Fence wrap the SAME fence
+	// object (CreateInterop opens it on both devices), so the wait can be
+	// placed on either timeline:
+	//   1 = CPU polls d3d12Fence->GetCompletedValue() until it passes
+	//       (v1.03b..v1.43). The poll runs on the render thread, so the CPU
+	//       submits a frame and then blocks until the GPU has finished it -
+	//       no frame is ever prepared while the previous one is executing.
+	//   0 = d3d11Context->Wait(d3d11Fence, v): the wait is queued on the D3D11
+	//       timeline and the CPU returns immediately, which is what the Sep 11
+	//       build did and why it reached 56.12 base at 2K.
+	//
+	// Measured 2026-09-21, same box, same 2K output, same FSR3 2x chain:
+	//   Sep 11 build (queue-side wait)         base 56.12 (17.8 ms)
+	//   this build    (CPU poll), watchdog     92-98% of samples in
+	//                                          "stage=d3d11 Wait", base 36.08
+	// The watchdog number alone is not proof - it is exactly where the code
+	// was told to block - which is why this is a switch and not a conclusion.
+	//
+	// Mode 1 keeps the v1.03b anti-freeze guard (it can time out and drop a
+	// frame); mode 0 cannot hang the CPU, but a fence that is never signalled
+	// stalls the D3D11 queue instead - the 2026-09-18 18:23 failure. If the
+	// game freezes on mode 0, this line is the one to flip back.
+	bool fenceWaitBusy = false;     // INI FenceWaitBusy (1 = CPU poll, 0 = queue-side)
+	// v1.21 -- THE FADER MENU IS NOT A MENU. IsMenuOpen("Fader Menu") is true
 		// the whole time the player is in the world (23:38 run: fade=1 for 40+ s
 		// with paused=0, ld=0 and the clock at timescale 20), so counting it as
 		// one engages the v0.63 guard on essentially every frame and DLSS-G is
@@ -135,6 +164,19 @@ namespace FrameGen
 		// none of them can see the same picture being flipped again (ledger L38).
 		// Read-only and self-disabling; 0 switches it off without a rebuild.
 		bool pixelProbe = true;         // INI PixelProbe
+		// v1.34 -- T2. The T1 run renamed the SECOND DLSS-G writer (DLSSG-Transfusion,
+		// loaded as dinput8.dll) away before launch, and its own log was untouched for
+		// the whole session -- the freeze was bit-for-bit the same. So the second writer
+		// is not the cause, and the break is on our side of the flip.
+		//
+		// With this on, the passthrough CopyResource runs even when dlssgOk is true: it
+		// overwrites whatever DLSS-G did -- or did not -- put in the back buffer with our
+		// own colorOut. Picture comes back  -> DLSS-G never filled the back buffer.
+		// Picture still frozen -> the back buffer does hold new content and the break is
+		// downstream of us, in the flip. Diagnostic switch; default off, no effect on a
+		// normal run. The run prints its value at INI load so "was it even read" can
+		// never be confused with "it was read and did nothing".
+		bool forceBackBufferCopy = false;  // INI ForceBackBufferCopy
 		int  provider = 0;             // 0=FSR3（AMD 插帧，默认） 1=DLSSG（NVIDIA 插帧）
 		int  qualityMode = 1;          // DLSS 模式：0=DLAA 1=Quality 2=Balanced 3=Performance 4=UltraPerformance
 		// v0.41：渲染分辨率缩放（自定义 DRS）——引擎渲染分辨率 = 输出 × 该比例，DLSS
@@ -156,6 +198,19 @@ namespace FrameGen
 		// 1..5 = 强制上报上限为 N 个插帧（1=2x 2=3x 3=4x 4=5x 5=6x）。需要外部内核
 		// 解锁器提供 Ada/Ampere/Turing 内核，否则运行时会被守卫退回安全倍率。
 		std::uint32_t mfgMaxFramesOverride = 0;  // INI MFGMaxFramesOverride
+		// v1.46：MFG 倍率的持久化开关（默认 0 = 不碰外部文件）。
+		//
+		// 背景（实测取证，见账本 §84.25 / §84.28）：本插件的 DLSSGFramesToGenerate 只被
+		// 本插件自己读，而实际上屏倍率由第三方注入型 mod DLSSG-Transfusion 决定 —— 它
+		// 在启动时读一次游戏根目录的 DLSSG-Transfusion.json（日志原话：
+		// "Initial control: ... multiplier=4x ...; config: <游戏目录>\DLSSG-Transfusion.json"），
+		// 之后在渲染线程持续 reapply，覆盖本插件发出的任何 SetOptions 请求。所以菜单里
+		// 改倍率写自己的 INI 是"改了等于没改"：重启后依然是 json 里那个数。
+		//
+		// 唯一让"菜单改 -> 重启 -> 生效"成真的路径，就是把值也写进那份 json。但那是
+		// 另一个作者的文件，本插件默认不动它 —— 必须用户在菜单里显式勾选本开关才写，
+		// 且每次写前自动备份。0 = 只写自己的 INI（默认、安全）。1 = 同时写 json。
+		std::uint32_t writeTransfusionConfig = 0;  // INI WriteTransfusionConfig
 		// v0.54：Reflex 渲染帧率上限（0 = 自动：显示器刷新率 / 帧生成总倍数 - 1）。
 		// DLSSG 多倍帧生成时 present 帧率 = 渲染帧率 x 倍数，一旦超过显示器刷新率就会
 		// 超发：present 队列积压、SL pacer 节奏崩 → 画面持续闪烁（v0.53 实测 160Hz 屏
@@ -166,6 +221,23 @@ namespace FrameGen
 		// 替代实现 —— Transfusion 会把那个 flag 从 DLSS-G options 里剥掉）。菜单是 2D
 		// UI，被当 3D 内容插值 = 主菜单画面持续闪。0 = 旧行为（菜单也插帧）。
 		bool menuDisableFrameGen = true;  // INI MenuDisableFrameGen
+		// v1.52 -- 共存开关（默认 1 = 行为与 v1.51 完全一致）。
+		//
+		// 背景：这两个引擎函数同时也是 CommunityShaders (CS) 的 hook 目标。
+		// CS 在 12:04:44 先后 detour 了 BSInputDeviceManager::PollInputDevices 与
+		// MenuManager::DrawInterfaceStart，本插件 50 秒后（12:05:34）对**同一批函数头**
+		// 再下 detour —— 两边都以为自己是链头，跳转目标互相覆盖，装完 hook 0.25 秒即
+		// EXCEPTION_BREAKPOINT（crash-2026-09-22-12-05-34.log，崩点落在所有模块区间外）。
+		//
+		// 让用户能关掉其中一个去隔离冲突。关掉的代价：
+		//   menuDrawHook=0 -> MenuManagerDrawInterfaceStart 不再被 detour。
+		//     OnMenuDrawStart() 自 v0.50 起是空函数（DLSS 超分已拔掉，kFRAMEBUFFER
+		//     方案恒 null 属死代码），所以功能无损失，只损失"UI 绘制前"这个时机点。
+		//   pollInputHook=0 -> 菜单打开时不再吞设备输入事件。ImGui 自己的鼠标走
+		//     GetCursorPos/GetAsyncKeyState 轮询、键盘走 SKSE InputEvent（AddEventSink），
+		//     都不依赖这个 hook，所以菜单照常可用；代价是菜单打开时鼠标仍会转动游戏视角。
+		bool menuDrawHook = true;      // INI MenuDrawHook
+		bool pollInputHook = true;     // INI PollInputHook
 		int  presetDLSS = 0;           // DLSS 模型预设：0=Auto 1=J 2=K 3=L 4=M
 		float sharpness = 0.5f;        // v0.6.3：DLSS 超分锐化（0-1，0=关闭）；v0.7.21 默认 0.3→0.5（4K 重建需更明显锐化）
 		// v0.25：DLSS-NR（NGX 直调）已移除——NR 改由外部 ReShade 方案（dlss5-dx11-bridge +

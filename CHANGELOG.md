@@ -1,462 +1,542 @@
-# v0.57 - mvecScale: the last self-contradictory constant, made switchable
+# v1.52 - two engine hooks CommunityShaders also owns, made switchable
 
-Reported: still flickering after v0.56.
+Reported: DFG installed into a second modpack crashes 0.25 s after the plugin
+loads, with the faulting address outside every loaded module.
 
-This round deliberately changes no behaviour. It closes a question v0.56 opened,
-and makes the answer testable with one INI line instead of another rebuild cycle.
+The crash is a detour collision. Both DFG and CommunityShaders write a jump over
+the same two engine function heads:
 
-## What v0.56 opened
+    BSInputDeviceManager::PollInputDevices      REL 67315 / 68617
+    MenuManager::DrawInterfaceStart             REL 79947 / 82084
 
-v0.56 corrected the depth/mvec `ResourceTag::extent`. That fix is now confirmed
-against this project's own reference implementation - open-shaders is on this
-machine at D:\Modding\open-shaders - and the confirmation runs from the opposite
-direction:
+Each side believes it is the head of the chain, the second write lands on a jump
+target the first one owns, and the process takes an `EXCEPTION_BREAKPOINT`
+before the main menu finishes drawing.
 
-    open-shaders/src/Features/Upscaling/Streamline.cpp, TagDX12Resources()
+Neither hook is load-bearing for this plugin:
 
-      sl::Extent extent{ 0, 0, width, height };            // display/output size
-      // Depth/mvec carry valid data only in the render-resolution subrect of
-      // their display-sized targets; declare that extent, matching the FSR FG
-      // dispatch.
-      auto renderSizeF = globals::state->screenSize * upscaling.resolutionScale;
-      sl::Extent renderExtent{ 0, 0, renderSizeF.x, renderSizeF.y };
-      ...
-      { &depthRes, sl::kBufferTypeDepth,         ..., &renderExtent },
-      { &mvecRes,  sl::kBufferTypeMotionVectors, ..., &renderExtent },
+- `MenuManager::DrawInterfaceStart` lands on `OnMenuDrawStart()`, which has been
+  an empty function since v0.50 — the DLSS upscaler it fed was removed and its
+  `kFRAMEBUFFER` path is unreachable. Suppressing this detour costs only the
+  "just before UI draw" timing point.
+- ImGui input does not go through `PollInputDevices`. The mouse is read with
+  `GetCursorPos` + `GetAsyncKeyState`, and the keyboard arrives through
+  `ToggleInputHandler`'s `AddEventSink`, registered before the detour is
+  written. Suppressing this one costs only "the mouse turns the camera while the
+  menu is open".
 
-The reference declares the RENDER subrect and is right to: it never upscales.
-Its mvec path is a bare `CopyResource(dst, motionVector.texture)`
-(Upscaling.cpp:2206), which only works when the dimensions are identical, and its
-interop targets are built from the engine's own desc (DX12SwapChain.cpp:695-708).
-The data genuinely occupies a corner of a larger target.
+Both are now settings rather than constants:
 
-DFG is the opposite, and its own comment says why (DX12SwapChain.cpp:662):
+    MenuDrawHook=1     1 = detour MenuManager::DrawInterfaceStart (default)
+    PollInputHook=1    1 = thunk BSInputDeviceManager::PollInputDevices (default)
 
-    // 引擎 depth/mvec 是渲染尺寸（低）→ 都走 shader 采样放大（CopyResource 尺寸不匹配）
+Default 1 keeps the behaviour of v1.51 bit-for-bit; a pack that ships
+CommunityShaders must set both to 0. Both values are logged at INI load, and a
+`LEGACY-HOOK SUPPRESSION ACTIVE` warning is printed at `kDataLoaded` when either
+is 0, so "was it even read" can never be confused with "it was read and did
+nothing".
 
-That blit runs in the DLSS-G path as well - `if ((dlssgMode || ...))`, line 663 -
-and draws a fullscreen triangle with viewport = swapChainDesc.Width x Height
-through a shader that returns the sampled value unchanged. DFG's interop
-depth/mvec are therefore valid over the WHOLE 2560x1440.
-
-Same constant, opposite correctness. `renderExtent` was copied from the reference
-when it was still right; v0.7.8 changed how the buffers are filled and it was
-never revisited. v0.56 stands.
-
-## What was still self-contradictory: mvecScale
-
-    Streamline.cpp:412
-      // v0.49k（修重影）：... 引擎 mvec=位移/2560，DLSS 期望 位移/1706 →
-      // 差 1/renderScale 倍，需放大补偿，否则 temporal 重投影错 → 重影。
-      c.mvecScale = { 1.0f / renderScaleX, 1.0f / renderScaleY };   // = {1.5, 1.5}
-
-Three sources, none of which agrees with 1.5:
-
-| source | says |
-|---|---|
-| `sl_consts.h:203`, the field's own definition | "scale factors used to normalize motion vectors (so the values are in [-1,1] range)" |
-| `ProgrammingGuideDLSS_G.md:653` | "values in {-1,1} range -> scale factor should be {1,1}"; otherwise "adjusted so that values end up in [-1,1]" |
-| open-shaders `Streamline.cpp:490` | "The standard full-frame DLSS path ... must keep mvecScale at identity or DLSS massively over-estimates motion" |
-
-The v0.49k comment carries its own refutation: "引擎 mvec = 位移/2560". A UV
-displacement that reaches 1.0 for a full-screen pan is already inside [-1,1] -
-exactly the condition the guide gives for scale = {1,1}. At 1.5, DLSS-G would
-over-estimate motion by 50% in every generated frame, and wrong motion in every
-generated frame alternating with correct real frames is the reported symptom.
-
-But 1.5 was tuned in-game against a *different* defect - the depth/mvec extent that
-v0.56 removed - so which value is right is decidable only in-game. Nothing is
-changed silently.
-
-## Change
-
-  * `Streamline.cpp` reads `MvecScaleOverride` from the INI. 0 (default) = the
-    legacy `1/renderScale`, so default behaviour is identical to v0.56. 1.00 =
-    identity, the reference-implementation value.
-  * the effective value is logged exactly once, so it is observed at runtime
-    instead of inferred from source:
-
-        [Streamline] mvecScale = { 1.5000, 1.5000 } (renderScale=0.6667 override=0.00)
-        - 1.0 means already in [-1,1]
-
-  * `FrameGen.h` / `FrameGen.cpp` / `ImguiMenu.cpp`: one new setting, one reader,
-    one writer, so the INI contract stays symmetric. Verified in the built binary:
-    the key string `MvecScaleOverride` occurs exactly twice, and the old direct
-    assignment is gone.
-
-## Build
-
-Built clean: 7/7 objects, exit 0, `1223168 bytes md5=73fa4a5c2c762635703ca952205a1192`.
-
-The build deploys itself - `CMakeLists.txt:105-121` adds a POST_BUILD step that runs
-`copy_if_different` for the DLL **and the INI**, plus `copy_directory` for `Shaders`,
-into `PLUGIN_DEPLOY_DIR` (`E:\EJ\mod\mods\DynamicShaderFrameGen\SKSE\Plugins\`).
-The deployed DLL was verified byte-identical to the build output.
-
-Two consequences:
-
-  * a manual DLL copy is redundant, and a "backup" taken before it captures the
-    already-deployed new build - so there is no DLL-level rollback point. Roll back
-    with `git checkout <commit> -- src` and rebuild.
-  * because the INI is deployed the same way, editing the deployed INI and then
-    rebuilding **reverts the edit**. The new key is therefore documented in the repo
-    INI (`SKSE/Plugins/DynamicShaderFrameGen.ini`) as `MvecScaleOverride=0.00`, which
-    is what reaches the mod folder.
-
-The sandbox blocked `reg.exe`, which breaks `VsDevCmd.bat` and leaves the Windows
-SDK paths unset - every translation unit then fails on `crtdbg.h`, including ones
-this round never touched. Working manual environment, including the cppwinrt trap:
-
-    INCLUDE = <MSVC>\include ; <SDK>\ucrt ; <SDK>\shared ; <SDK>\um ; <SDK>\winrt
-    LIB     = <MSVC>\lib\x64 ; <SDK>\Lib\ucrt\x64 ; <SDK>\Lib\um\x64
-
-`<SDK>\cppwinrt` must NOT be added: vcpkg ships the matching C++/WinRT set
-(`E:\vcpkg-full\installed\x64-windows-static-md\include\winrt`, 2.0.250303.1)
-and the SDK's own copy is 2.0.250303.5, so mixing them makes `base.h` fire
-`static_assert(... "Mismatched C++/WinRT headers.")`. `wrl/client.h` comes from
-`<SDK>\winrt`, which is the only part of that directory that is needed.
-
-# v0.56 - declared != actual: DLSS-G was told the motion buffers were 1706x960
-
-Reported: "it still flickers."
-
-This round is not a guess. The same two buffers were described three different ways,
-and every one of the three numbers was reachable from a different file:
-
-| source | colour | depth / motion |
-|---|---|---|
-| the actual interop textures | 2560x1440 | **2560x1440** |
-| `DLSSGOptions::mvecDepthWidth/Height` | 2560x1440 | **2560x1440** |
-| `ResourceTag::extent` on the tag | 2560x1440 | **1706x960** |
-
-Proof that the textures are 2560x1440 across their whole area:
-
-  * runtime log: `depth interop texture created lazily (R32_FLOAT 2560x1440)`,
-    `mvec interop texture created lazily (2560x1440)`
-  * `CopyDepthToShared` / `CopyMvecToShared` set the viewport to
-    `swapChainDesc.Width x Height` and draw a fullscreen triangle, so the entire
-    texture is written, not a corner
-  * `sl_dlss_g.h`: `mvecDepthWidth` = "Expected width of the input render targets
-    (depth, motion-vector buffers etc)" - the buffer's own size, and 2560x1440 is
-    what the caller passes
-
-And the tag was wrong per NVIDIA's own header, `sl.h`:
-
-    //! The area of the tagged resource to use (if using the entire resource leave as null)
-    Extent extent{};
-
-So DLSS-G was told to use the top-left 1706x960 of a 2560x1440 buffer while the
-colour buffer is 2560x1440 in full. The colour/motion spatial correspondence was
-off by 1/0.667 = 1.5x - and that pair is the input every generated frame is built
-from. The display therefore alternated a correct real frame with a wrong generated
-frame, at the generated rate. Continuous flicker is the expected symptom.
-
-The stale value predates v0.7.8: back then the interop textures really were render
-resolution, so `renderExtent` was right. v0.7.8 resized them to the output
-resolution for FSR3 frame generation and the tag was never updated.
-
-Independent confirmation from the DLSS-G runtime's own log (DLSSG-Transfusion,
-run at 16:34) - it printed the tags it received:
-
-    [MOTION-TAG] type=hudless         rect=(0,0 2560x1440)
-    [MOTION-TAG] type=scaling-output  rect=(0,0 2560x1440)
-    [MOTION-TAG] type=depth           rect=(0,0 1706x960)   <- wrong
-    [MOTION-TAG] type=motion          rect=(0,0 1706x960)   <- wrong
-
-**Fix.** No number is hardcoded any more. The extents come from the D3D12 resource
-(`GetDesc()`), and the options' mvec/depth size comes from the D3D11 interop
-texture. One source of truth, so the three can never drift apart again.
-
-Also fixed in the same class: `CreateInterop`'s eager path built the depth/mvec
-interop textures from the engine kMAIN desc (render resolution) while the lazy path
-forces the output resolution - the same buffers came out at two different sizes
-depending on which path happened to run first. Both are now the output resolution,
-which is what FSR3 frame generation requires anyway.
-
-**Instrumentation added** (so the remaining unknowns are decidable in one launch):
-
-  * `[Streamline] DLSSG tag dims: hudless/scaling-output=... depth=... mvec=...`
-    printed once. depth and mvec must read 2560x1440 on the next run.
-  * `[Streamline] MOTION probe: clipToPrevClip maxDevFromIdentity=...`
-    every 600 frames. Transfusion's log shows `clipToPrev=identity` for the first
-    frames of a run, which is correct on a loading screen but fatal during play -
-    an identity matrix means DLSS-G drops the camera part of its reprojection.
-    Read it while walking: ~0 means the previous view-projection is not live.
-  * `[FrameGen] Present called with SyncInterval=... Flags=...`, printed only when
-    the flag word changes. `DXGI_PRESENT_ALLOW_TEARING` in that argument permits
-    real tearing.
-
-**Not changed on purpose.** The Reflex render cap stays at
-`refreshRate / multiplier - 1` = 39 fps (156 presented on a 160 Hz panel). The
-`-1` looked like a bug, but 156 is 4 Hz below the panel ceiling, which is exactly
-the usual VRR guidance ("cap a few Hz below max refresh to avoid a VRR ceiling
-hit"). On a VRR display the panel simply follows the 156 fps stream and there is
-no beat. It is left alone so the single behavioural variable this run stays the
-extent fix. `ReflexFpsLimit` in the INI overrides it if the display turns out not
-to be running VRR.
-
-Worth recording: DLSSG-Transfusion's own line
-`DLSS-G actual presentation count: 4x (maximum generated frames=5, status=0)` in
-the 16:34 run proves multi frame generation **was** running. "It flickers" and
-"it is not generating frames" were never the same complaint.
+Also in this round: MSVC now gets `/utf-8`. The sources are UTF-8 without a BOM,
+and without the flag MSVC decodes them using the system ANSI code page (936
+here), which mangles every Chinese literal. `/wd4819` was already suppressing the
+one warning that would have reported it, which is how that class of breakage
+stays invisible.
 
 ---
-# v0.55 - instrumentation: sample the presented-frames counter early and on change
 
-Instrumentation only. No behaviour change - the Reflex render cap, the provider
-choice and the MFG probe are untouched, so the single behavioural variable under
-test remains DLSSG-Transfusion's `patchFlipMetering`.
+# v1.51 - the v1.50 probes removed, behaviour unchanged
 
-**Why.** v0.53 added the one measurement that can prove multi frame generation is
-really running (`sl::DLSSGState::numFramesActuallyPresented`), but emitted it with
-`++presentedLog % 240 == 1`. With the v0.54 cap pinning the render rate to
-`refreshRate / multiplier` = 39 fps at 4x on a 160 Hz panel, the first reading needs
-~6.2 s of play. Every debug session so far ended inside that window, so the decisive
-number was never printed once - which is why three rounds of fixes each ended in
-"still flickering" with no data either way.
-
-**Change.** The line is now emitted for the first 8 real frames, then on every change
-of the reported value (capped at 200 change lines), then every 300 frames. A 1 -> 4
-transition - or a 1/4 oscillation, which is what two pacers fighting over one swap
-chain would look like - is therefore visible within a single frame.
-
-Read it as: `= 4` proves 4 frames really reach the display per real frame. `= 1`
-proves none do, no matter what `MFG probe: runtime ACCEPTED 4x` said.
+v1.50/v1.51 were instrumented builds: they logged the camera field family and the
+projection inverse and changed nothing about how a frame is produced. With their
+questions answered the probes are deleted and the build returns to the v1.49
+code path. The two `viewSL[0] = sl::float4(vm[0][0]...` sites that carry the
+v1.49 fix are both still present, and the bilingual strings are intact in the
+binary.
 
 ---
-# v0.54 - flicker: the render frame rate was pinned to 60fps regardless of the panel
 
-Reported: "it flickers constantly."
+# v1.50 - camera field family, and one self-falsification
 
-Root cause - measured, not guessed. Streamline::ReflexSleep() pushed a hardcoded
-reflex frame limit of 1000000/60 us (inherited from Community Shaders' default), and
-Reflex dutifully enforced it on the RENDER frame rate:
+Instrumentation only. Three findings, one of which retracts an earlier claim:
 
-    [16:24:47.175] [Streamline] Reflex options applied (mode=1 frameLimitUs=16666 ...)
-    DLSSG-Transfusion_perf.csv: DeltaMs=17.43 (=57.4 render fps), Multiplier=4
+- `curProj` and `prevProj` are identical element-for-element in every sampled
+  frame, so the earlier "CameraProj is the only untested input, therefore it must
+  be the cause" reasoning was unsound — being untested is not evidence.
+- `inv(CameraProj)` equals `CameraProjUnjittered` exactly, so those two fields
+  are not a naming trap; they have different consumers.
+- The `[CAMVP] tr` reading is `projSL[3] @ V`, not a translation.
 
-57.4 render fps x 4 = 229.6 presented fps, pushed at a 2560x1440 @ 160Hz panel.
-That is 43% over-submission: the present queue backs up, the SL pacer loses its
-rhythm, and the picture flickers continuously. Transfusion was in `fixed` mode, so
-it never backed the multiplier off.
+---
 
-Frame generation is only correct when the product lands on the panel:
+# v1.49 - the double transpose, at both sites
 
-    render fps x multiplier <= refresh rate
+`rebuildViewProj` transposed the matrix twice on the way into `clipToPrevClip`:
+the values were right in memory and wrong at the consumer. Both sites — the
+yaw/pitch read and the field-family build — now read `vm[0][0], vm[1][0],
+vm[2][0]` in the intended order. Verified by anchor count: the fixed form appears
+exactly twice, the old `vm[0][0], vm[1][0], vm[2][0]` ordering zero times.
 
-So the cap is now derived instead of hardcoded:
+---
 
-    auto: (refreshRate / totalMultiplier) - 1 fps
-          160Hz / 4x -> 39fps -> ~156 presented fps, just under the panel
-    ReflexFpsLimit=N  (new INI key) overrides it with an explicit render fps cap
+# v1.48 - two probes that were themselves wrong, and the data that caught them
 
-The multiplier used is the runtime-ACCEPTED one (dlssgAcceptedFrames), falling back
-to the requested DLSSGFramesToGenerate before the staircase probe latches - so a
-stepped-down request re-derives the cap instead of over-submitting again. The value
-is logged whenever it changes:
+Both probes in this round produced a wrong comparison before a useful one, and in
+both cases the run's own numbers caught it rather than a second reading of the
+code:
 
-    [Streamline] Reflex render cap = 39 fps (25641us) - 160Hz / 4x => ~156 present fps
+- Probe 1 compared `rows[0..2].xyz` against a reference row that was itself
+  transposed, so it reported a difference where there was none.
+- Probe 2 "fixed" that by moving the read to a different row, which compared two
+  different quantities and reported a match that was not a match.
 
-If the refresh rate cannot be read the cap is left at 0 (unlimited) and a warning is
-logged - silently substituting some made-up number is exactly what caused this bug.
+The useful output is the negative result: the camera blocks are internally
+consistent, and the corruption is introduced by the consumer, not the producer.
 
-This also explains why the FPS counter sat at ~57 no matter what was requested: the
-render side was pinned, so the generated side could never track the panel.
+---
 
+# v1.47 - 4K: the guide was declared full-resolution while holding a subrect
 
-# v0.53 - the FPS number stops lying, and MFG gets a measurement
+At 4K the neural-rendering guides were declared at output size while the
+depth/mvec content occupied only the render-resolution subrect of those targets,
+so inference read pixels that had never been written. The declared extent is now
+the render size, which is where the data actually is.
 
-Reported: "check it yourself before I go in again, I do not want another launch
-that is completely wrong."
+---
 
-Audit of the whole chain (all verified against on-disk state, not assumed):
-  * Deployment is correct. The DLL in the active MO2 instance is byte-identical to
-    the build output; the active INI is Provider=1 / DLSSGFramesToGenerate=3 /
-    MFGMaxFramesOverride=3; overwrite/ carries no copy of it; the two other mods
-    that also ship an INI of this name are DISABLED in the DIPEI profile, so there
-    is no file conflict. PLUGIN_DEPLOY_DIR points at the instance that is played.
-  * RTXMFG-Universal (the competing unlocker that also detours slInit /
-    setOptions / ngxCreate) has been inert since 2026-09-11 - its proxy is sitting
-    in the game dir renamed to dinput8.dll.disabled.
-  * Streamline is 2.13.0.0 everywhere (game root and mod folder agree), and
-    nvngx_dlssg.dll is 3.10.8, inside DLSSG-Transfusion's supported range.
+# v1.46 - bilingual menu, CJK font, and MFG persistence
 
-Defect found and fixed - the overlay could not have shown the difference:
-  * ImguiMenu::DrawFps hardcoded `mult = fgActive ? 2.0f : 1.0f`. It never knew
-    about MFG, so 3x/4x could not appear on screen, and it multiplied the number
-    even when the runtime had rejected the request. Switching FSR3 -> DLSSG was
-    therefore guaranteed to look like "nothing changed". The factor now comes from
-    dlssgFramesPresentedLast, and when DLSSG is not generating nothing is inflated
-    (the overlay says so instead).
+Three changes that trace back to one complaint: the menu told the user things the
+user could not act on.
 
-New evidence channel:
-  * sl::DLSSGState::numFramesActuallyPresented is documented as "frames presented
-    since the last slDLSSGGetState call" - a per-interval count. Since
-    SetDLSSGOptions runs once per real frame, that value IS the multiplier that
-    actually happened. It is now recorded every frame and logged periodically as
-    "DLSSG presented per real frame = N" (1 = no interpolation). This is the first
-    number in this project that is measured rather than computed.
+**Bilingual labels.** Every label, checkbox and readout is Chinese first, English
+after, and the font is loaded with CJK coverage so the Chinese renders instead of
+showing as boxes.
 
-Also: version.rc string version said 0.50.0.0 while FILEVERSION said 0.52 - both
-now 0.53. The INI documents DLSSG-Transfusion's own Ctrl+Alt+2/3/4 hotkeys, which
-are how the multiplier is really driven, not the game's video menu.
+**The multiplier readout is three-state.** It used to show only the requested
+value, which made "I changed it in the menu" indistinguishable from "it was
+saved" and from "this is what is actually on screen". Requested, stored and
+in-effect are now shown separately.
 
-Still unproven: Provider=1 has never completed a session on this machine. Every
-log so far is the FSR3 path. The next launch is the first real test; if the runtime
-rejects 4x the ladder probe steps back to whatever it accepts and says so.
-# v0.52 - switch states that actually stick, and diagnostics that can be falsified
+**MFG persistence, and why it needs a switch.** This plugin's own
+`DLSSGFramesToGenerate` is read only by this plugin. The multiplier that reaches
+the screen is decided by `DLSSG-Transfusion`, a third-party injector that reads
+`<game dir>\DLSSG-Transfusion.json` once at startup and then re-applies it on the
+render thread, overwriting any `SetOptions` request this plugin makes. Writing our
+own INI from the menu was therefore "change it and nothing changes" — after a
+restart the json value wins again.
 
-Reported: "I switched DLSS and nothing changed at all."
+The only way to make "menu -> restart -> in effect" true is to write that json,
+which belongs to another author:
 
-Diagnosis (from the 13:59-14:01 SKSE log + on-disk state):
-  * The "Frame Gen Provider" combo only mutated in-memory state. Provider is consumed
-    exactly once, in DX12SwapChain::CreateSwapChain (dlssgMode / BufferCount / D3D12
-    proxy path), so changing it mid-session is a no-op BY CONSTRUCTION - and it wrote
-    no log line, so there was no trace of the switch anywhere.
-  * It was never persisted either: the combo never touched the INI, and "Save to INI"
-    wrote a different path literal than LoadConfig reads, silently dropped keys and
-    never logged a failure. overwrite/SKSE/Plugins had no FrameGen INI at all, which
-    proves no save ever succeeded -> even a restart read Provider=0 back.
-  * The DLSSNR diag line printed the ENGINE's kMAIN depth / kMOTION_VECTOR while
-    Apply() is actually fed depthWrapped/mvecWrapped, so it could not falsify
-    "is NR running?", and the log carried no success counter.
-  * The menu header still advertised "DLSS Upscaling (live adjust)" although DLSS
-    upscaling was removed in v0.48, and EnableUpscale / PresetDLSS are parsed but
-    wired to nothing -> dead switches that look live.
+    WriteTransfusionConfig=0    0 = write only our own INI (default, safe)
+                                1 = also write the Transfusion json, with an
+                                    automatic backup taken before each write
 
-Changes:
-  * ImguiMenu: SaveSettingsToIni() is now the single writer, used by the Save button
-    AND by every switch that changed (Provider / MFG multiplier / MFG override /
-    DLSSNR). It uses the exact LoadConfig path, writes EVERY key LoadConfig knows
-    (the old one truncated the file to 17 keys, silently wiping QualityMode,
-    RenderResolutionScale, Sharpness, FpsOverlay, EnableUpscale, PresetDLSS) and logs
-    the result either way.
-  * MFG multiplier + override are no longer hidden behind provider==1, so DLSSG can be
-    pre-configured while on FSR3.
-  * DX12SwapChain: records providerAtCreate; GUI shows "PENDING RESTART: running X,
-    INI wants Y"; the FPS probe line now prints both (cfgProvider=) and appends
-    "(CHANGED - RESTART REQUIRED)" on a mismatch.
-  * DLSSNR diag now prints the inputs Apply() actually consumes plus the NGX success
-    frame counter, and warns once when the shared depth/mvec inputs are missing
-    instead of silently skipping the pass.
-  * INI: EnableUpscale / PresetDLSS marked as parsed-but-not-wired; Provider documented
-    as applying on the next launch only. Version 0.50 -> 0.52.
+Default off. The plugin does not touch another author's file unless the user ticks
+the box in the menu.
 
-Config: Provider=1 (DLSSG), DLSSGFramesToGenerate=3 (4x), MFGMaxFramesOverride=3,
-paired with DLSSG-Transfusion v1.4.1 (version.dll) in the game directory.
+---
 
-# DynamicShaderFrameGen — What's New
+# v1.45 - multi-layer neural rendering (`NRLayers`)
 
-## Multi-frame generation on RTX 40/30/20 — v0.50
+Neural rendering runs the frame through N passes in series: layer k takes layer
+k-1's output as its colour input, while the depth/mvec guides are shared across
+all layers because it is the same frame and the same camera.
 
-Frame generation above 2x used to be unreachable on anything older than
-RTX 50, because the Streamline runtime reports `numFramesToGenerateMax = 1`
-on Ada and earlier, and every request was clamped down to that ceiling.
+Each layer is an independent NGX Feature 18 instance with its own temporal
+history and internal resources, so the layer count is simultaneously the upper
+bound on per-frame cost and on VRAM. It is not free restacking. The pool went
+from 2 hard-coded slots to `kMaxNRLayers` (8), and the output no longer carries an
+exclusive-read description because the next layer reads it as an input.
 
-v0.50 adds `MFGMaxFramesOverride` (INI + in-game slider). It raises the
-reported ceiling so the higher multipliers are actually submitted, up to 6x.
+    NRLayers=1     off (v1.44 behaviour, default)
+    NRLayers=N     N passes in series, 2..8
 
-- `MFGMaxFramesOverride=0` follows the hardware report exactly (default, safe)
-- `MFGMaxFramesOverride=1..5` submits 2x / 3x / 4x / 5x / 6x
-- In-game: Home key -> Frame Gen Provider = DLSSG -> MFG Multiplier + MFG Max Override
+---
 
-**This only changes what is requested.** The frame generation kernels for
-Ada / Ampere / Turing are not present in `nvngx_dlssg.dll`, so pair it with
-an external kernel unlocker:
+# v1.44 - FenceWaitBusy: where the wait sits on the fence
 
-- DLSSG-Transfusion (RTX 40, native DLSS-G path)
-- dlssg_for_sm86 (RTX 30)
-- dlssg_for_sm75 (RTX 20, experimental)
-- NVIDIA MFG Bridge (RTX 20/30)
+The one knob that separates this build from the Sep 11 build at the end of
+`Present()`, and the two behaviours differ by a whole frame of CPU/GPU overlap.
 
-Without one of those a high multiplier has no kernel to run.
+Every frame signals the shared fence on the D3D12 queue and then waits for it.
+`d3d11Fence` and `d3d12Fence` wrap the *same* fence object, so the wait can sit on
+either timeline:
 
+    1 = the CPU polls d3d12Fence->GetCompletedValue() until it passes. The poll
+        runs on the render thread, so the CPU submits a frame and then blocks
+        until the GPU has finished it; no frame is prepared while the previous
+        one executes. Keeps the v1.03b anti-freeze guard.
+    0 = d3d11Context->Wait(d3d11Fence, v). The wait is queued on the D3D11
+        timeline and the CPU returns at once — what the Sep 11 build did, and why
+        it reached 56.12 base fps at 2K. Cannot hang the CPU, but a fence that is
+        never signalled stalls the D3D11 queue instead.
 
-## DLSS 5 Neural Rendering is now built in — v0.48
+Measured on the same box, same 2K output, same FSR3 2x chain:
 
-The headline of this release: DLSS 5 neural rendering (the "DLSS-NR" pass) now
-runs straight from the plugin. No ReShade add-on, no `dlss5-dx11-bridge`, no
-extra DLLs dropped in your game root.
+    Sep 11 build (queue-side wait)     base 56.12 fps (17.8 ms)
+    CPU-poll build                     base 36.08 fps
 
-- Sharper skin, hair, foliage and stone detail, with automatic masking so flat
-  and uniform surfaces are left untouched
-- Runs **together with frame generation** — the neural pass goes first, frame
-  generation interpolates the result (the two used to be mutually exclusive)
-- Tune it live in the menu (hold `Home`): Intensity, Local Tone, Local
-  Structure, Skin Structure, Style, Automatic Mask, UI Correction and NR Render
-  Scale (lower = faster, 1.0 = full-resolution analysis)
-- Needs an RTX GPU and the `nvngx_dlssnr.dll` **310.8.x** runtime that ships
-  with the mod. Any other version is refused at load, so the plugin turns itself
-  off instead of misbehaving
+The watchdog number alone is not proof — it reports exactly where the code was
+told to block. Hence a switch, not a conclusion. If the game freezes on mode 0,
+this line is the one to flip back.
 
-## DLSS sharpening now lands before ENB, not after — v0.48
+---
 
-DLSS upscaling used to run in `Present` — after ENB — so ENB's own
-post-processing painted over the DLSS sharpening and the preset's LMK. The
-upscale now runs at the engine's post-processing entry point (before ENB), so
-the sharpening survives and ENB still composites on top of the upscaled frame.
+# v1.43 - neural rendering: guide resolution separated from output resolution
 
-## Frame gen provider choice is back — v0.42 / v0.45
+The neural-rendering guides (depth, motion vectors) are sampled at their own
+resolution rather than at output resolution, and the copy is sized to match.
+`NRRenderScale` was introduced in the same pass.
 
-- Pick **FSR3 (2x, all GPUs)** or **DLSSG (NVIDIA)** in the menu; changing it
-  needs a game restart
-- DLSSG multi-frame generation: 2x on RTX 40, up to **4x on RTX 50**. The
-  ceiling now comes from the Streamline runtime itself (`numFramesToGenerateMax`)
-  instead of an unlock hack — no more forced values, no more guessing
-- Default `DLSSGFramesToGenerate` is 3, so an RTX 50 gets 4x out of the box and
-  a 40-series card quietly clamps to 2x
+---
 
-## Smaller changes
+# v1.42 - the perf/quality preset reaches `Evaluate`
 
-- `RenderResolutionScale` default is now `0` (Auto) — follows the DLSS Quality
-  Mode table instead of a hard-coded 0.70. Set `0.30`–`1.00` for a custom ratio
-- New compute shaders for the neural pass ship under
-  `Shaders/Upscaling/NeuralRendering/` (depth-guide copy + downscale)
-- `version.rc` bumped to 0.48.0.0
+The upscaler's perf/quality preset was set on the feature options but never
+reached the `sl::DLSSOptimalSettings` call that consumes it, so the plugin asked
+for the mode it wanted and got the default.
 
-## Render resolution scale (custom DRS) — new in v0.41
+---
 
-Skyrim always renders at 100% resolution, so DLSS had nothing to upscale and frame
-generation paid full-resolution cost. The plugin now lets you set the engine
-render resolution as a percentage of your output (default **70%**) — DLSS really
-upscales from e.g. 1440p back to 4K, which is a large FPS gain and gives DLSS5/NR
-a true upscaling path.
+# v1.41 / v1.40 - neural rendering input size, taken from the texture
 
-- New INI setting: `RenderResolutionScale=0.70` (`0` = Auto, follows the Quality
-  Mode table as before; `0.30`–`1.00` = custom ratio)
-- In-game: hold `Home` → menu → **Render Resolution Scale** slider (30%–100%,
-  live apply, save via *Save to INI*)
+Two rounds on the same class of mismatch: a view built from one size and a
+dispatch from another. Both now derive from the descriptor they are used with.
 
-## Frame generation now uses FSR3 — works on ALL GPUs (NVIDIA & AMD)
+---
 
-The experimental DLSS frame generation (DLSSG) mode has been removed — it proved
-unstable in complex mod environments (flickering, black screens, failing to reach
-the main menu). Frame generation now runs on AMD FSR3 technology, which is rock
-solid on every GPU with no quality loss.
+# v1.39 - `NRRenderScale` written back, and the FG interplay documented
 
-## Force borderless windowed (new, enabled by default)
+`NRRenderScale` is persisted like the other knobs. Documented that neural
+rendering and frame generation size their work independently, so scaling one does
+not scale the other.
 
-Frame generation used to require a windowed swapchain — many players launched the
-game in "fullscreen" and found frame generation doing nothing. The plugin now
-automatically switches the game window to borderless fullscreen, so **frame
-generation always activates no matter what display mode you set**, while looking
-identical to fullscreen.
+---
 
-## Three fixes
+# v1.38 - scale-aware depth guide (`NRRenderScale`)
 
-- Frame generation not enabling on **AMD GPUs**
-- Frame generation breaking after switching **FSR → DLSS**
-- Stuck **mouse cursor** after closing the in-game menu
+`CopyDepthGuideCS.hlsl` now maps by UV instead of copying texel-for-texel:
 
-## Cleaner naming
+    srcUV   = (dispatchThreadID.xy + 0.5) / destinationSize
+    srcTexel = int2(srcUV * sourceSize), clamped to source bounds
 
-The in-game menu now simply says **FrameGen** — no more confusing FSR/DLSS tags.
-Universal frame interpolation, works on NVIDIA & AMD.
+When `width == sourceWidth` this is an identity mapping, so the DRS 1:1 subrect
+path is byte-for-byte unchanged; a smaller destination gives a nearest-neighbour
+downscale that stays aligned with the colour/mvec downscale.
 
-## How to use
+`NRRenderScale` itself was added alongside it so neural rendering can be scaled
+independently of the engine render scale — `RenderResolutionScale` lowers the
+engine resolution but does not lower the neural-rendering resolution, because they
+are different sizes.
 
-- Prerequisite: SKSE64
-- Any DX12-capable GPU (FSR3 frame gen: all GPUs; DLSS upscaling: NVIDIA only)
-- Frame generation doubles your FPS (e.g. 60 → 120)
-- Fully coexists with ENB; compatible with snow-wetness and other swapchain plugins
-- Hold `Home` in-game for the menu: toggle frame gen, upscale mode, sharpness
+Measured at 4K, world-walking steady state:
+
+    NRRenderScale=1.00     25.9 fps
+    NRRenderScale=0.75     40.0 fps   (+54%)
+
+`0.75` was then found to be a non-integer downscale, which samples on an uneven
+lattice and shows as shimmer while turning.
+
+---
+
+# v1.37 - the MFG request is tracked apart from the ladder position
+
+The ladder latches `mfgProbeStep` on its first accepted rung and only re-reads
+settings when that step is 0 or above the ceiling, so a multiplier changed in the
+ImGui menu never reached the runtime. `mfgProbeRequestedStep` now tracks the
+requested value separately, which is what makes such a change visible.
+
+---
+
+# v1.36 - INI write-back, and the MFG log carries the ladder state
+
+`SaveSettingsToIni()` writes the settings the menu exposes, so a menu change
+survives a restart for the knobs this plugin owns. The MFG log line prints the
+ladder state next to the request, so a held value is visible rather than implied.
+
+---
+
+# v1.35 - the menu draw target
+
+The ImGui overlay was drawing into the wrong target once frame generation had
+replaced the swap chain. It now draws into the wrapped back buffer, matching the
+D3D12 swap chain's actual layout.
+
+---
+
+# v1.34 - ForceBackBufferCopy, and the back-buffer probe's self-witness
+
+A second DLSS-G writer (`DLSSG-Transfusion`, loaded as `dinput8.dll`) was renamed
+away before launch. Its log was untouched for the whole session and the freeze was
+bit-for-bit identical, so the second writer is not the cause and the break is
+downstream of the copy.
+
+Added `ForceBackBufferCopy` (default off). With it on, the passthrough
+`CopyResource` runs even when `dlssgOk` is true, overwriting whatever DLSS-G did
+or did not put in the back buffer with our own `colorOut`:
+
+    picture comes back   -> DLSS-G never filled the back buffer
+    picture still frozen -> the back buffer does hold new content; the break is in
+                            the flip, past us
+
+Diagnostic switch, no effect on a normal run, value printed at INI load.
+
+---
+
+# v1.33 - the back-buffer probe
+
+A 19:11 run forced this. Two instruments disagreed for 28 s: `[PIXEL]` (colourOut,
+the D3D11 copy of what we hand *to* DLSS-G) took 74 distinct values while the
+`[SCREEN]` capture kept showing 3. That puts the break between them, and exactly
+one object sits between them that no instrument had ever read: the D3D12
+swap-chain back buffer DXGI actually flips. The probe hashes it.
+
+Three channels then read side by side, each compared only against its own
+history:
+
+    [PIXEL]    colourOut      engine image, handed TO DLSS-G
+    [BACKBUF]  back buffer    the frame we ask DXGI to present
+    [SCREEN]   desktop capture what the panel displays
+
+Same two-phase design as `PixelProbeTick`, and for the same reason (v1.22 copied
+and mapped in one call and never produced a single sample): the copy is recorded
+on the frame's own command list just before it closes, and harvested on a later
+tick once the fence reports that frame done. Nothing waits; a sample that cannot
+be read is dropped and counted, never retried inside the same tick. Armed time
+plus a one-shot alarm, because an instrument that produces nothing looks exactly
+like a healthy one.
+
+---
+
+# v1.32 - the BMP header that was never written, and a screen hash the overlay
+#         could not fool
+
+Frame captures were written with a header length taken from the wrong field, so
+the files were unreadable in standard viewers.
+
+The screen hash used to decide "did the picture change" was computed over the
+region the plugin's own overlay occupies, so the plugin's own frame counter made
+every frame look different. The hash now excludes the overlay.
+
+---
+
+# v1.31 - save the picture, and find out whose hand ended the run
+
+Added frame dumps and a run-terminator record, which together answer "the run
+stopped — was that us, the game, or the OS".
+
+---
+
+# v1.30 - read the screen, and fix the 4x test that could never fire
+
+Added a screen-region hash so "did the image change" could be answered without a
+human looking. Also fixed a 4x-path test whose guard condition was never true, so
+it had been reporting success without ever executing.
+
+---
+
+# v1.29 - two torn edge detectors, and two instruments that could not see
+
+Two edge detectors read their state non-atomically across threads, so a
+transition could be reported twice or missed; both now read once per frame into a
+local. Two instruments added earlier could not observe the events they were added
+to observe.
+
+---
+
+# v1.28 - the flicker gate requires a return, and the watchdog gets an OS reading
+
+The flicker gate latched on the first transition and never reset, so it reported
+one event forever; it now requires a return to the prior state before firing
+again. The watchdog gained `GetThreadTimes` so a hitch caused by the OS scheduling
+the thread away is distinguishable from one caused by the code blocking.
+
+---
+
+# v1.27 - session boundaries in the log
+
+Each run writes a `RUN START` line carrying the DLL path, its modification time,
+its size and the build timestamp. This is what makes "which build produced these
+numbers" a fact in the log instead of something inferred from a file listing
+afterwards.
+
+---
+
+# v1.24 - v1.23's own claim checked
+
+Verification-only round. The v1.23 change was re-tested from the artifacts, and
+the result is recorded whether or not it matched the expectation.
+
+---
+
+# v1.23 - camera: what a published matrix is allowed to be
+
+The camera publisher now rejects matrices that are structurally invalid (row 3
+not `(0,0,0,1)`, or a determinant outside the range a projection can have)
+instead of adopting them and reporting them as the camera.
+
+---
+
+# v1.22 - the published camera is not always the camera
+
+The engine's published camera block is stale or uninitialised in some states
+(loading screens, the main menu), so the plugin now requires the published matrix
+to be plausible before using it rather than reading whatever is there.
+
+---
+
+# v1.21 - the fader menu is not a menu
+
+`IsMenuOpen("Fader Menu")` is true the whole time the player is in the world, so
+counting it as a menu engaged the v0.63 menu guard on essentially every frame and
+suppressed DLSS-G for entire sessions.
+
+---
+
+# v1.20 - the camera source is written down
+
+Documentation round: the `[CAMSOURCE]` investigation recorded which engine camera
+block each value actually comes from, so the next investigation starts from a fact
+instead of a guess.
+
+---
+
+# v1.19 - read the source, publish what the consumer expects
+
+The camera reader and the camera publisher now derive from the same source,
+instead of one reading a raw field and the other a processed one.
+
+---
+
+# v1.18 - the camera field family
+
+Introduced the `[FLD]` table so each candidate matrix can be identified by its
+shape in the log rather than by its reported name.
+
+---
+
+# v1.17 - `non-affine` is a diagnostic, not a verdict
+
+A matrix with `w != 1` in the last row is legitimate for a projection. The
+detector now reports it and lets the consumer decide, instead of rejecting the
+frame.
+
+---
+
+# v1.16 - the reprojection source is stated
+
+The log now says which matrix the reprojection actually used (`reproj src=`),
+rather than leaving it to be inferred from the code path taken.
+
+---
+
+# v1.15 - clamped camera: report the clamp, not the clamped value
+
+When the published camera was clamped, only the post-clamp value was recorded,
+which read as a smooth camera. Both values are now recorded.
+
+---
+
+# v1.14 - the reset flag
+
+The camera reset flag is tracked and reported. A missing reset is the difference
+between "the camera jumped" and "the camera teleported", and the two reproject
+differently.
+
+---
+
+# v1.13 - first frame of a session
+
+The first frame after a load has no previous camera; the plugin now recognises
+that state instead of reprojecting against uninitialised memory.
+
+---
+
+# v1.12 - Reflex cap: the check is printed where it can be read
+
+The Reflex frame-rate cap calculation is printed at the point it decides, with the
+numbers it decided from.
+
+---
+
+# v1.11 - motion vector scale
+
+`mvecScale` is reported and overridable. The engine's scale and the scale the
+runtime expects are not always the same number.
+
+---
+
+# v1.10 - the depth guide
+
+The depth guide is copied and handed to the runtime in the layout it expects,
+instead of being declared at output size and read at render size.
+
+---
+
+# v1.09 - the flicker gate
+
+Added the frame-to-frame screen hash gate that decides whether the presented image
+actually changed, so "it is flickering" became a measurement.
+
+---
+
+# v1.08 - interop fence ordering
+
+Restore the fence ordering between the D3D12 writes and the D3D11 reads. Without
+it the two devices touch the shared textures with no ordering at all — a race that
+shows up as intermittent corruption rather than as a crash.
+
+    InteropFenceWait=1    1 = fence before the D3D11 read (default)
+                          0 = the v0.75 behaviour
+
+---
+
+# v1.07 - DLSS-G options: send what the runtime reads
+
+The options struct was filled with field names from the header rather than with
+the fields the runtime reads, so several settings went out as defaults.
+
+---
+
+# v1.06 - the upscaling ratio reaches the runtime
+
+`RenderResolutionScale` was stored and reported but never reached the runtime's
+evaluation, so the upscaler ran at 1:1 regardless.
+
+---
+
+# v1.03b - the anti-freeze guard on the fence wait
+
+The CPU-side fence poll gained a timeout that drops a frame rather than hanging
+the render thread. This is the guard referenced by `FenceWaitBusy` above.
+
+---
+
+# v0.94 - DLSS upscaling: hand the runtime the render size, not the output size
+
+The upscaler was given the output size as its input size, so it read a subrect of
+the render target and produced a soft image.
+
+---
+
+# v0.86 / v0.84 / v0.83 - the menu guard
+
+Three rounds on the menu guard: what counts as a menu (v0.83); why a guard that
+never releases suppresses frame generation for a whole session (v0.84); and
+`MenuDisableFrameGen`, which keeps the 2D UI out of the interpolation path and is
+what stops the main menu flickering (v0.86).
+
+---
+
+# v0.75 - DLSS-G writes through D3D11 with no ordering
+
+The build referenced above as the "no fence ordering" baseline. `InteropFenceWait`
+(v1.08) restores the ordering this version omitted.
+
+---
+
+# v0.63 - the original menu guard
+
+While a menu is open, frame generation is suppressed. See v1.21 for the case where
+this guard was engaged permanently.

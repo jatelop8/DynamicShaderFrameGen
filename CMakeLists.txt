@@ -56,6 +56,17 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN 
 target_compile_options(${PROJECT_NAME} PRIVATE
     /MP
     /W4
+    # v1.46: the menu is bilingual and the sources are UTF-8 WITHOUT a BOM.
+    # Without /utf-8 MSVC decodes a BOM-less file using the system ANSI code page
+    # (936/GBK here), so every Chinese literal would be mojibake -- and /wd4819
+    # below was already suppressing the one warning that would have told us
+    # ("character cannot be represented in the current code page"), which is
+    # exactly how that class of breakage stays invisible.
+    # /utf-8 sets BOTH source and execution charset to UTF-8, which is what the
+    # C++23 string literals in this file assume.
+    /utf-8
+    # 4200 arrays of unknown size; 4819 see above; 4996 deprecated CRT;
+    # 4471 base class without dtor (CommonLibSSE)
     /wd4200
     /wd4819
     /wd4996

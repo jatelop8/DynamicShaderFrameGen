@@ -17,6 +17,7 @@
 #include <nvsdk_ngx.h>
 
 #include <array>
+#include <cstdlib>
 #include <cstring>
 #include <format>
 #include <optional>
@@ -37,6 +38,30 @@ namespace NeuralRendering
 			"NVSDK_NGX_D3D12_ReleaseFeature",
 			"NVSDK_NGX_D3D12_Shutdown1",
 		};
+
+		// v1.42/v1.43 diagnostics: let nvngx_dlssnr.dll write its own log.  The DLL
+		// carries __NGX_LOG_LEVEL / __NGX_ENABLE_OVERRIDE_LOG_PATH /
+		// __NGX_LOG_PATH_OVERRIDE (NGX util-log.cpp: "Logging to requested file (%S)
+		// enabled successfully") and reads them at load, so they must be installed
+		// before anything loads the DLL.  Streamline probes for nvngx_dlssnr.dll
+		// during its own initialisation -- seconds before Runtime::Probe() runs -- so
+		// the file-scope initialiser below installs them first.  Both the Win32
+		// environment block and the CRT copy are written: NGX may read either.
+		void ApplyNgxLogEnvironment()
+		{
+			wchar_t ngxTempPath[MAX_PATH]{};
+			GetTempPathW(MAX_PATH, ngxTempPath);
+			const std::wstring ngxLogFile =
+				std::wstring(ngxTempPath) + L"DynamicShaderFrameGen-NGX\\nvngx_dlssnr.log";
+			SetEnvironmentVariableW(L"__NGX_ENABLE_OVERRIDE_LOG_PATH", L"1");
+			SetEnvironmentVariableW(L"__NGX_LOG_PATH_OVERRIDE", ngxLogFile.c_str());
+			SetEnvironmentVariableW(L"__NGX_LOG_LEVEL", L"2");
+			_wputenv_s(L"__NGX_ENABLE_OVERRIDE_LOG_PATH", L"1");
+			_wputenv_s(L"__NGX_LOG_PATH_OVERRIDE", ngxLogFile.c_str());
+			_wputenv_s(L"__NGX_LOG_LEVEL", L"2");
+		}
+
+		const bool g_ngxLogEnvironmentInstalled = (ApplyNgxLogEnvironment(), true);
 
 		using GetUnsignedValue = unsigned int(NVSDK_CONV*)();
 		using InitD3D12 = NVSDK_NGX_Result(NVSDK_CONV*)(unsigned long long, const wchar_t*, ID3D12Device*, NVSDK_NGX_Version, const NVSDK_NGX_Parameter*);
@@ -238,6 +263,13 @@ namespace NeuralRendering
 			detail_ = std::format("expected DLSSNR 310.8.x, found {}", version_);
 			return false;
 		}
+		// v1.43: re-asserted here as well; see ApplyNgxLogEnvironment above.
+		ApplyNgxLogEnvironment();
+		// v1.43: if the module is already resident before our own LoadLibrary, its
+		// static initialisers -- including the one that reads the variables above --
+		// ran at that earlier moment, and the override could not have taken effect.
+		SKSE::log::info("[DLSSNR] probe: module already resident before load = {} (v1.43)",
+			GetModuleHandleW(kRuntimeName) ? "yes" : "no");
 		module_ = LoadLibraryExW(path_.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
 		if (!module_) {
 			status_ = RuntimeStatus::LoadFailed;
@@ -333,7 +365,7 @@ namespace NeuralRendering
 		std::uint32_t inputWidth, std::uint32_t inputHeight, std::uint32_t outputWidth, std::uint32_t outputHeight,
 		float motionVectorScaleX, float motionVectorScaleY, const Tuning& tuning, bool reset)
 	{
-		if (status_ != RuntimeStatus::Initialized || !commandList || slot >= 2 || !color || !depth || !motionVectors || !output)
+		if (status_ != RuntimeStatus::Initialized || !commandList || slot >= kMaxNRLayers || !color || !depth || !motionVectors || !output)
 			return false;
 		auto* parameters = static_cast<NVSDK_NGX_Parameter*>(parameters_);
 		auto create = reinterpret_cast<CreateFeature>(GetProcAddress(static_cast<HMODULE>(module_), "NVSDK_NGX_D3D12_CreateFeature"));
@@ -352,6 +384,13 @@ namespace NeuralRendering
 
 		if (!featureHandles_[slot]) {
 			parameters->Reset();
+			// v1.43: reverted to the upstream Community Shaders values.  v1.40/v1.41
+			// fed the *guide* extent into Width/Height and inverted Scale; the upstream
+			// original -- which this file is a port of, and which is the only
+			// known-working reference -- uses Width/Height = the COLOR extent and
+			// Scale = output/input (the upscale factor between the low-resolution
+			// guides and the Color).  Renderer.cpp now creates the Color shared
+			// texture at the presentation extent again, so the two agree.
 			parameters->Set("Width", outputWidth);
 			parameters->Set("Height", outputHeight);
 			parameters->Set("OutWidth", outputWidth);
@@ -375,6 +414,12 @@ namespace NeuralRendering
 				return false;
 			}
 			featureHandles_[slot] = handle;
+
+			SKSE::log::info("[DLSSNR] feature created: slot={} (v1.45: slot = layer index, one "
+				"instance per stacked layer) guides={}x{} color/output={}x{} scale={:.3f} "
+				"Width=OutWidth={}",
+				slot, inputWidth, inputHeight, outputWidth, outputHeight,
+				static_cast<float>(outputWidth) / inputWidth, outputWidth);
 			featureInputWidth_[slot] = inputWidth;
 			featureInputHeight_[slot] = inputHeight;
 			featureOutputWidth_[slot] = outputWidth;
@@ -389,8 +434,28 @@ namespace NeuralRendering
 		parameters->Set("DLSSNR.Output", output);
 		parameters->Set("DLSSNR.ColorSubrectBaseX", 0u);
 		parameters->Set("DLSSNR.ColorSubrectBaseY", 0u);
-		parameters->Set("DLSSNR.ColorSubrectWidth", outputWidth);
-		parameters->Set("DLSSNR.ColorSubrectHeight", outputHeight);
+		// v1.39: the Color shared texture is created at INPUT size
+		// (Renderer.cpp EnsureResources -> MakeSharedDesc(colorSource, guideWidth,
+		// guideHeight)), so the Color subrect must be the texture's own extent.
+		// With NRRenderScale=1.00 input == output and the values below match the
+		// old constants exactly; with renderScale<1 the previous code asked DLSSNR
+		// to read an outputWidth-sized subrect out of a smaller texture. The v0.46
+		// DRS path carried the same latent mismatch, it just never triggered
+		// because DRS ended up inactive (guide == output).
+		const D3D12_RESOURCE_DESC colorSubrectDesc = color->GetDesc();
+		const std::uint32_t colorSubrectWidth = colorSubrectDesc.Width
+			? static_cast<std::uint32_t>(colorSubrectDesc.Width) : outputWidth;
+		const std::uint32_t colorSubrectHeight = colorSubrectDesc.Height
+			? colorSubrectDesc.Height : outputHeight;
+		static bool colorSubrectLogged = false;
+		if (!colorSubrectLogged) {
+			colorSubrectLogged = true;
+			SKSE::log::info("[DLSSNR] color subrect {}x{} (input {}x{} output {}x{})",
+				colorSubrectWidth, colorSubrectHeight, inputWidth, inputHeight,
+				outputWidth, outputHeight);
+		}
+		parameters->Set("DLSSNR.ColorSubrectWidth", colorSubrectWidth);
+		parameters->Set("DLSSNR.ColorSubrectHeight", colorSubrectHeight);
 		parameters->Set("DLSSNR.DepthSubrectBaseX", 0u);
 		parameters->Set("DLSSNR.DepthSubrectBaseY", 0u);
 		parameters->Set("DLSSNR.DepthSubrectWidth", inputWidth);
@@ -415,10 +480,29 @@ namespace NeuralRendering
 		parameters->Set("DLSSNR.UseAutoMask", tuning.useAutoMask ? 1u : 0u);
 		parameters->Set("DLSSNR.Style", tuning.style);
 		parameters->Set("DLSSNR.UICorrection", tuning.uiCorrection ? 1u : 0u);
+
+		// v1.43: no PerfQualityValue here any more (see the note at the top of the
+		// anonymous namespace).  The first evaluate logs the whole parameter set once
+		// so the ledger records exactly which configuration was tested.
+		static bool evaluateParamsLogged = false;
+		if (!evaluateParamsLogged) {
+			evaluateParamsLogged = true;
+			SKSE::log::info("[DLSSNR] evaluate params: Width={} OutWidth={} guides={}x{} "
+				"Scale={:.3f} ColorSubrect={}x{} (v1.43)",
+				outputWidth, outputWidth, inputWidth, inputHeight,
+				static_cast<float>(outputWidth) / inputWidth,
+				colorSubrectWidth, colorSubrectHeight);
+		}
 		ngxResult_ = static_cast<std::uint32_t>(evaluate(commandList,
 			static_cast<NVSDK_NGX_Handle*>(featureHandles_[slot]), parameters, nullptr));
 		if (ngxResult_ != NVSDK_NGX_Result_Success) {
-			detail_ = std::format("Feature 18 evaluate failed slot={} result=0x{:08X}", slot, ngxResult_);
+			detail_ = std::format(
+				"Feature 18 evaluate failed slot={} result=0x{:08X} input={}x{} output={}x{} scale={:.3f} "
+				"colorTex={}x{} depthTex={}x{} mvecTex={}x{}",
+				slot, ngxResult_, inputWidth, inputHeight, outputWidth, outputHeight,
+				static_cast<float>(outputWidth) / inputWidth,
+				static_cast<std::uint32_t>(colorSubrectDesc.Width), static_cast<std::uint32_t>(colorSubrectDesc.Height),
+				inputWidth, inputHeight, inputWidth, inputHeight);
 			return false;
 		}
 		++successfulFrames_;
@@ -427,7 +511,7 @@ namespace NeuralRendering
 
 	void Runtime::ResetFeature(std::uint32_t slot)
 	{
-		if (!module_ || slot >= 2)
+		if (!module_ || slot >= kMaxNRLayers)
 			return;
 		SignedRuntimePathScope scope(static_cast<HMODULE>(module_), path_.parent_path() / L"nvngx.dll");
 		auto release = reinterpret_cast<ReleaseFeature>(GetProcAddress(static_cast<HMODULE>(module_), "NVSDK_NGX_D3D12_ReleaseFeature"));
@@ -444,7 +528,7 @@ namespace NeuralRendering
 
 	void Runtime::ResetFeatures()
 	{
-		for (std::uint32_t slot = 0; slot < 2; ++slot)
+		for (std::uint32_t slot = 0; slot < kMaxNRLayers; ++slot)
 			ResetFeature(slot);
 		successfulFrames_ = 0;
 	}

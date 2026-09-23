@@ -624,6 +624,12 @@ namespace FrameGen
 	// without a second reading to compare against: "the screen did not change" is
 	// a bug only if OUR image did.
 	static std::atomic<std::uint64_t> g_colorOutHash{ 0 };
+	// v1.33: the hash of the D3D12 swap-chain back buffer we are about to present,
+	// published by BackBufferProbeIssue/Harvest.  With this the watchdog can hold
+	// three readings side by side in one line: the image we hand to DLSS-G, the
+	// image we hand to DXGI, and the image the panel shows.  Two readings that
+	// disagree say a break exists between them; three say WHICH edge it is on.
+	static std::atomic<std::uint64_t> g_backBufHash{ 0 };
 
 	// v0.73: the watchdog log path, resolved once at plugin load and kept in a plain
 	// char buffer. DllMain needs it during process detach, where calling
@@ -1059,6 +1065,13 @@ namespace FrameGen
 						static const int kScrBandY1 = (kScrH * 88) / 100;
 						static std::uint64_t s_scrHash[8] = {};
 						static std::uint64_t s_scrPix[8] = {};
+						// v1.33: the third reading. s_scrPix is colorOut (what we hand
+						// TO DLSS-G); this is the swap-chain back buffer (what we hand
+						// to DXGI). With both in the ring, "the screen is stale" stops
+						// being one fact and becomes a question with an answer: stale
+						// back buffer = our producer stopped, moving back buffer = the
+						// flip did.
+						static std::uint64_t s_scrBb[8] = {};
 						static float         s_scrLum[8] = {};
 						static std::uint32_t s_scrAt = 0u;
 						static std::uint32_t s_scrFill = 0u;
@@ -1135,6 +1148,7 @@ namespace FrameGen
 									++s_scrSeq;
 									s_scrHash[s_scrAt] = h2;
 									s_scrPix[s_scrAt] = g_colorOutHash.load();
+									s_scrBb[s_scrAt] = g_backBufHash.load();
 									s_scrLum[s_scrAt] = slum;
 									s_scrAt = (s_scrAt + 1u) % 8u;
 									if (s_scrFill < 8u)
@@ -1169,25 +1183,38 @@ namespace FrameGen
 									// game froze" and "only the overlay is moving".
 									static std::uint64_t s_scrPrevHash = 0ull;
 									static std::uint64_t s_scrPrevOurs = 0ull;
+									static std::uint64_t s_scrPrevBb = 0ull;
 									static float         s_scrPrevLum = -1.0f;
 									static std::uint32_t s_scrSame = 0u;
 									static std::uint32_t s_scrOursSame = 0u;
+									static std::uint32_t s_scrBbSame = 0u;
 									const std::uint64_t oursNow = g_colorOutHash.load();
+									const std::uint64_t bbNow = g_backBufHash.load();
 									const float dLum = (s_scrPrevLum < 0.0f) ? 0.0f : (slum - s_scrPrevLum);
 									s_scrSame = (s_scrPrevHash != 0ull && h2 == s_scrPrevHash) ? (s_scrSame + 1u) : 0u;
 									s_scrOursSame = (s_scrPrevOurs != 0ull && oursNow == s_scrPrevOurs) ? (s_scrOursSame + 1u) : 0u;
+									// v1.33: 0 is NOT an image -- it is the back-buffer probe
+									// saying "no sample yet" (disabled, or not armed). Letting
+									// that count as "identical to the previous one" would
+									// manufacture a freeze out of a missing measurement, which
+									// is the exact failure this line exists to prevent.
+									s_scrBbSame = (s_scrPrevBb != 0ull && bbNow != 0ull && bbNow == s_scrPrevBb)
+										? (s_scrBbSame + 1u) : 0u;
 									s_scrPrevHash = h2;
 									s_scrPrevOurs = oursNow;
+									s_scrPrevBb = bbNow;
 									s_scrPrevLum = slum;
 									const bool bmpOk = WriteScreenBmp(s_scrBits, kScrW, kScrH, s_scrSeq);
 									const HWND probeW = reinterpret_cast<HWND>(g_probeHwnd.load());
 									const int isFg = (probeW && ::GetForegroundWindow() == probeW) ? 1 : 0;
 									std::fprintf(f, "[%lld] [SCREEN] #%u band=%016llX lum=%.2f dLum=%+.2f "
-										"bandSame=%u oursSame=%u ring=%u/%u ours=%016llX fg=%d frames=%llu %s\n",
+										"bandSame=%u oursSame=%u bbSame=%u ring=%u/%u ours=%016llX bb=%016llX "
+										"fg=%d frames=%llu %s\n",
 										nowMs, s_scrSeq, static_cast<unsigned long long>(h2),
 										static_cast<double>(slum), static_cast<double>(dLum),
-										s_scrSame, s_scrOursSame, sDistinct, s_scrFill,
+										s_scrSame, s_scrOursSame, s_scrBbSame, sDistinct, s_scrFill,
 										static_cast<unsigned long long>(oursNow),
+										static_cast<unsigned long long>(bbNow),
 										isFg, static_cast<unsigned long long>(frames),
 										bmpOk ? "bmp=ok" : "bmp=FAILED (no file for this line)");
 									if (slum < 0.05f) {
@@ -1236,6 +1263,40 @@ namespace FrameGen
 											static_cast<double>(slum), static_cast<double>(dLum),
 											static_cast<unsigned long long>(frames));
 									}
+									// v1.33: the two verdicts a third reading makes possible.
+									// Both stay as strict as the ones above - the screen must
+									// still be genuinely stale and genuinely not-black - and
+									// both require the back-buffer probe to have a real sample
+									// in hand (bbNow != 0), never a missing one read as a
+									// freeze.
+									//
+									// The buffer we hand DXGI is frozen while our own colorOut
+									// keeps changing: the picture dies between them, i.e. in
+									// the copy or the generation that was to fill it.
+									if (bbNow != 0ull && s_scrBbSame >= 3u && s_scrOursSame <= 1u && slum > 3.0f) {
+										std::fprintf(f, "[%lld] [SCREEN] BACKBUF STALE for %u captures: the swap-chain back buffer we "
+											"hand to DXGI is byte-identical on every one of them (bb=%016llX) while our own "
+											"colorOut changed on all of them. Present was entered %llu times. The picture dies "
+											"BETWEEN colorOut and the back buffer - the copy or the generation that was "
+											"supposed to fill it - and not in the flip.\n",
+											nowMs, s_scrBbSame,
+											static_cast<unsigned long long>(bbNow),
+											static_cast<unsigned long long>(frames));
+									}
+									// The mirror image, and the one that clears our side
+									// completely: the back buffer advances on every capture
+									// while the screen does not. Nothing we produce is stale,
+									// so the break is in the flip/present path after us.
+									if (bbNow != 0ull && s_scrSame >= 3u && s_scrBbSame <= 1u && slum > 3.0f) {
+										std::fprintf(f, "[%lld] [SCREEN] FLIP STALLED for %u captures: the screen band is byte-identical "
+											"on every one of them (hash=%016llX) while the swap-chain back buffer we hand to "
+											"DXGI changed on all of them (bb=%016llX bbSame=%u). Every image on our side of "
+											"the flip is new. Present was entered %llu times.\n",
+											nowMs, s_scrSame,
+											static_cast<unsigned long long>(h2),
+											static_cast<unsigned long long>(bbNow), s_scrBbSame,
+											static_cast<unsigned long long>(frames));
+									}
 								}
 							}
 						}
@@ -1263,8 +1324,58 @@ namespace FrameGen
 	{
 		if (!d3d12Fence || !d3d11Context)
 			return true;   // nothing to wait on; never invent a stall
+		// v1.44: one-shot record of the mode that is actually ARMED, placed before
+		// the early-outs below. "the INI was read" and "this code ran" are different
+		// facts; a run that only ever early-outs would otherwise be indistinguishable
+		// from a run that took the branch and gained nothing.
+		{
+			static std::atomic<int> waitModeLogged{ 0 };
+			const bool queueSideArmed = !Get().settings.fenceWaitBusy && d3d11Fence;
+			if (waitModeLogged.fetch_add(1) == 0) {
+				SKSE::log::info("[FrameGen] fence wait mode: {} (FenceWaitBusy={} d3d11Fence={} d3d12Fence={}) "
+					"- one line per process", queueSideArmed ? "QUEUE-SIDE (d3d11Context->Wait)" : "CPU POLL",
+					Get().settings.fenceWaitBusy ? 1 : 0, d3d11Fence ? "shared" : "NULL", d3d12Fence ? "ok" : "NULL");
+				if (!Get().settings.fenceWaitBusy && !d3d11Fence)
+					SKSE::log::error("[FrameGen] FenceWaitBusy=0 was requested but the shared D3D11 fence is null "
+						"- falling back to the CPU poll, so the mode under test is NOT active");
+			}
+		}
 		if (d3d12Fence->GetCompletedValue() >= a_fenceValue)
 			return true;
+		// v1.44 -- queue-side wait (FenceWaitBusy=0), the Sep 11 behaviour.
+		//
+		// d3d11Fence and d3d12Fence are the SAME fence object: CreateInterop opens
+		// one shared handle on both devices (:281), so this waits on exactly the
+		// value the caller just signalled on the D3D12 queue. Only the timeline the
+		// wait is placed on differs. ID3D11DeviceContext4::Wait queues it on the
+		// D3D11 timeline and returns to the CPU at once, so frame N+1 is built while
+		// frame N is still executing. The poll below instead parks the render thread
+		// on the GPU, serialising the two.
+		//
+		// 2026-09-21, same box, same 2K output, same FSR3 2x chain:
+		//   Sep 11 build (queue-side)                          base 56.12 (17.8 ms)
+		//   this build    (poll), watchdog 92-98% of samples    base 36.08 (27.7 ms)
+		//                                              in "stage=d3d11 Wait"
+		// That is the shape of the missing 10 ms, not a proof of it - the watchdog
+		// can only report the stage the code was told to sit in. Hence a switch.
+		//
+		// Falls back to the bounded poll whenever the shared fence is missing, so
+		// this mode can only be slower than mode 1, never less safe. What it can do
+		// is stall the D3D11 QUEUE instead of the CPU if the fence is never
+		// signalled (the 2026-09-18 18:23 failure) - if the game freezes, set
+		// FenceWaitBusy=1 in the INI; no rebuild needed.
+		if (!Get().settings.fenceWaitBusy && d3d11Fence) {
+			const HRESULT hrWait = d3d11Context->Wait(d3d11Fence.get(), a_fenceValue);
+			if (FAILED(hrWait)) {
+				static std::atomic<int> queueWaitFailedLogged{ 0 };
+				if (queueWaitFailedLogged.fetch_add(1) < 10) {
+					SKSE::log::error("[XRAY] d3d11Context->Wait(fence, {}) failed hr=0x{:08X} - the D3D11 "
+						"queue got no ordering against the D3D12 queue this frame "
+						"(FenceWaitBusy=0)", a_fenceValue, static_cast<unsigned>(hrWait));
+				}
+			}
+			return true;
+		}
 		const auto t0 = std::chrono::steady_clock::now();
 		for (;;) {
 			if (d3d12Fence->GetCompletedValue() >= a_fenceValue)
@@ -1387,6 +1498,12 @@ namespace FrameGen
 		// One call site, on the path all three return branches share, so no branch
 		// has to be touched to cover them.
 		PixelProbeTick();
+		// v1.33: harvest the previous back-buffer sample.  Deliberately next to
+		// PixelProbeTick() and on the same shared prologue, so both probes cover
+		// all three return branches without any branch having to know about them.
+		// It only ever reads a sample the fence has already declared complete, so
+		// it cannot introduce a wait here.
+		BackBufferProbeHarvest();
 		// v0.81 -- who actually presents? Observation only; this never refuses.
 		CensusPresentThread();
 
@@ -1707,9 +1824,13 @@ namespace FrameGen
 					const bool nrInputsReady = depthWrapped && mvecWrapped && depthWrapped->srv;
 					static std::uint32_t nrDiag = 0;
 					if (++nrDiag % 180 == 1) {
-						SKSE::log::info("[FrameGen] DLSSNR: color={} engineDepthSRV={} engineMvec={} inputs={} frames={} status={}",
+						// v1.45：加 layers= —— 多层开启时 frames= 是**评估次数**（每帧 N 次），
+						// 不是帧数。判"多层到底有没有生效"看 layers= 与 [DLSSNR] feature created
+						// 里出现了几个 slot。
+						SKSE::log::info("[FrameGen] DLSSNR: color={} engineDepthSRV={} engineMvec={} inputs={} frames={} layers={} status={}",
 							nrColor != nullptr, nrDepth.depthSRV != nullptr, nrMvec.texture != nullptr, nrInputsReady,
 							static_cast<unsigned long long>(NeuralRendering::Renderer::Instance().SuccessfulFrames()),
+							fg.nrTuning.layers,
 							NeuralRendering::Renderer::Instance().StatusText());
 					}
 					static std::uint32_t nrSkip = 0;
@@ -1956,6 +2077,31 @@ namespace FrameGen
 				} else {
 					dlssgFailCount = 0;
 				}
+			}
+			// ↑ 闭合上面那个 `} else {`。把这段 Copy 从 else 里提出来改成平级 if 之后，
+			//   原来用来闭合 else 的括号已经变成下面这个 if 的闭合括号了 —— 不补这一个，
+			//   else 就会一直开着，把后面**所有**函数都吞进去。
+			//   v1.34 第一次构建就是这么挂的：编译器报 DX12SwapChain.cpp(1416) 的 `{` 没有匹配项，
+			//   随后是一串「本地函数定义是非法的」。
+			// v1.34 (T2) -- 强制写回。这条 Copy 过去只在 dlssgOk==false 时跑。21:26 局的两个
+			// 独立通道给出同一结论：色缓冲 [PIXEL] 每帧都在变，而后缓冲 [BACKBUF] 报 STALE
+			// （逐字节不变）；并且把第二个 DLSS-G 写者（DLSSG-Transfusion / dinput8.dll）改名
+			// 移走之后冻结丝毫未变 —— 断点在我们这一侧：DLSS-G 报成功，后缓冲却没拿到新图。
+			// ForceBackBufferCopy=1 时无论 dlssgOk 如何都把自己的 colorOut 盖进后缓冲：
+			//   画面活   => DLSS-G 根本没填过后缓冲（写回路径就是断点）
+			//   照旧冻   => 后缓冲里确实有新图，断点在 flip 之下游（DXGI/多线程 present）
+			if (!dlssgOk || fg.settings.forceBackBufferCopy) {
+				if (dlssgOk) {
+					// 强制生效的见证：正常跑不可能出现。没有它，"开关没读到"与"开关生效但没用"
+					// 在日志里长得一模一样。
+					static std::atomic<std::uint32_t> t2Forced{ 0 };
+					if ((++t2Forced % 120u) == 0u) {
+						SKSE::log::warn("[BACKBUF] T2 FORCED copy: dlssgOk=true but ForceBackBufferCopy=1 - colorOut "
+							"will overwrite the back buffer this frame ({} forced frames so far). If the picture comes "
+							"alive this proves DLSS-G never filled it.",
+							t2Forced.load());
+					}
+				}
 				// 直通兜底：共享纹理 Copy 到 backbuffer（无插帧，防画面冻结）
 				auto fakeSwapChain = swapChainBufferWrapped->resource.get();
 				auto realSwapChain = swapChainBuffers[frameIndex].get();
@@ -1990,6 +2136,10 @@ namespace FrameGen
 						dlssgFailCount.load());  // v0.66: atomic - fmt 不能直接格式化
 				}
 			}
+			// v1.33: the copy must ride THIS frame's command list, so it goes in
+			// immediately before the list is closed.  The waiter for it is the
+			// fence Present signals below, not a new one.
+			BackBufferProbeIssue(commandLists[frameIndex].get(), swapChainBuffers[frameIndex].get(), frameIndex);
 			DX::ThrowIfFailed(commandLists[frameIndex]->Close());
 			ID3D12CommandList* dlssgLists[] = { commandLists[frameIndex].get() };
 			commandQueue->ExecuteCommandLists(1, dlssgLists);
@@ -2092,6 +2242,11 @@ namespace FrameGen
 			}
 		}
 
+		// v1.33: same as the DLSS-G branch above - the copy rides this frame's
+		// list, and Present's fence is what the harvest waits on.  On this path
+		// the copy also covers the FSR3 fallback, so a Provider=0 run (the one
+		// configuration that has ever stayed alive) gets the same reading.
+		BackBufferProbeIssue(commandLists[frameIndex].get(), swapChainBuffers[frameIndex].get(), frameIndex);
 		DX::ThrowIfFailed(commandLists[frameIndex]->Close());
 
 		ID3D12CommandList* commandListsToExecute[] = { commandLists[frameIndex].get() };
@@ -2188,10 +2343,19 @@ namespace FrameGen
 			return;
 		pixelProbeLastMs = nowMs;
 
-		// Which buffer is the picture the player sees? With DLSS-G on, Streamline
-		// presents colorOutWrapped, not the engine backbuffer (that one is the
-		// HUD-less colour INPUT). Sampling the wrong one would report "a new frame
-		// was rendered" while the screen stayed on the same image.
+		// Which buffer is the picture the player sees?  (v1.33 CORRECTION: the
+		// answer depends on the provider, and the original text here was only
+		// right for one of them.)
+		//   Provider=0 (FSR3): colorOutWrapped is written by the upscaler and
+		//     copied into the real back buffer a few lines below Present's
+		//     prologue -- there it IS the presented image.
+		//   DLSS-G: colorOutWrapped is filled by the D3D11 CopyResource in the
+		//     shared prologue, i.e. it is a copy of the ENGINE's render target --
+		//     the image we hand TO DLSS-G. The presented image is the D3D12
+		//     swap-chain back buffer, which EvaluateDLSSG writes and DXGI flips,
+		//     and which [BACKBUF] samples as of v1.33. Reading this texture as
+		//     "what the player sees" on a DLSS-G run is what made the 19:11 log
+		//     look contradictory: it was the input side all along.
 		WrappedResource* srcRes = colorOutWrapped ? colorOutWrapped : swapChainBufferWrapped;
 		if (!srcRes || !srcRes->resource11)
 			srcRes = swapChainBufferWrapped;
@@ -2244,7 +2408,10 @@ namespace FrameGen
 			SKSE::log::info("[PIXEL] probe armed: src={}x{} fmt={} block={}x{} at ({},{}) source={}",
 				src.Width, src.Height, static_cast<int>(src.Format), bw, bh,
 				pixelProbeBox.left, pixelProbeBox.top,
-				(colorOutWrapped && srcRes == colorOutWrapped) ? "colorOut(presented)" : "engineBackbuffer");
+				(colorOutWrapped && srcRes == colorOutWrapped)
+					? (dlssgMode ? "colorOut(D3D11 copy of the engine render = what we hand TO DLSS-G)"
+								 : "colorOut(FSR3 output = the presented image on this provider)")
+					: "engineBackbuffer");
 		}
 		else if (srcRes && srcRes->resource11 && pixelProbeSrcW != 0) {
 			// The presented resource changed size: the cached box would then read the
@@ -2518,6 +2685,280 @@ namespace FrameGen
 				pixelProbeStaging.get(), 0, 0, 0, 0, srcRes->resource11, 0, &pixelProbeBox);
 			pixelProbeCopyPending = true;
 		}
+	}
+
+	// ---- v1.33 BACK-BUFFER PROBE ----
+	// Two methods, because the two halves have to run at different points in the
+	// frame: the copy must be RECORDED on the frame's own command list (so it
+	// before that list is closed), and the sample can only be READ once that
+	// frame has actually completed on the GPU.
+	//
+	// The 19:11 run is why this exists. There, [PIXEL] -- the D3D11 copy of the
+	// image we hand TO DLSS-G -- took 74 distinct values over 28 s while the
+	// [SCREEN] desktop capture stayed on 3. Those two readings cannot both
+	// describe one pipeline; a break sits between them. And between them sits
+	// exactly one object that no instrument in this project has ever sampled:
+	// the D3D12 swap-chain back buffer DXGI flips. This probe reads it, so the
+	// next run can say which of the two edges the break is on:
+	//
+	//   back buffer frozen  -> whatever was supposed to fill it never arrived
+	//   back buffer moving  -> the break is downstream of us, in the flip/present path
+	//
+	// What is sampled: the centre 640x360 block, which is the same part of the
+	// world the [SCREEN] band covers (rows 16%-88% of a centred halftone). The
+	// two hashes are NOT comparable with each other -- one is a desktop halftone,
+	// the other raw pixels -- and nothing here compares them. Each is compared
+	// only against its own previous sample, which is the only question either of
+	// them can actually answer.
+	void DX12SwapChain::BackBufferProbeHarvest()
+	{
+		if (backProbeDisabled)
+			return;
+
+		// L39 self-witness, and it has to sit ABOVE the `pending` return below:
+		// a probe that armed and then produced nothing leaves a log that is
+		// indistinguishable from a healthy one, and this project has paid for
+		// that mistake twice already. Armed-but-silent is an error, not a
+		// silence.
+		if (backProbeReady && backProbeSamples == 0 && !backProbeSelfWitnessFired) {
+			const auto wMs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now().time_since_epoch()).count());
+			// v1.34: 时钟从「第一次进入 Present」起算，不从「武装」起算。21:26 局里武装发生在
+			// 载入画面，20 秒后触发时 Present 一次都还没进来 —— 那是在指控一个根本没机会采样的
+			// 探针。真正该报的是「Present 已经在跑，却依然一个样本都没有」。
+			if (backProbeFirstPresentMs != 0 && wMs - backProbeFirstPresentMs > 15000u) {
+				backProbeSelfWitnessFired = true;
+				SKSE::log::error("[BACKBUF] ERROR: {} s after the first Present entry and still ZERO samples "
+					 "(deferred={} dropped={}). A MISSING [BACKBUF] line is NO MEASUREMENT - never 'the back "
+					 "buffer was fine'.",
+					 (wMs - backProbeFirstPresentMs) / 1000u, backProbeDeferred, backProbeDropped);
+			}
+		}
+
+		if (!backProbePending)
+			return;
+		if (!backProbeReadback || !d3d12Fence) {
+			backProbePending = false;
+			++backProbeDropped;
+			return;
+		}
+
+		// The fence is the whole reason this cannot stall. The copy rode on
+		// `frameIndex`'s command list, and Present signalled that same frame with
+		// backProbeFenceAtCopy -- so once the fence has passed that value, the
+		// copy has completed. Until then the sample is neither read nor thrown
+		// away: the next Present is one frame away and the GPU owes us tens of
+		// milliseconds, not the 500 the gate waits. Dropping on first sighting
+		// would drop essentially every sample.
+		if (static_cast<std::uint64_t>(d3d12Fence->GetCompletedValue()) < backProbeFenceAtCopy) {
+			const auto nowMs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now().time_since_epoch()).count());
+			if (nowMs - backProbePendingSinceMs > 2000u) {
+				backProbePending = false;
+				++backProbeDropped;
+				SKSE::log::warn("[BACKBUF] sample dropped: 2000 ms after the copy was issued the fence still "
+					"has not reported that frame complete (fenceAtCopy={} completed={})",
+					backProbeFenceAtCopy, static_cast<unsigned long long>(d3d12Fence->GetCompletedValue()));
+			}
+			return;
+		}
+
+		const UINT rowBytes = backProbeW * backProbeBytesPerPx;
+		const D3D12_RANGE readRange{ 0, static_cast<SIZE_T>(backProbeFootprint.Footprint.RowPitch) * backProbeH };
+		void* mapped = nullptr;
+		const HRESULT hrMap = backProbeReadback->Map(0, &readRange, &mapped);
+		if (FAILED(hrMap) || !mapped) {
+			backProbePending = false;
+			++backProbeDropped;
+			SKSE::log::warn("[BACKBUF] sample dropped: Map failed hr=0x{:08X}", static_cast<unsigned>(hrMap));
+			return;
+		}
+
+		// Hash `rowBytes` per row and stop there. The padding between rows in a
+		// placed footprint is whatever the driver left behind and is not part of
+		// the contract, so hashing it could make an unchanged picture hash
+		// differently -- a false "it moved". (The D3D11 probe can hash whole rows
+		// because a D3D11 staging texture has no such gap.) The mean byte is kept
+		// for the same reason it is kept there: a hash says "it changed", a mean
+		// says "it got brighter or darker", and the two together separate a ramp
+		// from a flicker.
+		std::uint64_t h = 1469598103934665603ull;   // FNV-1a offset basis
+		std::uint64_t lumSum = 0;
+		std::uint64_t lumN = 0;
+		const auto* rows = static_cast<const std::uint8_t*>(mapped);
+		for (UINT y = 0; y < backProbeH; ++y) {
+			const auto* row = rows + static_cast<std::size_t>(y) * backProbeFootprint.Footprint.RowPitch;
+			for (UINT x = 0; x < rowBytes; ++x) {
+				h ^= row[x];
+				h *= 1099511628211ull;
+				lumSum += row[x];
+				++lumN;
+			}
+		}
+		backProbeReadback->Unmap(0, nullptr);
+		backProbePending = false;
+
+		const float lum = lumN ? static_cast<float>(lumSum) / static_cast<float>(lumN) : 0.0f;
+		++backProbeSamples;
+		bool changed = false;
+		if (backProbeLastHash != 0) {
+			changed = (h != backProbeLastHash);
+			if (changed) {
+				++backProbeChanged;
+				backProbeStreak = 0;
+			} else {
+				++backProbeUnchanged;
+				++backProbeStreak;
+				if (backProbeStreak > backProbeMaxStreak)
+					backProbeMaxStreak = backProbeStreak;
+			}
+		}
+		backProbeLastHash = h;
+		g_backBufHash.store(h);
+
+		SKSE::log::info("[BACKBUF] #{} hash={:016X} lum={:.2f} chg={} changed={} same={} streak={} maxStreak={} "
+			"samples={} deferred={} dropped={} box={}x{} at ({},{}) src={}x{} frameIdx={} of {}",
+			backProbeSamples, h, static_cast<double>(lum), changed ? 1 : 0,
+			backProbeChanged, backProbeUnchanged, backProbeStreak, backProbeMaxStreak,
+			backProbeSamples, backProbeDeferred, backProbeDropped,
+			backProbeW, backProbeH, (backProbeSrcW - backProbeW) / 2u, (backProbeSrcH - backProbeH) / 2u,
+			backProbeSrcW, backProbeSrcH, backProbeFrameIndex, 3u);
+	}
+
+	void DX12SwapChain::BackBufferProbeIssue(ID3D12GraphicsCommandList* a_cmdList, ID3D12Resource* a_backBuffer,
+		UINT a_frameIndex)
+	{
+		if (backProbeDisabled || !a_cmdList || !a_backBuffer)
+			return;
+
+		auto& fg = Get();
+		if (!fg.settings.pixelProbe) {
+			backProbeDisabled = true;
+			SKSE::log::info("[BACKBUF] probe disabled by INI (PixelProbe=0)");
+			return;
+		}
+
+		const auto nowMs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+
+		// One copy in flight at a time, and the gate is 2 Hz -- the same cadence
+		// as the D3D11 probe, so the two lines interleave readably. If the fence
+		// is already late this tick is skipped rather than queued: a backlog of
+		// samples about the past would answer nothing.
+		// v1.34: 第一次真正进入 Present 的时刻 —— 从这里起样本才有可能产生。
+		if (backProbeFirstPresentMs == 0)
+			backProbeFirstPresentMs = nowMs;
+		if (nowMs - backProbeLastMs < 500u)
+			return;
+		backProbeLastMs = nowMs;
+		backProbeFrameIndex = a_frameIndex;
+		if (backProbePending) {
+			++backProbeDeferred;
+			return;
+		}
+
+		if (!backProbeReady) {
+			if (!d3d12Device) {
+				backProbeDisabled = true;
+				SKSE::log::warn("[BACKBUF] probe disabled: no D3D12 device on this path");
+				return;
+			}
+			const D3D12_RESOURCE_DESC src = a_backBuffer->GetDesc();
+			// Every format this swap chain is created with is 4 bytes per pixel
+			// except the 16-bit-per-channel ones, and guessing wrong would only
+			// shift the hashed region -- not corrupt anything -- but the mean
+			// byte would then be wrong, so it is stated rather than assumed.
+			switch (src.Format) {
+			case DXGI_FORMAT_R16G16B16A16_FLOAT:
+			case DXGI_FORMAT_R16G16B16A16_UNORM:
+			case DXGI_FORMAT_R16G16B16A16_SNORM:
+				backProbeBytesPerPx = 8;
+				break;
+			default:
+				backProbeBytesPerPx = 4;
+				break;
+			}
+			backProbeSrcW = static_cast<UINT>(src.Width);
+			backProbeSrcH = src.Height;
+			backProbeW = backProbeSrcW < 640u ? backProbeSrcW : 640u;
+			backProbeH = backProbeSrcH < 360u ? backProbeSrcH : 360u;
+			// CopyTextureRegion into a placed footprint requires the row pitch to
+			// be a multiple of D3D12_TEXTURE_DATA_PITCH_ALIGNMENT (256).
+			const UINT rowPitch = (backProbeW * backProbeBytesPerPx + 255u) & ~255u;
+
+			backProbeFootprint.Offset = 0;
+			backProbeFootprint.Footprint.Format = src.Format;
+			backProbeFootprint.Footprint.Width = backProbeW;
+			backProbeFootprint.Footprint.Height = backProbeH;
+			backProbeFootprint.Footprint.Depth = 1;
+			backProbeFootprint.Footprint.RowPitch = rowPitch;
+
+			const auto heapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK);
+			const auto bufDesc = CD3DX12_RESOURCE_DESC::Buffer(static_cast<UINT64>(rowPitch) * backProbeH);
+			const HRESULT hrCreate = d3d12Device->CreateCommittedResource(
+				&heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
+				D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(backProbeReadback.put()));
+			if (FAILED(hrCreate)) {
+				backProbeDisabled = true;
+				SKSE::log::warn("[BACKBUF] probe disabled: CreateCommittedResource failed hr=0x{:08X} ({:.1f} KB)",
+					static_cast<unsigned>(hrCreate),
+					static_cast<double>(static_cast<UINT64>(rowPitch) * backProbeH) / 1024.0);
+				return;
+			}
+			backProbeReady = true;
+			backProbePending = false;
+			backProbeArmedMs = nowMs;
+			SKSE::log::info("[BACKBUF] probe armed: backbuffer {}x{} fmt={} bytesPerPx={} - hashing the centre "
+				"{}x{} block at ({},{}) into a {} B readback buffer",
+				backProbeSrcW, backProbeSrcH, static_cast<int>(src.Format), backProbeBytesPerPx,
+				backProbeW, backProbeH, (backProbeSrcW - backProbeW) / 2u, (backProbeSrcH - backProbeH) / 2u,
+				static_cast<unsigned long long>(static_cast<UINT64>(rowPitch) * backProbeH));
+		}
+
+		// The back buffer is in PRESENT state here: the very next thing this
+		// function does is hand it to DXGI, which requires exactly that, and the
+		// passthrough fallback above already transitions from PRESENT on the same
+		// resource. So this is the codebase's existing assumption, spelled out --
+		// not a new one.
+		{
+			D3D12_RESOURCE_BARRIER barriers[2] = {};
+			barriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(a_backBuffer,
+				D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_SOURCE);
+			barriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(a_backBuffer,
+				D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_PRESENT);
+			a_cmdList->ResourceBarrier(1, &barriers[0]);
+			{
+				const UINT bx = (backProbeSrcW - backProbeW) / 2u;
+				const UINT by = (backProbeSrcH - backProbeH) / 2u;
+				D3D12_TEXTURE_COPY_LOCATION dst{};
+				dst.pResource = backProbeReadback.get();
+				dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+				dst.PlacedFootprint = backProbeFootprint;
+
+				D3D12_TEXTURE_COPY_LOCATION srcLoc{};
+				srcLoc.pResource = a_backBuffer;
+				srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+				srcLoc.SubresourceIndex = 0;
+
+				D3D12_BOX box{};
+				box.left = bx;
+				box.top = by;
+				box.front = 0;
+				box.right = bx + backProbeW;
+				box.bottom = by + backProbeH;
+				box.back = 1;
+
+				a_cmdList->CopyTextureRegion(&dst, 0, 0, 0, &srcLoc, &box);
+			}
+			a_cmdList->ResourceBarrier(1, &barriers[1]);
+		}
+
+		// fenceValue is the value Present signals for THIS frame, before it is
+		// incremented -- so the harvest can ask the fence about exactly the frame
+		// that carries this copy, and nothing else.
+		backProbeFenceAtCopy = fenceValue;
+		backProbePendingSinceMs = nowMs;
+		backProbePending = true;
 	}
 	HRESULT DX12SwapChain::GetDevice(REFIID uuid, void** ppDevice)
 	{

@@ -709,13 +709,44 @@ namespace FrameGen
 				vm[r][2] = m2;
 				vm[r][3] = -(m0 * ex + m1 * ey + m2 * ez);
 			}
-			// Transpose into SL's row-major convention, exactly as the surrounding
-			// code does for every other engine matrix.
+			// ---- v1.49: THE DOUBLE TRANSPOSE (found 2026-09-22 02:35) -------
+			//
+			// The two lines below used to transpose vm into viewSL. That was
+			// WRONG -- vm is already a row-major view matrix in SL's layout.
+			//
+			// The evidence is in the v1.48c run itself. With the old code the
+			// printout showed, on a STILL frame,
+			//
+			//     r0 = ( 0.7939, 0.0000, -0.8889)   |r0| = 1.1918
+			//     r1 = ( 1.5802, 0.0000,  1.4113)   |r1| = 2.1187
+			//     r2 = (17678.5, -120.7,  47049.2)  |r2| = 50176
+			//
+			// r0 is a unit rotation row (as a row of a view matrix must be),
+			// but |r0| reads 1.1918 = proj00, and |r1| = 2.1187 = 1.1918*1.7778
+			// -- the projection has leaked into TWO rows at once. That is the
+			// signature of an extra transpose, not of a bad camera.
+			//
+			// A numpy replay of both variants settles it: the transposed write
+			// reproduces (-17678.3, 122.7, -47049.0) for r2, i.e. it matches the
+			// logged r2 element-for-element modulo the sign convention. The
+			// correct write below reproduces the same rotation rows with the
+			// right magnitudes and leaves only camCurVP[2].w = -1.
+			//
+			// The consequence of the old code is the bug this round chased:
+			// -R^T@eye has magnitude ~5e4, and the extra transpose shoved a
+			// scaled copy of it into the ROTATION rows. So camCurVP and
+			// camPrevVP differed by ~1e4 in their rotation blocks whenever the
+			// camera moved -- "rotDelta" was measuring the camera POSITION
+			// through a mis-transposed channel, which is also why it never
+			// agreed with the r0..r2 triples printed beside it.
+			//
+			// vm[r] is already {R_row_r, -R_row_r . eye}, so it copies straight
+			// across, exactly like the projSL write a few lines below.
 			sl::float4x4 viewSL;
-			viewSL[0] = sl::float4(vm[0][0], vm[1][0], vm[2][0], 0.0f);
-			viewSL[1] = sl::float4(vm[0][1], vm[1][1], vm[2][1], 0.0f);
-			viewSL[2] = sl::float4(vm[0][2], vm[1][2], vm[2][2], 0.0f);
-			viewSL[3] = sl::float4(vm[0][3], vm[1][3], vm[2][3], 1.0f);
+			viewSL[0] = sl::float4(vm[0][0], vm[0][1], vm[0][2], vm[0][3]);
+			viewSL[1] = sl::float4(vm[1][0], vm[1][1], vm[1][2], vm[1][3]);
+			viewSL[2] = sl::float4(vm[2][0], vm[2][1], vm[2][2], vm[2][3]);
+			viewSL[3] = sl::float4(0.0f, 0.0f, 0.0f, 1.0f);
 			const auto& pj = a_proj.data;
 			sl::float4x4 projSL;
 			projSL[0] = sl::float4(pj[0][0], pj[1][0], pj[2][0], pj[3][0]);
@@ -799,6 +830,162 @@ namespace FrameGen
 			            finiteMagOf(camPrevVP) > 1.0e-6f;
 		}
 
+		// ===== v1.48 PROBE 2: what actually differs between camCurVP and camPrevVP? =====
+		//
+		// PROBE 1 (line ~834) settled the first half: CameraView IS live. Its
+		// rotation block changes every frame while the player turns, and the
+		// row values swing hard, e.g. v0 going
+		//     (0.606, 0.796) -> (-0.884, 0.468) -> (0.383, -0.924)
+		// in consecutive samples. So "dead field" is ruled out.
+		//
+		// The 01:43 run still showed clipDev collapsing to 0.002 (identity)
+		// while the player was turning in place -- position static, orientation
+		// changing. The 02:02 run, where the player was WALKING, showed
+		// clipDev = 40..88. That pairing says clipToPrevClip tracks the camera
+		// POSITION and carries little or nothing of the ROTATION.
+		//
+		// But "little rotation" is an inference from a scalar, and the scalar
+		// is computed after the multiply. This probe prints the two operands,
+		// split into the parts that matter, so the loss can be localised to a
+		// step instead of guessed:
+		//
+		//   rotCur / rotPrev   the 3x3 rotation block of each rebuilt matrix
+		//   rotDelta           max|rotCur - rotPrev|  -> rotation contrast
+		//   trCur / trPrev     the translation column (row 3, xyz)
+		//   trDelta            max|trCur - trPrev|    -> position contrast
+		//   eyeDelta           max|eye - prevEye|     -> raw input contrast
+		//
+		// Expected if the rebuild is healthy:
+		//   turning in place -> rotDelta large, trDelta ~ 0
+		//   walking straight -> rotDelta ~ 0,   trDelta large
+		// If instead rotDelta stays ~0 while eyeDelta/rotDev from PROBE 1 is
+		// large, the rotation is being dropped between rebuildViewProj and
+		// here. If rotDelta is large but clipDev stays at its floor, the loss
+		// is downstream, in the invert/multiply at the reprojection site.
+		{
+			static std::uint32_t s_vp2Tick = 0;
+			static auto s_vp2Last = std::chrono::steady_clock::now();
+			const bool vp2TimeUp = std::chrono::duration<double>(
+				std::chrono::steady_clock::now() - s_vp2Last).count() >= 2.0;
+			if (++s_vp2Tick % 30 == 1 || vp2TimeUp) {
+				s_vp2Last = std::chrono::steady_clock::now();
+
+				// v1.48c -- PROBE 2 WAS WRONG TWICE. The data caught BOTH.
+				//
+				// Attempt 1 (v1.48) compared rows[0..2].xyz against
+				// row[3].xyz. The run printed rotDelta = 1324..32773 on 28 of
+				// 42 samples, while the same lines show camCurVP[0].x/y/z all
+				// sitting inside +-1.19 and camCurVP[3].xyz inside +-15.0.
+				// No element of that matrix can differ by 3e4, so the metric
+				// was measuring something that cannot have been a "max abs
+				// cell difference" at all.
+				//
+				// Attempt 2 (v1.48b) "fixed" it by moving the rotation read to
+				// rows[0..2].w, on the theory that viewSL is stored transposed.
+				// The log already refutes that too: the printed r0 triple is
+				// a unit-length orientation row that swings
+				//     (0.794, 0.000,-0.889) -> (1.158,-0.035,-0.280)
+				//     -> (-0.814, 0.095,-0.865)
+				// i.e. real, normalised, rotating data -- in xyz. A .w-slot
+				// reading would have shown near-zero for those same rows.
+				// So rows[0..2].xyz IS the rotation and row[3].xyz IS the
+				// translation; the transposition theory was wrong.
+				//
+				// Which leaves the actual defect: rotDelta was never a max.
+				// The v1.48 lambdas were correct in shape, but the run's
+				// numbers cannot come from the rows the printout shows. Rather
+				// than reason further about which slot is which -- three
+				// attempts, three theories, and the matrix is right in front
+				// of us -- this version stops assuming and reports the whole
+				// thing:
+				//
+				//   rotDelta  max|rows[0..2].xyz diff|   (rotation contrast)
+				//   trDelta   max|row[3].xyz diff|       (position contrast)
+				//   allDelta  max|any of the 16 diff|    (residual self-check)
+				//   cur/p     the four rotation rows and the translation row,
+				//             printed in full, so the next run can be checked
+				//             against itself instead of against a theory.
+				//
+				// allDelta is the important one: if allDelta >> rotDelta and
+				// >> trDelta, the difference is hiding in the .w slots or the
+				// 3x3 block, and no future theory is needed -- it will simply
+				// be visible. If allDelta == max(rotDelta, trDelta), the two
+				// metrics fully cover the matrix and the mystery is closed.
+				auto maxAbsAll = [](const sl::float4x4& a, const sl::float4x4& b) -> float {
+					const float* pa = &a[0].x;
+					const float* pb = &b[0].x;
+					float worst = 0.0f;
+					for (int k = 0; k < 16; ++k) {
+						const float d = pa[k] - pb[k];
+						const float v = d < 0 ? -d : d;
+						if (v > worst) worst = v;
+					}
+					return worst;
+				};
+				auto maxAbsRot = [](const sl::float4x4& a, const sl::float4x4& b) -> float {
+					float worst = 0.0f;
+					for (int r = 0; r < 3; ++r) {
+						const float dx = a[r].x - b[r].x;
+						const float dy = a[r].y - b[r].y;
+						const float dz = a[r].z - b[r].z;
+						const float v[3] = { dx < 0 ? -dx : dx, dy < 0 ? -dy : dy,
+						                     dz < 0 ? -dz : dz };
+						for (int k = 0; k < 3; ++k)
+							if (v[k] > worst) worst = v[k];
+					}
+					return worst;
+				};
+				auto maxAbsTx = [](const sl::float4x4& a, const sl::float4x4& b) -> float {
+					const float dx = a[3].x - b[3].x;
+					const float dy = a[3].y - b[3].y;
+					const float dz = a[3].z - b[3].z;
+					const float v[3] = { dx < 0 ? -dx : dx, dy < 0 ? -dy : dy,
+					                     dz < 0 ? -dz : dz };
+					float worst = 0.0f;
+					for (int k = 0; k < 3; ++k)
+						if (v[k] > worst) worst = v[k];
+					return worst;
+				};
+
+				if (camPrevOk) {
+					SKSE::log::info("[CAMVP] rot={:.6f} tr={:.6f} all={:.6f} | "
+						"cur r0=({:.4f},{:.4f},{:.4f}) r1=({:.4f},{:.4f},{:.4f}) "
+						"r2=({:.4f},{:.4f},{:.4f}) tr=({:.2f},{:.2f},{:.2f})",
+						static_cast<double>(maxAbsRot(camCurVP, camPrevVP)),
+						static_cast<double>(maxAbsTx(camCurVP, camPrevVP)),
+						static_cast<double>(maxAbsAll(camCurVP, camPrevVP)),
+						static_cast<double>(camCurVP[0].x),
+						static_cast<double>(camCurVP[0].y),
+						static_cast<double>(camCurVP[0].z),
+						static_cast<double>(camCurVP[1].x),
+						static_cast<double>(camCurVP[1].y),
+						static_cast<double>(camCurVP[1].z),
+						static_cast<double>(camCurVP[2].x),
+						static_cast<double>(camCurVP[2].y),
+						static_cast<double>(camCurVP[2].z),
+						static_cast<double>(camCurVP[3].x),
+						static_cast<double>(camCurVP[3].y),
+						static_cast<double>(camCurVP[3].z));
+				} else {
+					SKSE::log::info("[CAMVP] camPrevOk=0 (no previous camera yet) "
+						"| cur r0=({:.4f},{:.4f},{:.4f}) r1=({:.4f},{:.4f},{:.4f}) "
+						"r2=({:.4f},{:.4f},{:.4f}) tr=({:.2f},{:.2f},{:.2f})",
+						static_cast<double>(camCurVP[0].x),
+						static_cast<double>(camCurVP[0].y),
+						static_cast<double>(camCurVP[0].z),
+						static_cast<double>(camCurVP[1].x),
+						static_cast<double>(camCurVP[1].y),
+						static_cast<double>(camCurVP[1].z),
+						static_cast<double>(camCurVP[2].x),
+						static_cast<double>(camCurVP[2].y),
+						static_cast<double>(camCurVP[2].z),
+						static_cast<double>(camCurVP[3].x),
+						static_cast<double>(camCurVP[3].y),
+						static_cast<double>(camCurVP[3].z));
+				}
+			}
+		}
+
 		// v1.06: THE WRITER THIS HISTORY NEVER HAD.
 		//
 		// v1.02c wrote the reader above and stopped there. The four statics
@@ -829,6 +1016,95 @@ namespace FrameGen
 			s_prevCamEye[1] = a_fb.CameraPosAdjust[1];
 			s_prevCamEye[2] = a_fb.CameraPosAdjust[2];
 			s_hasPrevCam = true;
+		}
+
+		// ===== v1.48 PROBE: does CameraView ROTATE? =====
+		//
+		// The 01:41-01:44 run settled one half of the question and left the other
+		// half open:
+		//
+		//   camera position moving  -> clipDev = 35 / 60 (motion reaches DLSS-G)
+		//   camera TURNING (pos static, looking around) -> clipDev = 0.002, the
+		//                                                  same floor as identity
+		//
+		// Every heartbeat in that window paired the two one-for-one
+		// (pos delta 15.3 -> clipDev 35.19, delta 0.1 -> 0.098, delta 0.0 ->
+		// 0.00195), so clipToPrevClip carries the camera POSITION and apparently
+		// nothing else. The user turns the view while standing still, which is
+		// exactly the case that produces 0.002 -- DLSS-G is told "camera parked"
+		// while the whole image rotates, so every generated frame is reprojected
+		// to where the previous one was. Displacement grows with distance from
+		// screen centre, which is the reported "centre is fine, the border is a
+		// blurry ring".
+		//
+		// Two candidate causes, and they need different fixes:
+		//   (a) CameraView itself is not updated by the engine (a dead field),
+		//       in which case rebuildViewProj has no rotation to fold in;
+		//   (b) CameraView does rotate, but the block below reads the wrong
+		//       elements, so the rotation never gets into the product.
+		//
+		// This prints the raw rows, the rotation block's deviation from the
+		// previous frame, and the CameraPosAdjust step, so ONE run decides which.
+		// READ-ONLY: nothing here feeds the constants or the history.
+		{
+			static Matrix s_probePrevView{};
+			static bool s_probeHasPrevView = false;
+			static float s_probePrevEye[3] = { 0.0f, 0.0f, 0.0f };
+			static std::uint32_t s_camvTick = 0;
+
+			// rotation block deviation: max|view[r][0..2] - prev[r][0..2]|
+			float rotDev = -1.0f;
+			if (s_probeHasPrevView) {
+				float worst = 0.0f;
+				for (int r = 0; r < 3; ++r)
+					for (int k = 0; k < 3; ++k) {
+						const float d = a_fb.CameraView.data[r][k]
+						              - s_probePrevView.data[r][k];
+						const float a2 = d < 0.0f ? -d : d;
+						if (a2 > worst) worst = a2;
+					}
+				rotDev = worst;
+			}
+			const float eyeDev = s_probeHasPrevView
+				? [&]() {
+					float worst = 0.0f;
+					for (int k = 0; k < 3; ++k) {
+						const float d = a_fb.CameraPosAdjust[k] - s_probePrevEye[k];
+						const float a2 = d < 0.0f ? -d : d;
+						if (a2 > worst) worst = a2;
+					}
+					return worst;
+				}() : -1.0f;
+
+			// 30 frames OR 2 s, whichever comes first (same cadence as [XRAY])
+			static auto s_camvLast = std::chrono::steady_clock::now();
+			const bool camvTimeUp = std::chrono::duration<double>(
+				std::chrono::steady_clock::now() - s_camvLast).count() >= 2.0;
+			if (++s_camvTick % 30 == 1 || camvTimeUp) {
+				s_camvLast = std::chrono::steady_clock::now();
+				const auto& v = a_fb.CameraView.data;
+				SKSE::log::info("[CAMV] rotDev={:.6f} eyeDev={:.6f} | "
+					"v0=({:.5f},{:.5f},{:.5f},{:.5f}) v1=({:.5f},{:.5f},{:.5f},{:.5f}) "
+					"v2=({:.5f},{:.5f},{:.5f},{:.5f}) v3=({:.5f},{:.5f},{:.5f},{:.5f}) | "
+					"eye=({:.2f},{:.2f},{:.2f}) | camCurOk={} camPrevOk={}",
+					static_cast<double>(rotDev), static_cast<double>(eyeDev),
+					static_cast<double>(v[0][0]), static_cast<double>(v[0][1]),
+					static_cast<double>(v[0][2]), static_cast<double>(v[0][3]),
+					static_cast<double>(v[1][0]), static_cast<double>(v[1][1]),
+					static_cast<double>(v[1][2]), static_cast<double>(v[1][3]),
+					static_cast<double>(v[2][0]), static_cast<double>(v[2][1]),
+					static_cast<double>(v[2][2]), static_cast<double>(v[2][3]),
+					static_cast<double>(v[3][0]), static_cast<double>(v[3][1]),
+					static_cast<double>(v[3][2]), static_cast<double>(v[3][3]),
+					static_cast<double>(a_fb.CameraPosAdjust[0]),
+					static_cast<double>(a_fb.CameraPosAdjust[1]),
+					static_cast<double>(a_fb.CameraPosAdjust[2]),
+					camCurOk ? 1 : 0, camPrevOk ? 1 : 0);
+			}
+			s_probePrevView = a_fb.CameraView;
+			for (int k = 0; k < 3; ++k)
+				s_probePrevEye[k] = a_fb.CameraPosAdjust[k];
+			s_probeHasPrevView = true;
 		}
 
 		auto finiteMag = [](const sl::float4x4& m) -> float {
@@ -1015,13 +1291,29 @@ namespace FrameGen
 				vm[r][3] = -(vw[r][0] * ex + vw[r][1] * ey + vw[r][2] * ez);
 			}
 
-			// Transpose into SL's row-major convention, exactly as the surrounding
-			// code does for every other engine matrix (s[0]=col0, s[1]=col1, ...).
+			// ---- v1.49: THE SAME DOUBLE TRANSPOSE, SECOND SITE ---------------
+			//
+			// This is the copy that MATTERS: fixedViewProj feeds curForReproj
+			// (line ~1337), i.e. it is the "current" matrix of the reprojection.
+			// It carried the identical transposed write as rebuildViewProj, so
+			// the same defect reached production twice.
+			//
+			// See the long note in rebuildViewProj for the full derivation; the
+			// short form is that a view matrix's ROWS are what belong on
+			// viewSL[0..2], and vm already holds them that way. Transposing here
+			// produced a 3x3 whose row magnitudes were (1.1918, 2.1187, 1.0)
+			// instead of (1.1918, 1.1918, 1.1918), and it pushed a copy of
+			// -R^T@eye -- magnitude ~5e4 -- into the rotation block, where it
+			// scales with how far the player has walked from the origin.
+			//
+			// The projSL write below stays as it is: engine matrices are stored
+			// column-major, so THAT one really does need the transpose. The two
+			// are not symmetric and must not be made to look so.
 			sl::float4x4 viewSL;
-			viewSL[0] = sl::float4(vm[0][0], vm[1][0], vm[2][0], 0.0f);
-			viewSL[1] = sl::float4(vm[0][1], vm[1][1], vm[2][1], 0.0f);
-			viewSL[2] = sl::float4(vm[0][2], vm[1][2], vm[2][2], 0.0f);
-			viewSL[3] = sl::float4(vm[0][3], vm[1][3], vm[2][3], 1.0f);
+			viewSL[0] = sl::float4(vm[0][0], vm[0][1], vm[0][2], vm[0][3]);
+			viewSL[1] = sl::float4(vm[1][0], vm[1][1], vm[1][2], vm[1][3]);
+			viewSL[2] = sl::float4(vm[2][0], vm[2][1], vm[2][2], vm[2][3]);
+			viewSL[3] = sl::float4(0.0f, 0.0f, 0.0f, 1.0f);
 
 			// Projection: c8 CameraProj is the factor the engine actually used in
 			// its own ViewProj (proven: c8 @ c0 == c24). Transpose it the same way.
@@ -1794,8 +2086,20 @@ namespace FrameGen
 		// v0.79: the ladder itself moved to ProbeMfgLadder() (called from Present
 		// before the menu guard). Here we only consume the step it produced.
 		// (v0.51 fallback kept for direct callers that skip the probe.)
+		// v1.37: re-arm the ladder when the requested multiplier changes.
+		// Keep this block IDENTICAL to the one in ProbeMfgLadder().
+		const std::uint32_t requestedStep =
+			std::clamp<std::uint32_t>(Get().settings.dlssgFramesToGenerate, 1, effectiveMax);
+		if (requestedStep != mfgProbeRequestedStep) {
+			SKSE::log::info("[MFG] user multiplier changed: re-arming the ladder at {}x "
+				"(accepted was {}x)", requestedStep + 1,
+				dlssgAcceptedFrames ? dlssgAcceptedFrames + 1 : 0);
+			mfgProbeRequestedStep = requestedStep;
+			mfgProbeStep = requestedStep;
+			mfgProbeLatched = false;
+		}
 		if (mfgProbeStep == 0 || mfgProbeStep > effectiveMax)
-			mfgProbeStep = std::clamp<std::uint32_t>(Get().settings.dlssgFramesToGenerate, 1, effectiveMax);
+			mfgProbeStep = requestedStep;
 		dlssgFramesToGenerate = mfgProbeStep;   // = 本次请求值（是否被接受见下方结果处理）
 		// v1.03: when an external unlocker owns the multiplier, leave
 		// numFramesToGenerate alone. Transfusion replaces slDLSSGSetOptions via
@@ -2058,13 +2362,30 @@ namespace FrameGen
 		// longer than 150 ms. Skipping the ladder entirely was the wrong remedy.
 		auto& fg = Get();
 		const std::uint32_t effectiveMax = std::max<std::uint32_t>(1, dlssgEffectiveMax);
-		if (mfgProbeStep == 0 || mfgProbeStep > effectiveMax) {
-			// v0.79: Streamline has no `settings` member of its own - LoadInterposer
-			// takes a const Settings& and the live copy lives on FrameGen, reached
-			// through Get(). This is the same access SetDLSSGOptions already uses
-			// for mfgMaxFramesOverride / mvecScaleOverride.
-			mfgProbeStep = std::clamp<std::uint32_t>(fg.settings.dlssgFramesToGenerate, 1, effectiveMax);
+		// v0.79: Streamline has no `settings` member of its own - LoadInterposer
+		// takes a const Settings& and the live copy lives on FrameGen, reached
+		// through Get(). This is the same access SetDLSSGOptions already uses
+		// for mfgMaxFramesOverride / mvecScaleOverride.
+		// v1.37: re-arm the ladder when the requested multiplier changes. This is
+		// why "MFG Multiplier" in the ImGui menu did nothing: the 23:09 run wrote
+		// DLSSGFramesToGenerate=1 at 23:10:48 ("MFG multiplier -> 2x") and the FPS
+		// probe still reported ask=4 accepted=4 for the rest of the session,
+		// because mfgProbeStep was already 3 and 3 <= effectiveMax, so settings was
+		// never read again. "MFG Max Override" could not fix it either: that slider
+		// moves the CEILING, not the request.
+		// Keep this block IDENTICAL to the one in SetDLSSGOptions().
+		const std::uint32_t requestedStep =
+			std::clamp<std::uint32_t>(fg.settings.dlssgFramesToGenerate, 1, effectiveMax);
+		if (requestedStep != mfgProbeRequestedStep) {
+			SKSE::log::info("[MFG] user multiplier changed: re-arming the ladder at {}x "
+				"(accepted was {}x)", requestedStep + 1,
+				dlssgAcceptedFrames ? dlssgAcceptedFrames + 1 : 0);
+			mfgProbeRequestedStep = requestedStep;
+			mfgProbeStep = requestedStep;
+			mfgProbeLatched = false;
 		}
+		if (mfgProbeStep == 0 || mfgProbeStep > effectiveMax)
+			mfgProbeStep = requestedStep;
 		// Re-assert the step every frame. SetDLSSGOptions() re-sends the full option
 		// struct every frame anyway, so this freezes exactly what that call would
 		// have frozen, and it cannot re-arm the ladder while the menu is up.

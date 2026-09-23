@@ -2,8 +2,8 @@
 
 An open-source SKSE plugin that adds **FSR 3.1 Frame Generation**,
 **NVIDIA DLSS Upscaling / DLAA** and **DLSS 5 Neural Rendering** to Skyrim
-Special Edition (Anniversary Edition 1.6.1170), designed to work side-by-side
-with ENB.
+Special Edition (**Anniversary Edition 1.6.1170** and **SE 1.5.97**), designed to
+work side-by-side with ENB.
 
 Frame generation uses motion-vector based interpolation to double the effective
 frame rate and significantly stabilizes frame pacing. Because the plugin proxies
@@ -44,15 +44,39 @@ SDKs.
 
 ## Requirements
 
-- Skyrim Special Edition — **Anniversary Edition 1.6.1170 only** (1.5.97 is NOT
-  supported)
-- SKSE64 (2.2.x for AE)
-- Address Library for SKSE Plugins (1.6.1170)
+- Skyrim Special Edition — **Anniversary Edition 1.6.1170** or **SE 1.5.97**.
+  Both are supported. The plugin resolves every engine address through Address
+  Library REL IDs that carry a branch for each, and both branches have been run
+  on real installs. (1.5.97 runs the `skse64_1_5_97.dll` loader plus the
+  `version-1-5-97-0.bin` Address Library.)
+- SKSE64 (2.2.x for AE, 2.0.20 for 1.5.97)
+- Address Library for SKSE Plugins — **matching your game version**. This is the
+  one hard prerequisite: the plugin cannot resolve a single engine address
+  without it, and its absence is the most common cause of "installed it into a
+  new modpack and it does nothing".
 - ENB Series — optional but recommended (fully supported; frame generation keeps
   ENB's post-processing intact)
 - Any DX12-capable GPU for FSR 3.1 FG; NVIDIA RTX GPU for DLSS / DLAA
 - **DLSS 5 Neural Rendering** (optional) — an RTX GPU plus the
   `nvngx_dlssnr.dll` **310.8.x** runtime shipped in this mod's archive
+
+### Compatibility note: CommunityShaders
+
+CommunityShaders detours two of the same engine function heads this plugin uses
+(`BSInputDeviceManager::PollInputDevices` and `MenuManager::DrawInterfaceStart`).
+Two plugins writing a jump over the same prologue bytes is an
+`EXCEPTION_BREAKPOINT` within milliseconds of load.
+
+If your modpack ships CommunityShaders, set both of these in the INI:
+
+```ini
+MenuDrawHook=0
+PollInputHook=0
+```
+
+Neither costs anything functional — see `CHANGELOG.md` (v1.52) or the long
+comment above the keys in the INI for why. Both default to `1`, which is
+byte-for-byte the pre-v1.52 behaviour.
 
 ---
 

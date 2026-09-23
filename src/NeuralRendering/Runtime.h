@@ -20,6 +20,12 @@ struct ID3D12Resource;
 
 namespace NeuralRendering
 {
+	// v1.45：单帧内串联的神经渲染层数上限。每一层是一个独立的 NGX Feature 18
+	// 实例（各自持有自己的时域历史与内部资源），所以这个数字同时是"每帧成本"
+	// 与"显存占用"的上限 —— 不是免费的效果叠加。
+	// 槽位 = 层号：非 VR 下 slot 0 是第一层，slot 1..kMaxNRLayers-1 是第 2..N 层。
+	inline constexpr std::uint32_t kMaxNRLayers = 8;
+
 	struct Tuning
 	{
 		float intensity = 0.8f;
@@ -33,6 +39,10 @@ namespace NeuralRendering
 		// 与 output 同分辨率）；0.5 = 半分辨率输入（FP8 张量计算量减 ~75%，
 		// 由 DLSSNR 原生 Upscaling 放大回 output）。0.5~0.75 是推荐区间。
 		float renderScale = 1.0f;
+		// v1.45：多层神经渲染（NRLayers）。1 = 关闭（v1.44 行为）。>=2 时同一帧内把
+		// 神经渲染串联 N 遍：第 k 层的 color 输入是第 k-1 层的输出，depth/mvec guides
+		// 全程复用（同一帧、同一相机，guides 不随层变化）。
+		std::uint32_t layers = 1;
 	};
 
 	enum class RuntimeStatus
@@ -71,11 +81,11 @@ namespace NeuralRendering
 		Runtime() = default;
 		void* module_ = nullptr;
 		void* parameters_ = nullptr;
-		void* featureHandles_[2]{};
-		std::uint32_t featureInputWidth_[2]{};
-		std::uint32_t featureInputHeight_[2]{};
-		std::uint32_t featureOutputWidth_[2]{};
-		std::uint32_t featureOutputHeight_[2]{};
+		void* featureHandles_[kMaxNRLayers]{};
+		std::uint32_t featureInputWidth_[kMaxNRLayers]{};
+		std::uint32_t featureInputHeight_[kMaxNRLayers]{};
+		std::uint32_t featureOutputWidth_[kMaxNRLayers]{};
+		std::uint32_t featureOutputHeight_[kMaxNRLayers]{};
 		ID3D12Device* device_ = nullptr;
 		RuntimeStatus status_ = RuntimeStatus::NotProbed;
 		std::filesystem::path path_;
