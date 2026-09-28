@@ -828,7 +828,15 @@ namespace FrameGen
 		edited(ImGui::Checkbox("DLSS (live)", &s.enableUpscale));
 		ImGui::BeginDisabled(!s.enableUpscale);
 		const char* modes[] = { "DLAA (native)", "Quality (67%)", "Balanced (59%)", "Performance (50%)", "Ultra Performance (33%)" };
+		// With ENB loaded the scaled modes cannot run (ENB applies the DRS ratio a
+		// second time), so the choice is locked to DLAA instead of offering a mode
+		// that silently falls back after a restart.
+		const bool enbLocksMode = FrameGen::ENBLoaded();
+		if (enbLocksMode && s.qualityMode != 0)
+			edited((s.qualityMode = 0, true));
+		ImGui::BeginDisabled(enbLocksMode);
 		edited(ImGui::Combo("Mode (restart)", &s.qualityMode, modes, 5));
+		ImGui::EndDisabled();
 		const char* presets[] = { "Auto (DLAA: J, scaled: M/L)", "J", "K", "L", "M" };
 		edited(ImGui::Combo("DLSS model preset (live)", &s.presetDLSS, presets, 5));
 		ImGui::EndDisabled();
@@ -841,9 +849,9 @@ namespace FrameGen
 			const auto& sc = a_fg.dx12SwapChain;
 			ImGui::TextDisabled("Running: render %ux%u -> output %ux%u", sc.renderWidth, sc.renderHeight,
 				sc.swapChainDesc.Width, sc.swapChainDesc.Height);
-			if (s.qualityMode > 0 && FrameGen::ENBLoaded())
-				ImGui::TextDisabled("ENB is loaded: it renders the scene with the resolution scale applied\n"
-					"twice, so Quality/Balanced/Performance run as DLAA while ENB is present.");
+			if (enbLocksMode)
+				ImGui::TextDisabled("Mode locked to DLAA: ENB is loaded and renders the scene with the\n"
+					"resolution scale applied twice, so Quality/Balanced/Performance cannot run.");
 			else if ((s.qualityMode > 0) != (sc.renderScaleX < 0.999f))
 				ImGui::TextDisabled("Mode change applies after a restart.");
 		}
