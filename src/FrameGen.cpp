@@ -12,6 +12,7 @@
 #include <detours/detours.h>  // v0.7.15：MenuManagerDrawInterfaceStart 函数 detour（CS 同款）
 
 #include <Windows.h>
+#include <psapi.h>  // K32EnumProcessModules (ENB detection)
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -19,6 +20,7 @@
 #include <chrono>
 #include "FidelityFX.h"
 #include "ImguiMenu.h"
+#include "DRSUpscale.h"
 #include "NeuralRendering/Renderer.h"  // DLSS5 Neural Rendering（内置 NGX Feature 18）
 
 namespace FrameGen
@@ -230,6 +232,12 @@ namespace FrameGen
 			// v1.21: switchable so one rebuild covers both behaviours of the
 			// interop fence, and so a run that wedges on it is reverted by editing
 			// one INI line instead of rebuilding.
+			else if (key == "PipelinedPresent") {
+				settings.pipelinedPresent = readBool(line, false);
+				SKSE::log::info("[FrameGen] PipelinedPresent={} ({})", settings.pipelinedPresent ? 1 : 0,
+					settings.pipelinedPresent ? "D3D12 presents the previous finished frame, +1 frame latency"
+					                          : "D3D12 waits for the current frame (author behaviour)");
+			}
 			else if (key == "InteropFenceWait")
 				settings.interopFenceWait = readBool(line, true);
 			// v1.44: which timeline the end-of-frame fence wait sits on. Logged at
@@ -242,6 +250,18 @@ namespace FrameGen
 					settings.fenceWaitBusy
 						? "CPU polls d3d12Fence in Present - no CPU/GPU overlap"
 						: "wait queued on the D3D11 timeline - CPU returns at once");
+			}
+			else if (key == "PresentInterval") {
+				settings.presentInterval = std::clamp(readInt(line, 1), 0, 1);
+				SKSE::log::info("[FrameGen] PresentInterval={} ({})", settings.presentInterval,
+					settings.presentInterval ? "VSync on the D3D12 present (author default)"
+					                         : "no VSync - VRR and the frame limiter pace the game");
+			}
+			else if (key == "VanillaDRSNop") {
+				settings.vanillaDRSNop = readBool(line, true);
+				SKSE::log::info("[FrameGen] VanillaDRSNop={} ({})", settings.vanillaDRSNop ? 1 : 0,
+					settings.vanillaDRSNop ? "vanilla DRS controller NOPed like Community Shaders (render scale < 1 only)"
+					                       : "vanilla DRS controller left alone (v0.48c experiment)");
 			}
 			else if (key == "MenuGuardFader")
 				settings.menuGuardFader = readBool(line, true);
@@ -459,6 +479,464 @@ namespace FrameGen
 		SKSE::log::info("[FrameGen] PollInputDevices hook installed (menu freezes game input)");
 	}
 
+	// v0.7.11：Main_UpdateJitter hook（CS 同款）——引擎每帧渲染前回调，参数 State*。
+	// 用 State* 在渲染前设置引擎 DRS（dynamicResolution）——引擎读后重建 kMAIN 为渲染
+	// 分辨率（v0.7.9 在 Present 帧尾设置时序不对/未触发重建 → kMAIN 仍 4K → 画面 1/4）。
+	// REL ID 75460/77245 已确认在 1.6.1170 Address Library 库中（offset 0xdf5480/0xe43450）。
+	struct MainUpdateJitterHook
+	{
+		static void thunk(RE::BSGraphics::State* a_state)
+		{
+			func(a_state);
+			Get().OnMainUpdateJitter(a_state);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
+	// v0.7.20：SetScissorRect detour（CS 同款）——DRS 下引擎 scissor 矩形是输出分辨率
+	// 坐标，画到渲染分辨率（1440p）目标会裁剪（画面 1/4 放大）；按 DRS ratio 缩放。
+	// REL 75564/77365 已确认在 1.6.1170 库（0xdfa550/0xe49cb0）。
+	struct SetScissorRectHook
+	{
+		static void thunk(RE::BSGraphics::Renderer* a_this, int a_left, int a_top, int a_right, int a_bottom)
+		{
+			if (auto* st = RE::BSGraphics::State::GetSingleton()) {
+				auto& rd = st->GetRuntimeData();
+				// v0.47d diagnostics, resolution-independent in the Linux build (dlss-quality):
+				// counts scissor rects at full screen size vs. the DRS render size, which
+				// tells whether the engine scaled its scene passes.
+				static std::uint32_t scDiag = 0;
+				static std::uint32_t fullCount = 0, renderCount = 0, otherCount = 0;
+				const int fullW = static_cast<int>(st->screenWidth);
+				const int fullH = static_cast<int>(st->screenHeight);
+				const auto& sc = Get().dx12SwapChain;
+				if (a_right == fullW && a_bottom == fullH) fullCount++;
+				else if (a_right == static_cast<int>(sc.renderWidth) && a_bottom == static_cast<int>(sc.renderHeight)) renderCount++;
+				else otherCount++;
+				if (++scDiag % 900 == 1) {
+					SKSE::log::info("[FrameGen] Scissor dist: full({}x{})={} render({}x{})={} other={} lock={} ratio=({:.3f},{:.3f}) last=({},{},{},{})",
+						fullW, fullH, fullCount, sc.renderWidth, sc.renderHeight, renderCount, otherCount,
+						static_cast<int>(rd.dynamicResolutionLock),
+						rd.dynamicResolutionWidthRatio, rd.dynamicResolutionHeightRatio,
+						a_left, a_top, a_right, a_bottom);
+				}
+				if (!rd.dynamicResolutionLock) {
+					a_left = static_cast<int>(a_left * rd.dynamicResolutionWidthRatio);
+					a_right = static_cast<int>(a_right * rd.dynamicResolutionWidthRatio);
+					a_top = static_cast<int>(a_top * rd.dynamicResolutionHeightRatio);
+					a_bottom = static_cast<int>(a_bottom * rd.dynamicResolutionHeightRatio);
+				}
+			}
+			func(a_this, a_left, a_top, a_right, a_bottom);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
+	// Linux build (dlss-quality): like Community Shaders, precipitation occlusion and
+	// FaceGen texture rendering must not be scaled by DRS; lock it around both.
+	struct MainRenderPrecipitationHook
+	{
+		static void thunk()
+		{
+			// Restore the previous lock value instead of forcing 0 like CS: the jitter
+			// hook keeps the lock set outside the scene passes.
+			auto* st = RE::BSGraphics::State::GetSingleton();
+			const std::int32_t prev = st ? st->GetRuntimeData().dynamicResolutionLock : 0;
+			if (st)
+				st->GetRuntimeData().dynamicResolutionLock = 1;
+			func();
+			if (st)
+				st->GetRuntimeData().dynamicResolutionLock = prev;
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
+	struct FaceGenUpdateTexturesHook
+	{
+		static void thunk()
+		{
+			// Restore the previous lock value instead of forcing 0 like CS: the jitter
+			// hook keeps the lock set outside the scene passes.
+			auto* st = RE::BSGraphics::State::GetSingleton();
+			const std::int32_t prev = st ? st->GetRuntimeData().dynamicResolutionLock : 0;
+			if (st)
+				st->GetRuntimeData().dynamicResolutionLock = 1;
+			func();
+			if (st)
+				st->GetRuntimeData().dynamicResolutionLock = prev;
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
+	// Linux build (dlss-quality): the engine function that rebuilds the per-frame
+	// camera constant buffer (CS UpdateCameraData, REL 75472/77258). The image-space
+	// passes read the DRS scale from that buffer, so flipping the lock alone leaves
+	// post-processing sampling the old sub-rect (seen as a 1.5x zoom in Quality).
+	static void UpdateEngineCameraData()
+	{
+		using func_t = void (*)();
+		static REL::Relocation<func_t> func{ REL::RelocationID(75472, 77258) };
+		func();
+	}
+
+	bool FrameGen::ENBLoaded()
+	{
+		// ENB's d3d11.dll proxy exports its SDK entry points; the real d3d11.dll (DXVK
+		// or Microsoft) does not. Both can be loaded under the same base name, and
+		// GetModuleHandle picks either, so every loaded module is checked. Only a
+		// positive result is cached - an early call before ENB loads must not stick.
+		static bool loaded = false;
+		if (loaded)
+			return true;
+		std::vector<HMODULE> modules(1024);
+		for (int attempt = 0; attempt < 4; ++attempt) {
+			const DWORD bytes = static_cast<DWORD>(modules.size() * sizeof(HMODULE));
+			DWORD needed = 0;
+			if (!K32EnumProcessModules(GetCurrentProcess(), modules.data(), bytes, &needed))
+				return false;
+			if (needed > bytes) {
+				modules.resize(needed / sizeof(HMODULE) + 64);  // more modules than room: retry
+				continue;
+			}
+			// Only a complete snapshot is scanned; a negative result is not cached.
+			for (std::size_t i = 0; i < needed / sizeof(HMODULE) && !loaded; ++i)
+				loaded = GetProcAddress(modules[i], "ENBGetSDKVersion") != nullptr;
+			return loaded;
+		}
+		return false;  // the module list kept growing; try again on the next call
+	}
+
+	bool FrameGen::DRSRequested() const
+	{
+		// Only the D3D11 DLSS path (Provider 0, DLSS loaded) reconstructs DRS frames;
+		// DLSS-G keeps render scale 1 (DX12SwapChain), and ENB breaks DRS.
+		if (!settings.enableUpscale || settings.provider == 1 || !streamline.featureDLSS || ENBLoaded())
+			return false;
+		if (settings.qualityMode == 0)
+			return false;
+		if (settings.renderResolutionScale > 0.0f)
+			return settings.renderResolutionScale < 0.999f;
+		return settings.qualityMode > 0;
+	}
+
+	void FrameGen::InstallDRSLockHooks()
+	{
+		const std::uintptr_t precip = REL::RelocationID(35560, 36559).address() + REL::Relocate(0x3A1, 0x3A1);
+		if (*(std::uint8_t*)precip == 0xE8) {
+			stl_ext::write_thunk_call<MainRenderPrecipitationHook>(precip);
+			SKSE::log::info("[DRS] Main_RenderPrecipitation lock hook installed");
+		} else {
+			SKSE::log::warn("[DRS] Main_RenderPrecipitation target not a call (byte {:#x}) - lock hook skipped",
+				*(std::uint8_t*)precip);
+		}
+
+		FaceGenUpdateTexturesHook::func = REL::RelocationID(26455, 27041).address();
+		DetourTransactionBegin();
+		DetourUpdateThread(GetCurrentThread());
+		DetourAttach(reinterpret_cast<PVOID*>(&FaceGenUpdateTexturesHook::func),
+			reinterpret_cast<PVOID>(&FaceGenUpdateTexturesHook::thunk));
+		const LONG res = DetourTransactionCommit();
+		if (res == NO_ERROR)
+			SKSE::log::info("[DRS] BSFaceGenManager_UpdatePendingCustomizationTextures lock hook installed");
+		else
+			SKSE::log::error("[DRS] FaceGen lock detour failed ({})", res);
+	}
+
+	void FrameGen::InstallDRSHook()
+	{
+		// CS: stl::write_thunk_call<Main_UpdateJitter>(REL::RelocationID(75460, 77245).address()
+		//   + REL::Relocate(0xE5, isGOG ? 0x133 : 0xE2, 0x104));  // SE / AE(Steam) / VR
+		const std::uintptr_t target =
+			REL::RelocationID(75460, 77245).address() + REL::Relocate(0xE5, 0xE2, 0x104);
+		// 防御：目标必须是 call 指令（0xE8）；不是则跳过（Present 帧尾设置保底）
+		if (*(std::uint8_t*)target != 0xE8) {
+			SKSE::log::warn("[FrameGen] Main_UpdateJitter hook target not a call (byte {:#x} at {:#x}) - DRS hook skipped, Present fallback",
+				*(std::uint8_t*)target, target);
+			return;
+		}
+		stl_ext::write_thunk_call<MainUpdateJitterHook>(target);
+		SKSE::log::info("[FrameGen] Main_UpdateJitter hook installed (DRS + jitter, render-time)");
+
+		// v0.7.20：SetScissorRect detour（CS 同款）——DRS 下 scissor 缩放（防裁剪/放大）
+		SetScissorRectHook::func = REL::RelocationID(75564, 77365).address();
+		DetourTransactionBegin();
+		DetourUpdateThread(GetCurrentThread());
+		DetourAttach(reinterpret_cast<PVOID*>(&SetScissorRectHook::func),
+			reinterpret_cast<PVOID>(&SetScissorRectHook::thunk));
+		const LONG scRes = DetourTransactionCommit();
+		if (scRes == NO_ERROR) {
+			SKSE::log::info("[FrameGen] SetScissorRect hook installed (DRS scissor scale)");
+		} else {
+			SKSE::log::error("[FrameGen] SetScissorRect detour failed ({})", scRes);
+		}
+
+		// v0.48c 实验：取消 NOP（恢复引擎 DRS）。用户反馈早期 V1/V2（DLSS 输入 kMAIN 真超分）
+		// 锐化/LMK 有效果，怀疑 NOP 掉引擎 DRS（0xe587f0）导致引擎读 ratio 设 viewport 的
+		// 机制也失效（viewport 恒 2560x1440 不降）。lock=1 时 0xe587f0 直接 ret 不动态调
+		// ratio，所以取消 NOP 后 ratio 仍固定 0.667（安全）。
+		// REL::safe_write(
+		// 	REL::RelocationID(35556, 36555).address() + REL::Relocate(0x2D, 0x2D, 0x25),
+		// 	REL::NOP5, sizeof(REL::NOP5));
+		// SKSE::log::info("[FrameGen] Vanilla DRS system disabled (NOP @ 36555+0x2D)");
+		// Linux build (dlss-quality): with a real render scale, CS's NOP comes back
+		// (switchable, VanillaDRSNop). DLAA keeps the v0.48c behaviour.
+		if (DRSRequested()) {
+			const std::uintptr_t drsCall = REL::RelocationID(35556, 36555).address() + REL::Relocate(0x2D, 0x2D, 0x25);
+			if (settings.vanillaDRSNop && *(std::uint8_t*)drsCall == 0xE8) {
+				REL::safe_write(drsCall, REL::NOP5, sizeof(REL::NOP5));
+				SKSE::log::info("[DRS] vanilla DRS controller disabled (NOP @ 36555+0x2D, like CS)");
+			} else if (settings.vanillaDRSNop) {
+				SKSE::log::warn("[DRS] vanilla DRS call site is not a call (byte {:#x}) - NOP skipped",
+					*(std::uint8_t*)drsCall);
+			} else {
+				SKSE::log::info("[DRS] vanilla DRS controller left active (VanillaDRSNop=0)");
+			}
+			InstallDRSLockHooks();
+
+		} else {
+			SKSE::log::info("[FrameGen] v0.48c: vanilla DRS NOT disabled (NOP removed, experiment)");
+		}
+	}
+
+	// v0.48：Main_PostProcessing hook（CS 同款）——引擎后处理管线入口（体积光照后、
+	// 后处理前）。此时做 DLSS 超分（kMAIN → colorOutWrapped → 写回 kMAIN），后处理
+	// （含 ENB）读超分结果 → DLSS 锐化/LMK 在 ENB 前生效 + ENB 保留。之前 DLSS 在
+	// Present（ENB 后）锐化被 ENB 盖掉。REL 100430/107148 + 0x1F0/0x1E7/0x206。
+	struct MainPostProcessingHook
+	{
+		static void thunk(RE::ImageSpaceManager* a_this, std::uint32_t a3, RE::RENDER_TARGET a_target, void* a_4, bool a_5)
+		{
+			Get().OnMainPostProcessing();
+			func(a_this, a3, a_target, a_4, a_5);
+		}
+		static inline REL::Relocation<decltype(thunk)> func;
+	};
+
+	void FrameGen::InstallMainPostProcessingHook()
+	{
+		const std::uintptr_t target =
+			REL::RelocationID(100430, 107148).address() + REL::Relocate(0x1F0, 0x1E7, 0x206);
+		if (*(std::uint8_t*)target != 0xE8) {
+			SKSE::log::warn("[FrameGen] Main_PostProcessing hook target not a call (byte {:#x} at {:#x}) - DLSS upscale hook skipped",
+				*(std::uint8_t*)target, target);
+			return;
+		}
+		stl_ext::write_thunk_call<MainPostProcessingHook>(target);
+		SKSE::log::info("[FrameGen] Main_PostProcessing hook installed (DLSS upscale before post-processing)");
+	}
+
+	void FrameGen::OnMainPostProcessing()
+	{
+		// DLSS: kMAIN -> dlssOut -> CopyResource back into kMAIN, before post-processing
+		// (and ENB) read it.
+		drsFrameScaleX = drsFrameScaleY = 1.0f;
+		drsDepthUpscaled = false;
+		if (!settings.enableUpscale || !streamline.featureDLSS || !GetFrameBuffer())
+			return;
+		if (!dx12SwapChain.d3d11Device || !dx12SwapChain.d3d11Context || !dx12SwapChain.colorOutWrapped)
+			return;
+
+		auto* renderer = RE::BSGraphics::Renderer::GetSingleton();
+		if (!renderer)
+			return;
+		auto& mainTex = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMAIN];
+		auto& depthTex = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+		auto& mvecTex = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
+		if (!mainTex.texture || !depthTex.texture || !depthTex.depthSRV || !mvecTex.texture)
+			return;
+
+		// Linux build (dlss-quality): with a render scale < 1 the engine rendered into
+		// the top-left sub-rect of the full-size kMAIN. The render size is the
+		// lock-aware one, like CS ConvertToDynamic: a locked or 1.0 ratio means the
+		// frame was rendered at full size (DLAA, or DRS did not take effect).
+		D3D11_TEXTURE2D_DESC d{};
+		static_cast<ID3D11Texture2D*>(mainTex.texture)->GetDesc(&d);
+		const std::uint32_t w = d.Width;
+		const std::uint32_t h = d.Height;
+		auto* state = RE::BSGraphics::State::GetSingleton();
+		float ratioX = 1.0f, ratioY = 1.0f;
+		bool lock = true;
+		if (state) {
+			auto& rd = state->GetRuntimeData();
+			ratioX = rd.dynamicResolutionWidthRatio;
+			ratioY = rd.dynamicResolutionHeightRatio;
+			lock = rd.dynamicResolutionLock != 0;
+		}
+		const bool drsLive = drsEngaged && !lock && (ratioX < 0.999f || ratioY < 0.999f);
+		// Rounded: the ratio is renderWidth / screenWidth in float, so w * ratio lands
+		// a hair below the pixel count (2559.9998 for 2560) and truncation would drop
+		// the last column the engine did render.
+		const std::uint32_t rw = drsLive ? std::max(1u, static_cast<std::uint32_t>(w * ratioX + 0.5f)) : w;
+		const std::uint32_t rh = drsLive ? std::max(1u, static_cast<std::uint32_t>(h * ratioY + 0.5f)) : h;
+
+		auto* out = EnsureDLSSOutput(static_cast<ID3D11Texture2D*>(mainTex.texture));
+		const bool ok = out && streamline.EvaluateDLSS(dx12SwapChain.d3d11Context.get(),
+			mainTex.texture, out, depthTex.texture, mvecTex.texture, rw, rh, *GetFrameBuffer(), settings);
+
+		// v0.48 diagnostics, plus the DRS state that decides the render size
+		static std::uint32_t diag = 0;
+		if (++diag % 180 == 1) {
+			D3D11_VIEWPORT vp{};
+			UINT vpCount = 1;
+			dx12SwapChain.d3d11Context->RSGetViewports(&vpCount, &vp);
+			SKSE::log::info("[FrameGen] PostProcDLSS: ok={} in={}x{} out={}x{} drsLive={} lock={} ratio=({:.3f},{:.3f}) viewport={}x{} sharpness={:.2f} preset={} qualityMode={}",
+				ok, rw, rh, w, h, drsLive, lock, ratioX, ratioY, vpCount ? vp.Width : 0.0f, vpCount ? vp.Height : 0.0f,
+				settings.sharpness, settings.presetDLSS, settings.qualityMode);
+		}
+
+		// The guides (motion vectors, depth) stay in the rendered sub-rect unless the
+		// full-size transition below succeeds.
+		const float subX = static_cast<float>(rw) / w;
+		const float subY = static_cast<float>(rh) / h;
+		drsFrameScaleX = subX;
+		drsFrameScaleY = subY;
+		if (!ok) {
+			// The engine's own DRS path still upsamples the sub-rect later on.
+			return;
+		}
+
+		if (drsLive) {
+			// Everything after this point (post-processing, ENB, UI) must work at full
+			// size: stretch the remaining engine buffers first. If that fails, leave the
+			// frame on the engine's own DRS path (DLSS result unused) rather than feed
+			// full-size color with sub-rect depth into post-processing.
+			static DRSUpscale drsUpscale;
+			drsDepthUpscaled = drsUpscale.UpscaleEngineBuffers(dx12SwapChain.d3d11Device.get(),
+				dx12SwapChain.d3d11Context.get(), subX, subY, jitterX, jitterY);
+			if (!drsDepthUpscaled)
+				return;
+		}
+
+		// Write the DLSS result back into kMAIN - same format now (see dlssOut).
+		dx12SwapChain.d3d11Context->CopyResource(mainTex.texture, out);
+
+		if (drsLive) {
+			// From here on the engine runs at full size, the state CS PostDisplay sets
+			// before the UI: ratio and previous ratio 1 (the tonemapper and the
+			// image-space passes derive their scale from both), lock set, viewport and
+			// per-frame camera buffer rebuilt. With only the lock set, post-processing
+			// kept sampling the old sub-rect (a 1.5x zoom). The jitter hook restores
+			// the render ratio next frame (previous ratio = render scale, see there).
+			if (state) {
+				auto& rd = state->GetRuntimeData();
+				rd.dynamicResolutionWidthRatio = 1.0f;
+				rd.dynamicResolutionHeightRatio = 1.0f;
+				rd.dynamicResolutionPreviousWidthRatio = 1.0f;
+				rd.dynamicResolutionPreviousHeightRatio = 1.0f;
+				rd.dynamicResolutionLock = 1;
+			}
+			renderer->UpdateViewPort(0, 0, true);
+			UpdateEngineCameraData();
+		} else {
+			drsFrameScaleX = drsFrameScaleY = 1.0f;
+			drsDepthUpscaled = false;
+		}
+	}
+
+	ID3D11Texture2D* FrameGen::EnsureDLSSOutput(ID3D11Texture2D* a_like)
+	{
+		D3D11_TEXTURE2D_DESC want{};
+		a_like->GetDesc(&want);
+		// Typeless engine formats get their float view format; DLSS writes through a UAV.
+		if (want.Format == DXGI_FORMAT_R16G16B16A16_TYPELESS)
+			want.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+		if (dlssOut) {
+			D3D11_TEXTURE2D_DESC have{};
+			dlssOut->GetDesc(&have);
+			if (have.Width == want.Width && have.Height == want.Height && have.Format == want.Format)
+				return dlssOut.get();
+			dlssOut = nullptr;
+		}
+		want.MipLevels = 1;
+		want.ArraySize = 1;
+		want.Usage = D3D11_USAGE_DEFAULT;
+		want.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+		want.CPUAccessFlags = 0;
+		want.MiscFlags = 0;
+		if (FAILED(dx12SwapChain.d3d11Device->CreateTexture2D(&want, nullptr, dlssOut.put()))) {
+			SKSE::log::error("[FrameGen] DLSS output texture {}x{} fmt {} could not be created", want.Width, want.Height,
+				static_cast<int>(want.Format));
+			dlssOut = nullptr;
+			return nullptr;
+		}
+		SKSE::log::info("[FrameGen] DLSS output texture {}x{} fmt {} (kMAIN format, UAV)", want.Width, want.Height,
+			static_cast<int>(want.Format));
+		return dlssOut.get();
+	}
+
+	void FrameGen::OnMainUpdateJitter(RE::BSGraphics::State* a_state)
+	{
+		if (!a_state)
+			return;
+		// Linux build (review round 2, architecture P3): the DRS lock and projection
+		// jitter belong to the DLSS evaluation. When DLSS does not evaluate
+		// (EnableUpscale=0, no DLSS, or the DLSS-G path that skips the D3D11
+		// evaluation), engine rendering stays untouched - otherwise the image jitters
+		// without reconstruction. The DRS lock this hook sets must also be released
+		// when it bails out - otherwise the engine stays locked after DLSS was switched
+		// off (architecture re-check of P3).
+		auto& rt = a_state->GetRuntimeData();
+		if (!settings.enableUpscale || !streamline.featureDLSS || streamline.useD3D12) {
+			if (drsEngaged) {
+				rt.dynamicResolutionWidthRatio = 1.0f;
+				rt.dynamicResolutionHeightRatio = 1.0f;
+				rt.dynamicResolutionLock = 0;
+				drsEngaged = false;
+				SKSE::log::info("[FrameGen] DLSS inactive: DRS lock released, projection jitter off");
+			}
+			return;
+		}
+		// CS ConfigureUpscaling 同款：设 DRS ratio + lock（引擎渲染前 → 重建 kMAIN）
+		// Linux build (dlss-quality): the previous ratio is the one the last frame was
+		// rendered with, as CS keeps it in its own member. Reading it back from the
+		// engine would give 1.0, because OnMenuDrawStart resets the ratio for the UI,
+		// and the engine would reproject motion against the wrong scale.
+		rt.dynamicResolutionPreviousWidthRatio = drsEngaged ? dx12SwapChain.renderScaleX : rt.dynamicResolutionWidthRatio;
+		rt.dynamicResolutionPreviousHeightRatio = drsEngaged ? dx12SwapChain.renderScaleY : rt.dynamicResolutionHeightRatio;
+		drsEngaged = true;
+		rt.dynamicResolutionWidthRatio = dx12SwapChain.renderScaleX;
+		rt.dynamicResolutionHeightRatio = dx12SwapChain.renderScaleY;
+		rt.dynamicResolutionLock = 1;
+
+		// v0.7.18 诊断（节流）：确认 DRS hook 每帧活跃 + 实际 ratio
+		static std::uint32_t drsDiag = 0;
+		if (++drsDiag % 180 == 1) {
+			SKSE::log::info("[FrameGen] DRS hook active: set ({:.3f},{:.3f}) readback ({:.3f},{:.3f})",
+				dx12SwapChain.renderScaleX, dx12SwapChain.renderScaleY,
+				rt.dynamicResolutionWidthRatio, rt.dynamicResolutionHeightRatio);
+		}
+
+		// DLSS jitter（Halton 2,3，渲染分辨率下）——CS GetJitterOffset 同款
+		if (dx12SwapChain.renderWidth == 0)
+			return;
+		drsSavedProjX = a_state->projectionPosScaleX;
+		drsSavedProjY = a_state->projectionPosScaleY;
+		const float basePhase = 8.0f;
+		const int32_t phaseCount = int32_t(basePhase * pow(
+			float(dx12SwapChain.swapChainDesc.Width) / float(dx12SwapChain.renderWidth), 2.0f));
+		const int32_t idx = (int32_t)(a_state->frameCount % (uint32_t)std::max(1, phaseCount)) + 1;
+		float hx = 0.0f, hy = 0.0f, f = 1.0f;
+		for (int32_t i = idx; i > 0;) {
+			f /= 2.0f;
+			hx += f * float(i % 2);
+			i = int32_t(floorf(float(i) / 2.0f));
+		}
+		f = 1.0f;
+		for (int32_t i = idx; i > 0;) {
+			f /= 3.0f;
+			hy += f * float(i % 3);
+			i = int32_t(floorf(float(i) / 3.0f));
+		}
+		const float jx = hx - 0.5f;
+		const float jy = hy - 0.5f;
+		a_state->projectionPosScaleX = -2.0f * jx / float(dx12SwapChain.renderWidth);
+		a_state->projectionPosScaleY = 2.0f * jy / float(dx12SwapChain.renderHeight);
+		// v0.34：存 jitter 供 CheckFrameConstants 喂 SL（DLSSG 运动估计必需）
+		jitterX = jx;
+		jitterY = jy;
+		// v0.37b：存引擎帧号（EnsureFrameToken IsNewFrame 判断基准）
+		engineFrameCount = a_state->frameCount;
+	}
 
 	// v0.7.13：MenuManagerDrawInterfaceStart hook（CS 同款 detour）——引擎 UI 绘制
 	// 开始前回调。Skyrim 的 UI（准星/字幕/菜单）画在 kFRAMEBUFFER（最终帧缓冲），
@@ -508,6 +986,23 @@ namespace FrameGen
 	void FrameGen::OnMenuDrawStart()
 	{
 		auto* renderer = RE::BSGraphics::Renderer::GetSingleton();
+		// Linux build (dlss-quality): CS PostDisplay. The UI draws at full size and
+		// without projection jitter; the jitter hook sets the ratio again next frame.
+		if (drsEngaged && dx12SwapChain.renderScaleX < 0.999f) {
+			if (auto* st = RE::BSGraphics::State::GetSingleton()) {
+				st->projectionPosScaleX = drsSavedProjX;
+				st->projectionPosScaleY = drsSavedProjY;
+				auto& rd = st->GetRuntimeData();
+				rd.dynamicResolutionPreviousWidthRatio = 1.0f;
+				rd.dynamicResolutionPreviousHeightRatio = 1.0f;
+				rd.dynamicResolutionWidthRatio = 1.0f;
+				rd.dynamicResolutionHeightRatio = 1.0f;
+				rd.dynamicResolutionLock = 1;
+				if (renderer)
+					renderer->UpdateViewPort(0, 0, true);
+				UpdateEngineCameraData();
+			}
+		}
 		// v0.7.16 入口诊断（节流 60 帧）：无条件打印条件状态——定位提前 return 的环节
 		static std::uint32_t entryDiag = 0;
 		if (++entryDiag % 60 == 1) {
@@ -524,8 +1019,53 @@ namespace FrameGen
 				renderer != nullptr, hasMain, hasFb);
 		}
 
-		// v0.50：DLSS 超分已拔掉（kFRAMEBUFFER 方案在 Skyrim SE 恒 null，早已是死代码）。
-		// DLSS5 Neural Rendering 在 DX12SwapChain::Present 里跑（后缓冲作 color 输入）。
+		// DLSS5 Neural Rendering 已迁移到 DX12SwapChain::Present（kFRAMEBUFFER 在
+		// Skyrim SE 上恒为 nullptr——v0.7.17 已实锤，OnMenuDrawStart 里跑不了）。
+		// 见 DX12SwapChain.cpp Present 的 DLSSNR 集成块（后缓冲作 color 输入）。
+
+		// Linux build (menu audit): this second path belongs to the DLAA switch too;
+		// without this check it kept evaluating with DLAA switched off.
+		if (dx12SwapChain.dlssgMode || !fgActive.load() || !streamline.featureDLSS || !GetFrameBuffer() ||
+			!settings.enableUpscale)
+			return;
+		if (!dx12SwapChain.colorOutWrapped || !dx12SwapChain.d3d11Context)
+			return;
+		if (!renderer)
+			return;
+		auto& rt = renderer->GetRuntimeData();
+		auto& mainRT = rt.renderTargets[RE::RENDER_TARGETS::kMAIN];
+		auto& fbRT = rt.renderTargets[RE::RENDER_TARGETS::kFRAMEBUFFER];
+		auto& depthTex = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
+		auto& mvecTex = rt.renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
+		if (!mainRT.texture || !fbRT.texture)
+			return;
+
+		ID3D11Resource* depth11 = depthTex.texture ? static_cast<ID3D11Resource*>(depthTex.texture) : nullptr;
+		ID3D11Resource* mvec11 = mvecTex.texture ? static_cast<ID3D11Resource*>(mvecTex.texture) : nullptr;
+
+		bool ok = streamline.EvaluateDLSS(dx12SwapChain.d3d11Context.get(),
+			static_cast<ID3D11Resource*>(mainRT.texture),
+			dx12SwapChain.colorOutWrapped->resource11,
+			depth11, mvec11, dx12SwapChain.renderWidth, dx12SwapChain.renderHeight,
+			*GetFrameBuffer(), settings);
+
+		// 超分结果（4K）写入引擎 kFRAMEBUFFER——CopyResource 要求同格式同尺寸
+		// （colorOut = swapchain R8G8B8A8 4K；kFRAMEBUFFER = 后缓冲格式 4K）
+		if (ok) {
+			dx12SwapChain.d3d11Context->CopyResource(fbRT.texture, dx12SwapChain.colorOutWrapped->resource11);
+		}
+		// 诊断（节流）：kFRAMEBUFFER 尺寸/格式 + 超分是否执行
+		static std::uint32_t diagFrame = 0;
+		if (++diagFrame % 180 == 1) {
+			D3D11_TEXTURE2D_DESC fbDesc{};
+			static_cast<ID3D11Texture2D*>(fbRT.texture)->GetDesc(&fbDesc);
+			D3D11_TEXTURE2D_DESC coDesc{};
+			static_cast<ID3D11Texture2D*>(dx12SwapChain.colorOutWrapped->resource11)->GetDesc(&coDesc);
+			SKSE::log::info("[FrameGen] MenuDraw: upscale {} kMAIN {}x{} kFRAMEBUFFER {}x{} fmt {} colorOut {}x{} fmt {}",
+				ok ? "OK" : "SKIP", dx12SwapChain.renderWidth, dx12SwapChain.renderHeight,
+				fbDesc.Width, fbDesc.Height, static_cast<int>(fbDesc.Format),
+				coDesc.Width, coDesc.Height, static_cast<int>(coDesc.Format));
+		}
 	}
 
 	// CS 同款（Skyrim-Upscaler）：FOV 基数 REL ID → 垂直 FOV（弧度）

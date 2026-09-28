@@ -141,6 +141,11 @@ namespace NeuralRendering
 		if (!initialized_ || recording_ || !commandList) return RecordFailure(E_UNEXPECTED);
 
 		const std::uint64_t completedValue = fence12_->GetCompletedValue();
+		// Linux build (review round 2, architecture P2): UINT64_MAX means device loss.
+		// Below, "completedValue >= pendingValue" counts as free - with UINT64_MAX every
+		// context would be "free" and its allocator would be reset.
+		if (completedValue == UINT64_MAX)
+			return RecordFailure(DXGI_ERROR_DEVICE_REMOVED);
 		std::size_t contextIndex = kCommandContextCount;
 		for (std::size_t offset = 0; offset < kCommandContextCount; ++offset) {
 			const std::size_t candidate = (commandContextCursor_ + offset) % kCommandContextCount;
@@ -165,6 +170,13 @@ namespace NeuralRendering
 		const std::uint64_t readyValue = ++fenceValue_;
 		HRESULT result = context11_->Signal(fence11_.Get(), readyValue);
 		if (FAILED(result)) return RecordFailure(result);
+		// Linux build (Astra review B3): the signal must be submitted, otherwise the
+		// D3D12 queue waits until D3D11 flushes its command buffer on its own (usually
+		// only at Present). Neural rendering then starts late and D3D11 afterwards waits
+		// for neural rendering - both halves run back to back. dlss5-bridge flushes at
+		// the same point (src/bridge.inc, "Flush" after Signal). Measured 2026-09-27:
+		// no gain under vkd3d-proton, which waits on the CPU anyway (see PipelinedPresent).
+		context11_->Flush();
 		result = queue12_->Wait(fence12_.Get(), readyValue);
 		if (FAILED(result)) return RecordFailure(result);
 		result = commandContext.allocator->Reset();
@@ -204,14 +216,36 @@ namespace NeuralRendering
 
 	bool D3D12Interop::WaitForFence(std::uint64_t value)
 	{
-		if (!value || fence12_->GetCompletedValue() >= value)
+		const std::uint64_t completed = fence12_->GetCompletedValue();
+		// Linux build (Astra review B3): UINT64_MAX reports a removed device, not "all
+		// done". Releasing resources after it may release ones still in use.
+		if (completed == UINT64_MAX)
+			return RecordFailure(DXGI_ERROR_DEVICE_REMOVED);
+		if (!value || completed >= value)
 			return true;
-		const HRESULT result = fence12_->SetEventOnCompletion(value, fenceEvent_);
-		if (FAILED(result)) return RecordFailure(result);
-		const DWORD waitResult = WaitForSingleObject(fenceEvent_, 250);
-		if (waitResult != WAIT_OBJECT_0)
-			return RecordFailure(waitResult == WAIT_TIMEOUT ? HRESULT_FROM_WIN32(ERROR_TIMEOUT) :
-			                                                        HRESULT_FROM_WIN32(GetLastError()));
+		// Linux build (review round 2: spec 3, architecture P2): waking up alone proves
+		// nothing. fenceEvent_ is an auto-reset event; a registration from an earlier,
+		// timed-out wait can set it later, and device loss sets it as well. So ask the
+		// fence itself after every wake-up; within the same 250 ms register and wait
+		// again.
+		const ULONGLONG deadline = GetTickCount64() + 250;
+		for (;;) {
+			const HRESULT result = fence12_->SetEventOnCompletion(value, fenceEvent_);
+			if (FAILED(result)) return RecordFailure(result);
+			const ULONGLONG now = GetTickCount64();
+			const DWORD remaining = now < deadline ? static_cast<DWORD>(deadline - now) : 0;
+			const DWORD waitResult = WaitForSingleObject(fenceEvent_, remaining);
+			if (waitResult != WAIT_OBJECT_0)
+				return RecordFailure(waitResult == WAIT_TIMEOUT ? HRESULT_FROM_WIN32(ERROR_TIMEOUT) :
+				                                                        HRESULT_FROM_WIN32(GetLastError()));
+			const std::uint64_t reached = fence12_->GetCompletedValue();
+			if (reached == UINT64_MAX)
+				return RecordFailure(DXGI_ERROR_DEVICE_REMOVED);
+			if (reached >= value)
+				break;
+			if (GetTickCount64() >= deadline)
+				return RecordFailure(HRESULT_FROM_WIN32(ERROR_TIMEOUT));
+		}
 		lastError_ = S_OK;
 		return true;
 	}

@@ -214,6 +214,8 @@ namespace FrameGen
 		bool menuResetPending = false;
 
 		std::uint32_t frameSerial = 0;
+		// Serial slSetConstants was last called for (Linux build).
+		std::uint32_t constantsSerial = UINT32_MAX;
 		HMODULE interposer = nullptr;
 
 		// SL Interposer 函数
@@ -349,7 +351,21 @@ namespace FrameGen
 		// v0.5.10：upgrade 接口为 SL 代理（swapchain 必调，presentCommon 路径）
 		void UpgradeInterface(void** a_ppInterface);
 
-		// 每帧：设置相机常量 + 评估帧生成（v0.50：DLSS 超分已拔掉，仅保留 DLSSG 插帧）
+		// 每帧：设置相机常量 + DLSS 选项 + 评估（超分 + 帧生成）
+		// v0.7.6：返回是否成功——失败时调用方把原画面拷进 colorOut 兜底（防黑屏）
+		// v0.7.8：a_renderWidth/Height = 渲染分辨率（colorIn/depth/mvec extent），
+		// 输出 extent = 输出分辨率（fg.screenWidth/Height）——超分放大
+		// Linux build (dlss-quality): texture whose format decides colorBuffersHDR in
+		// SetDLSSOptions (the color input of the current EvaluateDLSS call).
+		ID3D11Texture2D* colorInForOptions = nullptr;
+
+		bool EvaluateDLSS(ID3D11DeviceContext* a_ctx,
+			ID3D11Resource* a_colorIn, ID3D11Resource* a_colorOut,
+			ID3D11Resource* a_depth, ID3D11Resource* a_motionVectors,
+			std::uint32_t a_renderWidth, std::uint32_t a_renderHeight,
+			const FrameBuffer& a_frameBuffer,
+			const Settings& a_settings);
+
 		// v0.3：DLSSG 插帧（D3D12 路径）——设置选项 + 评估
 		// v0.71: a_enable=false tells the runtime to stop frame generation without
 		// touching any other option. Required when the window is not in the
@@ -412,5 +428,6 @@ namespace FrameGen
 
 	private:
 		void CheckFrameConstants(const FrameBuffer& a_fb, float a_aspect, float a_near, float a_far);
+		void SetDLSSOptions(std::uint32_t a_outputWidth, const Settings& a_settings);
 	};
 }

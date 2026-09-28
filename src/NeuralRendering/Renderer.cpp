@@ -252,7 +252,16 @@ namespace NeuralRendering
 
 		void ResetHistory()
 		{
-			interop.WaitForIdle();
+			// Linux build (Astra review B3): WaitForIdle gives up after 250 ms (or on
+			// device loss). The GPU may then still be working on the features; freeing
+			// them now would free memory in use. Without freeing, resetPending still
+			// resets the history (DLSSNR.Reset=1).
+			if (!interop.WaitForIdle()) {
+				SKSE::log::warn("[DLSSNR] history reset without releasing features: GPU not idle "
+					"(0x{:08X})", static_cast<std::uint32_t>(interop.LastError()));
+				resetPending = true;
+				return;
+			}
 			Runtime::Instance().ResetFeatures();
 			resetPending = true;
 		}

@@ -34,6 +34,7 @@ add_library(${PROJECT_NAME} SHARED
     src/Streamline.cpp
     src/FidelityFX.cpp
     src/ImguiMenu.cpp
+    src/DRSUpscale.cpp
     # DLSS5 Neural Rendering (NGX Feature 18, ported from CS feature/dlssnr-vr)
     src/NeuralRendering/Runtime.cpp
     src/NeuralRendering/D3D12Interop.cpp

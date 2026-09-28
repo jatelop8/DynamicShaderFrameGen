@@ -168,13 +168,31 @@ namespace FrameGen
 		// v0.41：INI RenderResolutionScale >0 时优先用自定义比例（默认 0.70），
 		// 0 则回退 QualityMode 档位表（旧行为）。
 		{
-			const float kUpscaleRatios[5] = { 1.0f, 2.0f / 3.0f, 0.585f, 0.5f, 0.333f };
+			// Linux build (dlss-quality): the DLSS/FSR factors (1.5, 1.7, 2.0, 3.0).
+			const float kUpscaleRatios[5] = { 1.0f, 1.0f / 1.5f, 1.0f / 1.7f, 0.5f, 1.0f / 3.0f };
 			const std::uint32_t qm = a_qualityMode < 5 ? a_qualityMode : 0;
 			const float customScale = Get().settings.renderResolutionScale;
-			renderScaleX = renderScaleY =
-				customScale > 0.0f ? std::clamp(customScale, 0.30f, 1.0f) : kUpscaleRatios[qm];
-			renderWidth = static_cast<std::uint32_t>(std::max(1, static_cast<int>(swapChainDesc.Width * renderScaleX)));
-			renderHeight = static_cast<std::uint32_t>(std::max(1, static_cast<int>(swapChainDesc.Height * renderScaleY)));
+			// QualityMode 0 is always native DLAA; a leftover RenderResolutionScale only
+			// refines the scaled modes 1-4 (the menu no longer exposes it).
+			float requested = qm == 0 ? 1.0f : customScale > 0.0f ? std::clamp(customScale, 0.30f, 1.0f) : kUpscaleRatios[qm];
+			// DRS upscaling only exists in the D3D11 DLSS path (Main_PostProcessing).
+			// DLSS-G evaluates in D3D12 and gets no sub-rect, so it stays at 1.0.
+			if (requested < 1.0f && (dlssgMode || !Get().settings.enableUpscale)) {
+				SKSE::log::warn("[FrameGen] render scale {:.3f} ignored: needs EnableUpscale=1 and the D3D11 DLSS path (dlssg={})",
+					requested, dlssgMode);
+				requested = 1.0f;
+			}
+			if (requested < 1.0f && FrameGen::ENBLoaded()) {
+				SKSE::log::warn("[FrameGen] render scale {:.3f} ignored: ENB is loaded and renders the scene with the "
+					"DRS ratio applied twice - running DLAA", requested);
+				requested = 1.0f;
+			}
+			// Whole pixels like Community Shaders; the ratio follows from the pixel count so
+			// that engine viewport, DLSS extent and jitter all mean the same size.
+			renderWidth = static_cast<std::uint32_t>(std::max(1, static_cast<int>(swapChainDesc.Width * requested)));
+			renderHeight = static_cast<std::uint32_t>(std::max(1, static_cast<int>(swapChainDesc.Height * requested)));
+			renderScaleX = static_cast<float>(renderWidth) / static_cast<float>(swapChainDesc.Width);
+			renderScaleY = static_cast<float>(renderHeight) / static_cast<float>(swapChainDesc.Height);
 			SKSE::log::info("[FrameGen] Render scale {:.3f} -> {}x{} render / {}x{} output",
 				renderScaleX, renderWidth, renderHeight, swapChainDesc.Width, swapChainDesc.Height);
 		}
@@ -281,6 +299,14 @@ namespace FrameGen
 		DX::ThrowIfFailed(d3d11Device->OpenSharedFence(sharedFenceHandle, IID_PPV_ARGS(&d3d11Fence)));
 		CloseHandle(sharedFenceHandle);
 		fenceValue = 1;
+		// Linux build (PipelinedPresent): second shared fence, signalled by D3D11 only.
+		{
+			HANDLE readyHandle = nullptr;
+			DX::ThrowIfFailed(d3d12Device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&d3d12ReadyFence)));
+			DX::ThrowIfFailed(d3d12Device->CreateSharedHandle(d3d12ReadyFence.get(), nullptr, GENERIC_ALL, nullptr, &readyHandle));
+			DX::ThrowIfFailed(d3d11Device->OpenSharedFence(readyHandle, IID_PPV_ARGS(&d3d11ReadyFence)));
+			CloseHandle(readyHandle);
+		}
 
 		// v0.5.10（CS 同款，manual hooking 必需）：把 D3D12 swapchain upgrade 为 SL 代理
 		// 接口——SL 由此进入呈现路径（每帧调 common 插件 presentCommon），DLSSG 插件才会
@@ -346,6 +372,9 @@ namespace FrameGen
 		// NGX 要求 Color 与 Output 为不同资源（读写分离）；NR 结果写这里，
 		// fence 后拷贝到 backbuffer 呈现（NR 开启时）。
 		nrOutWrapped = new WrappedResource(colorOutDesc, d3d11Device.get(), d3d12Device.get());
+		// Linux build (PipelinedPresent): two presentation buffers in colorOut's format.
+		presentWrapped[0] = new WrappedResource(colorOutDesc, d3d11Device.get(), d3d12Device.get());
+		presentWrapped[1] = new WrappedResource(colorOutDesc, d3d11Device.get(), d3d12Device.get());
 
 		// v0.3：DLSSG 模式 → 深度/运动矢量共享纹理（每帧从引擎目标拷贝）
 		// v0.5.7（CS 官方方案）：引擎深度 D32_FLOAT 不在 DXGI NT 共享白名单 →
@@ -431,6 +460,27 @@ namespace FrameGen
 		}
 	}
 
+	void DX12SwapChain::BindGuideCopyScale(float a_scaleX, float a_scaleY)
+	{
+		if (!guideCopyCB) {
+			D3D11_BUFFER_DESC cbDesc{};
+			cbDesc.ByteWidth = 16;
+			cbDesc.Usage = D3D11_USAGE_DYNAMIC;
+			cbDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+			cbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+			if (FAILED(d3d11Device->CreateBuffer(&cbDesc, nullptr, guideCopyCB.put())))
+				return;
+		}
+		D3D11_MAPPED_SUBRESOURCE m{};
+		if (SUCCEEDED(d3d11Context->Map(guideCopyCB.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
+			const float values[4] = { a_scaleX, a_scaleY, 0.0f, 0.0f };
+			std::memcpy(m.pData, values, sizeof(values));
+			d3d11Context->Unmap(guideCopyCB.get(), 0);
+		}
+		ID3D11Buffer* b = guideCopyCB.get();
+		d3d11Context->PSSetConstantBuffers(0, 1, &b);
+	}
+
 	void DX12SwapChain::CopyDepthToShared(ID3D11ShaderResourceView* a_depthSRV, ID3D11RenderTargetView* a_depthRTV)
 	{
 		// 失败只重试一次（避免每帧 D3DCompileFromFile 刷屏）
@@ -477,7 +527,19 @@ namespace FrameGen
 		ID3D11RenderTargetView* rtvViews[1] = { a_depthRTV };
 		d3d11Context->OMSetRenderTargets(1, rtvViews, nullptr);
 		d3d11Context->PSSetShader(copyDepthPS.get(), nullptr, 0);
+		winrt::com_ptr<ID3D11Buffer> prevCb;
+		d3d11Context->PSGetConstantBuffers(0, 1, prevCb.put());
+		{
+			// Depth is full size once DRSUpscale stretched it; otherwise it is still
+			// in the sub-rect the engine rendered.
+			const auto& fg = Get();
+			const bool full = fg.drsDepthUpscaled;
+			BindGuideCopyScale(full ? 1.0f : fg.drsFrameScaleX, full ? 1.0f : fg.drsFrameScaleY);
+		}
 		d3d11Context->Draw(3, 0);
+		// Put back whatever constant buffer the engine had in slot 0.
+		ID3D11Buffer* restoreCb = prevCb.get();
+		d3d11Context->PSSetConstantBuffers(0, 1, &restoreCb);
 
 		// 清理绑定（防止污染游戏后续渲染状态）
 		ID3D11ShaderResourceView* nullSrv[1] = { nullptr };
@@ -530,7 +592,14 @@ namespace FrameGen
 		ID3D11RenderTargetView* rtvViews[1] = { a_mvecRTV };
 		d3d11Context->OMSetRenderTargets(1, rtvViews, nullptr);
 		d3d11Context->PSSetShader(copyMvecPS.get(), nullptr, 0);
+		winrt::com_ptr<ID3D11Buffer> prevCb;
+		d3d11Context->PSGetConstantBuffers(0, 1, prevCb.put());
+		// Motion vectors always stay in the sub-rect the engine rendered.
+		BindGuideCopyScale(Get().drsFrameScaleX, Get().drsFrameScaleY);
 		d3d11Context->Draw(3, 0);
+		// Put back whatever constant buffer the engine had in slot 0.
+		ID3D11Buffer* restoreCb = prevCb.get();
+		d3d11Context->PSSetConstantBuffers(0, 1, &restoreCb);
 
 		ID3D11ShaderResourceView* nullSrv[1] = { nullptr };
 		d3d11Context->PSSetShaderResources(0, 1, nullSrv);
@@ -539,6 +608,57 @@ namespace FrameGen
 		d3d11Context->VSSetShader(nullptr, nullptr, 0);
 	}
 
+	// v0.7.8：color 采样放大拷贝（超分失败兜底：游戏画面渲染尺寸 → colorOut 4K）
+	void DX12SwapChain::CopyColorToShared(ID3D11ShaderResourceView* a_colorSRV, ID3D11RenderTargetView* a_colorRTV)
+	{
+		if (!colorCopyReady && !colorCopyFailed) {
+			try {
+				EnsureUpscaleStates();
+				if (!copyColorPS) {
+					auto psBlob = CompileShaderFromFile(L"Data\\Shaders\\Upscaling\\CopyColorToSharedBufferPS.hlsl", "PSHADER", "ps_5_0");
+					DX::ThrowIfFailed(d3d11Device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, copyColorPS.put()));
+				}
+				colorCopyReady = true;
+				SKSE::log::info("[FrameGen] color-copy shaders ready (CopyColorToSharedBufferPS)");
+			} catch (const DX::com_exception& e) {
+				colorCopyFailed = true;
+				SKSE::log::warn("[FrameGen] color-copy shader init failed - fallback copy disabled ({})", e.what());
+				return;
+			}
+		}
+		if (!colorCopyReady)
+			return;
+
+		D3D11_VIEWPORT viewport = {};
+		viewport.TopLeftX = 0.0f;
+		viewport.TopLeftY = 0.0f;
+		viewport.Width = static_cast<float>(swapChainDesc.Width);
+		viewport.Height = static_cast<float>(swapChainDesc.Height);
+		viewport.MinDepth = 0.0f;
+		viewport.MaxDepth = 1.0f;
+		d3d11Context->RSSetViewports(1, &viewport);
+
+		d3d11Context->IASetInputLayout(nullptr);
+		d3d11Context->IASetVertexBuffers(0, 0, nullptr, nullptr, nullptr);
+		d3d11Context->IASetIndexBuffer(nullptr, DXGI_FORMAT_UNKNOWN, 0);
+		d3d11Context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		d3d11Context->VSSetShader(upscaleVS.get(), nullptr, 0);
+		d3d11Context->RSSetState(upscaleRasterizerState.get());
+		d3d11Context->OMSetBlendState(upscaleBlendState.get(), nullptr, 0xffffffff);
+
+		ID3D11ShaderResourceView* srvViews[1] = { a_colorSRV };
+		d3d11Context->PSSetShaderResources(0, 1, srvViews);
+		ID3D11RenderTargetView* rtvViews[1] = { a_colorRTV };
+		d3d11Context->OMSetRenderTargets(1, rtvViews, nullptr);
+		d3d11Context->PSSetShader(copyColorPS.get(), nullptr, 0);
+		d3d11Context->Draw(3, 0);
+
+		ID3D11ShaderResourceView* nullSrv[1] = { nullptr };
+		d3d11Context->PSSetShaderResources(0, 1, nullSrv);
+		d3d11Context->OMSetRenderTargets(0, nullptr, nullptr);
+		d3d11Context->PSSetShader(nullptr, nullptr, 0);
+		d3d11Context->VSSetShader(nullptr, nullptr, 0);
+	}
 
 	void DX12SwapChain::SetD3D11Device(ID3D11Device* a_d3d11Device)
 	{
@@ -1532,8 +1652,8 @@ namespace FrameGen
 				std::uint32_t mult = 1;
 				if (dlssgMode)
 					mult = fg.streamline.dlssgFramesToGenerate + 1;
-				else if (fg.fgActive.load())
-					mult = 2;                                          // FSR3 2x
+				else if (fg.fgActive.load() && FidelityFX::GetSingleton()->module)
+					mult = 2;                                          // FSR3 2x (only with the runtime loaded)
 				// v0.52：同时打出「本次运行真正在跑的 Provider」和「INI 里写的 Provider」。
 				// 只打前者的话，用户在菜单里切了 Provider 会以为"切了没反应"——其实只是没重启。
 				const int cfgProvider = fg.settings.provider;
@@ -1632,6 +1752,16 @@ namespace FrameGen
 		// present to breaks. So: no interop, no fences, no frame generation while
 		// unfocused - one present that cannot wait, then out. This removes the deadlock
 		// by construction rather than trying to out-run it.
+		// v0.58: the single per-frame advance point. Drives both the new-frame
+		// test in EnsureFrameToken and the frame index handed to
+		// slGetNewFrameToken. Must run before any SL call of this frame.
+		// Linux build: moved here, ahead of the focus detour and the dlssgMode
+		// branch. The restored DLAA evaluation (OnMainPostProcessing -> EvaluateDLSS)
+		// also takes its token through EnsureFrameToken and keeps running without
+		// focus (bAlwaysActive=1); without an advance here it would never get a new
+		// token -> slSetConstants 27 (review round 2: spec 1, architecture P1).
+		++fg.streamline.frameSerial;
+
 		if (!winFocused) {
 			m_stage = "unfocused bypass";
 			// The only place DO_NOT_WAIT is correct: nothing downstream of this present
@@ -1679,7 +1809,13 @@ namespace FrameGen
 		// 惰性创建包 try/catch：失败降级直通（无插帧但有画面），不抛异常穿透 Present。
 		// v0.5.7（CS 方案）：depth 自建 R32_FLOAT（可共享），mvec 引擎格式原样（可共享）。
 		// v0.6：FSR3 FG（Provider=0）也需要 depth/mvec 共享纹理 → 条件去掉 dlssgMode 限制
-		if ((dlssgMode || FidelityFX::GetSingleton()->module) && (!depthWrapped || !mvecWrapped)) {
+		// Linux build (Astra review #9): neural rendering reads exactly these guides
+		// (depthWrapped/mvecWrapped, NR call below). They were only produced for DLSS-G
+		// or FSR3 FG; with Provider=0 and no FSR3 runtime (removed under vkd3d-proton,
+		// where it crashes) NR never got its inputs.
+		const bool guidesWanted = dlssgMode || FidelityFX::GetSingleton()->module ||
+			fg.settings.neuralRenderingEnabled;
+		if (guidesWanted && (!depthWrapped || !mvecWrapped)) {
 			static bool lazyFailLogged = false;
 			try {
 				if (auto* renderer = RE::BSGraphics::Renderer::GetSingleton()) {
@@ -1725,7 +1861,7 @@ namespace FrameGen
 		// v0.6：FSR3 FG 同样需要 → 条件去掉 dlssgMode 限制
 		// v0.7.8：depth/mvec 共享纹理固定 = 输出分辨率（4K，FSR3 FG 要求与 color 同尺寸），
 		// 引擎 depth/mvec 是渲染尺寸（低）→ 都走 shader 采样放大（CopyResource 尺寸不匹配）
-		if ((dlssgMode || FidelityFX::GetSingleton()->module) && depthWrapped && mvecWrapped) {
+		if (guidesWanted && depthWrapped && mvecWrapped) {
 			if (auto* renderer = RE::BSGraphics::Renderer::GetSingleton()) {
 				auto& depthTex = renderer->GetDepthStencilData().depthStencils[RE::RENDER_TARGETS_DEPTHSTENCIL::kMAIN];
 				auto& mvecTex = renderer->GetRuntimeData().renderTargets[RE::RENDER_TARGETS::kMOTION_VECTOR];
@@ -1902,12 +2038,51 @@ namespace FrameGen
 		// on it is reverted by editing one INI line. What the withdrawal costs
 		// is written up in FrameGen.h next to InteropFenceWait.
 		const bool kD3D12WaitsOnD3D11 = Get().settings.interopFenceWait;
-		if (kD3D12WaitsOnD3D11) {
+		// Linux build (PipelinedPresent, non-DLSS-G only): under Proton,
+		// vkd3d-proton turns Wait() on a shared fence into a CPU wait until DXVK has
+		// finished the whole frame - only then is the copy submitted, and D3D11 waits
+		// for it again at the end of the frame. Measured 43.5 FPS at 60 % GPU; without
+		// the wait 60.3 FPS at 86 %, but unordered. This keeps the order: D3D11 copies
+		// the finished frame n into presentWrapped[n%2] and signals ReadyFence=n;
+		// D3D12 waits only for n-1 (long done) and presents that one. Costs one frame
+		// of latency and one GPU copy.
+		// The D3D11 wait at the end of the frame (F >= n) stays: it protects the
+		// buffer frame n+1 overwrites (in frame n D3D12 reads presentWrapped[(n-1)%2]).
+		WrappedResource* pipelinedSource = nullptr;
+		const bool pipelined = !dlssgMode && Get().settings.pipelinedPresent &&
+			presentWrapped[0] && presentWrapped[1] && d3d11ReadyFence && d3d12ReadyFence;
+		bool pipelineOrdered = pipelined;
+		if (pipelined && lastD3D12Signal && d3d11Fence) {
+			// The buffer this frame writes was read by D3D12 in the previous frame.
+			// The ordering on it is queued explicitly on the D3D11 queue here - even if
+			// the end-of-frame wait in CPU mode timed out or failed (pipeline review,
+			// finding 2). If this fails too, the frame takes the author's path.
+			m_stage = "d3d11 Wait(pipeline slot)";
+			pipelineOrdered = SUCCEEDED(d3d11Context->Wait(d3d11Fence.get(), lastD3D12Signal));
+		}
+		if (pipelineOrdered) {
+			m_stage = "d3d11 pipelined copy";
+			const UINT64 ready = ++readyValue;
+			WrappedResource* src = colorOutWrapped ? colorOutWrapped : swapChainBufferWrapped;
+			d3d11Context->CopyResource(presentWrapped[ready % 2]->resource11, src->resource11);
+			DX::ThrowIfFailed(d3d11Context->Signal(d3d11ReadyFence.get(), ready));
+			// First frame, after switching on or after a frame on the old path: there is
+			// no valid previous frame, so wait for the current one this once.
+			const UINT64 waitFor = pipelineHasFrame ? ready - 1 : ready;
+			m_stage = "d3d12 queue Wait(ready)";
+			DX::ThrowIfFailed(commandQueue->Wait(d3d12ReadyFence.get(), waitFor));
+			pipelinedSource = presentWrapped[waitFor % 2];
+			pipelineHasFrame = true;
+		} else if (kD3D12WaitsOnD3D11) {
 			m_stage = "d3d11 Signal(fence)";
 			DX::ThrowIfFailed(d3d11Context->Signal(d3d11Fence.get(), fenceValue));
 			m_stage = "d3d12 queue Wait";
 			DX::ThrowIfFailed(commandQueue->Wait(d3d12Fence.get(), fenceValue));
 		}
+		// Every frame without the pipeline (switch off, DLSS-G, failed ordering)
+		// invalidates the previous frame in presentWrapped.
+		if (!pipelineOrdered)
+			pipelineHasFrame = false;
 		// fenceValue is still advanced once per frame: the D3D12 side Signals it
 		// after Present, and the D3D11 side waits on it. Only the D3D12->D3D11
 		// wait is withdrawn.
@@ -1950,10 +2125,6 @@ namespace FrameGen
 			// v0.37（对齐 open-shaders EnsureFrameToken）：帧开头统一获取本帧 token——
 			// ReflexSleep/PCL marker/EvaluateDLSSG 全部用同一 token（之前 ReflexSleep
 			// 用旧 token、EvaluateDLSSG 才取新 → 同帧 marker 跨 token → RSYNC 错位）。
-			// v0.58: the single per-frame advance point. Drives both the
-			// new-frame test in EnsureFrameToken and the frame index handed to
-			// slGetNewFrameToken. Must run before any SL call of this frame.
-			++fg.streamline.frameSerial;
 			fg.streamline.EnsureFrameToken();
 			// v0.32（对齐 open-shaders Streamline.cpp:890-924）：Reflex sleep 先于
 			// PCL marker——RSYNC（vblank 同步 pacing）建立的必需输入。slReflexSleep
@@ -2222,8 +2393,9 @@ namespace FrameGen
 		// v0.7.17：拷贝源 = colorOut（DLSS 超分结果 4K；失败时 = 引擎画面兜底）
 		// D3D11 共享纹理 → D3D12 真 swapchain buffer
 		{
-			auto fakeSwapChain = (useNr && nrOutWrapped ? nrOutWrapped :
-				(colorOutWrapped ? colorOutWrapped : swapChainBufferWrapped))->resource.get();
+			auto fakeSwapChain = (pipelinedSource ? pipelinedSource :
+				(useNr && nrOutWrapped ? nrOutWrapped :
+				(colorOutWrapped ? colorOutWrapped : swapChainBufferWrapped)))->resource.get();
 			auto realSwapChain = swapChainBuffers[frameIndex].get();
 			{
 				std::vector<D3D12_RESOURCE_BARRIER> barriers;
@@ -2264,7 +2436,20 @@ namespace FrameGen
 		// stays a plain blocking present.
 		g_presentEnteredMs.store(static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()).count()));
-		const HRESULT hrPresentFsr = swapChain->Present(1, Flags);
+		// Linux build: interval from the INI (PresentInterval, default 1 like the author).
+		// ALLOW_TEARING only when the swap chain carries the flag - otherwise DXGI
+		// rejects the Present (cf. v0.38 in the DLSS-G branch).
+		// Review addendum 3: never pass a game-supplied ALLOW_TEARING through
+		// unchecked - Present(1, ALLOW_TEARING) is invalid, and so is tearing in
+		// exclusive fullscreen or without the swap chain flag.
+		const UINT presentInterval = Get().settings.presentInterval ? 1u : 0u;
+		UINT presentFlags = Flags & ~static_cast<UINT>(DXGI_PRESENT_ALLOW_TEARING);
+		if (!presentInterval && (swapChainDesc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING)) {
+			BOOL fullscreen = FALSE;
+			if (SUCCEEDED(swapChain->GetFullscreenState(&fullscreen, nullptr)) && !fullscreen)
+				presentFlags |= DXGI_PRESENT_ALLOW_TEARING;
+		}
+		const HRESULT hrPresentFsr = swapChain->Present(presentInterval, presentFlags);
 		if (hrPresentFsr != DXGI_ERROR_WAS_STILL_DRAWING)
 			DX::ThrowIfFailed(hrPresentFsr);
 		// v1.26: the DLSS-G branch has recorded GetLastPresentCount since v0.74; this
@@ -2281,6 +2466,7 @@ namespace FrameGen
 		// 等 D3D12 完成
 		m_stage = "d3d12 queue Signal";
 		DX::ThrowIfFailed(commandQueue->Signal(d3d12Fence.get(), fenceValue));
+		lastD3D12Signal = fenceValue;   // Linux build: ordering point for PipelinedPresent
 		m_stage = "d3d11 Wait";
 		// v1.03b: bounded, same as the menu-block path above. Both sites wrote
 		// the "d3d11 Wait" the watchdog reported for 19.7 s while the process

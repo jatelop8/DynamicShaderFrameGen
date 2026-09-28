@@ -146,6 +146,18 @@ namespace FrameGen
 
 		winrt::com_ptr<ID3D11Fence> d3d11Fence;
 		winrt::com_ptr<ID3D12Fence> d3d12Fence;
+		// Linux build (PipelinedPresent): own fence for "D3D11 finished frame n" and
+		// two presentation buffers. D3D12 presents the previous frame and so never
+		// waits for the current one; the existing fence (d3d11Fence/d3d12Fence)
+		// stays "D3D12 processed frame n".
+		winrt::com_ptr<ID3D11Fence> d3d11ReadyFence;
+		winrt::com_ptr<ID3D12Fence> d3d12ReadyFence;
+		WrappedResource* presentWrapped[2] = { nullptr, nullptr };
+		// fenceValue rises twice per frame (D3D11 side odd, D3D12 side even), hence
+		// a frame counter of its own for the buffers and ReadyFence.
+		UINT64 readyValue = 0;           // ReadyFence value D3D11 signalled last
+		UINT64 lastD3D12Signal = 0;      // F value of the last D3D12 signal (non-DLSS-G path)
+		bool pipelineHasFrame = false;   // the previous frame went through the pipeline, its buffer is valid
 
 		// v0.33：DLSSG 三缓冲（SL pacer 余量），FSR3 双缓冲
 		winrt::com_ptr<ID3D12Resource> swapChainBuffers[3];
@@ -270,6 +282,9 @@ namespace FrameGen
 		// v0.7.8：mvec 采样放大拷贝（引擎 mvec 渲染尺寸 → 4K 共享纹理，FSR3 FG 用）
 		void CopyMvecToShared(ID3D11ShaderResourceView* a_mvecSRV, ID3D11RenderTargetView* a_mvecRTV);
 		winrt::com_ptr<ID3D11PixelShader> copyMvecPS;
+		// Linux build (dlss-quality): UV scale for the guide copies (GuideCopyCB, b0).
+		winrt::com_ptr<ID3D11Buffer> guideCopyCB;
+		void BindGuideCopyScale(float a_scaleX, float a_scaleY);
 		bool mvecCopyReady = false;
 		bool mvecCopyFailed = false;
 		// ---- v1.22 PIXEL PROBE ----
@@ -384,5 +399,11 @@ namespace FrameGen
 		bool backProbePending = false;
 		UINT backProbeSrcW = 0;
 		UINT backProbeSrcH = 0;
+
+		// v0.7.8：color 采样放大拷贝（超分失败兜底：游戏画面渲染尺寸 → colorOut 4K）
+		void CopyColorToShared(ID3D11ShaderResourceView* a_colorSRV, ID3D11RenderTargetView* a_colorRTV);
+		winrt::com_ptr<ID3D11PixelShader> copyColorPS;
+		bool colorCopyReady = false;
+		bool colorCopyFailed = false;
 	};
 }
