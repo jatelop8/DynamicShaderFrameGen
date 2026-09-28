@@ -120,6 +120,9 @@ namespace FrameGen
 		// DX12SwapChain's "fence before" comment still says the design relies on
 		// that ordering. 1 = restore it (default), 0 = the v0.75 behaviour.
 	bool interopFenceWait = true;   // INI InteropFenceWait
+	// Linux build: D3D12 presents the previous, finished frame (see DX12SwapChain,
+	// "PipelinedPresent"). Ordering stays, the wait goes away, +1 frame latency.
+	bool pipelinedPresent = false;  // INI PipelinedPresent
 	// v1.44 -- FENCE WAIT MODE. This is the one knob that separates this build
 	// from the Sep 11 build at the end of Present(), and it is worth a setting
 	// rather than a constant because the two behaviours differ by a whole
@@ -149,6 +152,16 @@ namespace FrameGen
 	// stalls the D3D11 queue instead - the 2026-09-18 18:23 failure. If the
 	// game freezes on mode 0, this line is the one to flip back.
 	bool fenceWaitBusy = false;     // INI FenceWaitBusy (1 = CPU poll, 0 = queue-side)
+	// Linux build: SyncInterval of the D3D12 Present without frame generation. The
+	// author presents with a fixed 1 (VSync). 0 = no VSync; VRR and the frame limiter
+	// (SSEDisplayTweaks) set the pace then. Measured 2026-09-27: no FPS difference
+	// between 0 and 1 once PipelinedPresent is on.
+	int presentInterval = 1;        // INI PresentInterval (1 = VSync like the author, 0 = off)
+	// Linux build (dlss-quality): with quality modes 1-4 the engine renders into a DRS
+	// sub-rect. Community Shaders NOPs the vanilla DRS controller for that
+	// (35556/36555+0x2D). 1 = like CS, 0 = controller stays (v0.48c experiment).
+	// Only applies with render scale < 1; DLAA is untouched.
+	bool vanillaDRSNop = true;      // INI VanillaDRSNop
 	// v1.21 -- THE FADER MENU IS NOT A MENU. IsMenuOpen("Fader Menu") is true
 		// the whole time the player is in the world (23:38 run: fade=1 for 40+ s
 		// with paused=0, ld=0 and the clock at timescale 20), so counting it as
@@ -286,6 +299,34 @@ namespace FrameGen
 		// IsNewFrame 判断基准（同帧复用 token，防每帧取两次）
 		std::uint32_t engineFrameCount = 0;
 
+		// Linux build (dlss-quality): per-frame DRS state. The jitter hook sets
+		// drsEngaged; the post-processing hook records drsFrameScale for the guide
+		// copies in Present (by then the engine ratio is back at 1).
+		bool drsEngaged = false;
+		float drsFrameScaleX = 1.0f;
+		float drsFrameScaleY = 1.0f;
+		// True when this frame's depth was stretched to full size (guide copies then
+		// sample depth 1:1 and only the motion vectors through drsFrameScale).
+		bool drsDepthUpscaled = false;
+		// Linux build (dlss-quality): DLSS output in kMAIN's own format. colorOutWrapped
+		// is the 8-bit shared presentation texture; CopyResource from it into the
+		// 16-bit float kMAIN is invalid in D3D11 and was silently dropped, so the DLSS
+		// result never reached the image (DLAA included). Dumped 2026-09-28.
+		winrt::com_ptr<ID3D11Texture2D> dlssOut;
+		ID3D11Texture2D* EnsureDLSSOutput(ID3D11Texture2D* a_like);
+		// Projection jitter before the jitter hook overwrote it; restored before the
+		// UI draws (like CS PostDisplay), DRS mode only.
+		float drsSavedProjX = 0.0f;
+		float drsSavedProjY = 0.0f;
+		// Render scale < 1 chosen at load time (quality mode 1-4); only then does
+		// InstallDRSHook install the NOP and the lock hooks.
+		bool DRSRequested() const;
+		// ENB is loaded. ENB renders the scene with the DRS ratio applied a second time
+		// (scene at 0.44 of the frame for ratio 0.67, measured 2026-09-28), so quality
+		// modes 1-4 fall back to DLAA while it is present.
+		static bool ENBLoaded();
+		void InstallDRSLockHooks();
+
 		// D3D11 创建完成（PatchIAT 钩子内调用）
 		void OnD3D11Created(ID3D11Device* a_device, ID3D11DeviceContext* a_context);
 		// v0.7.2：每帧轮询 Home 键（GetAsyncKeyState）——短按切插帧，长按开菜单
@@ -309,9 +350,18 @@ namespace FrameGen
 		void EnsureBorderless();
 		HWND hwnd = nullptr;  // 游戏主窗口（CreateDevice hook 时记录）
 
-		// v0.50：DLSS 超分/DRS/Halton jitter 已全部拔掉（引擎回到 2560 原生渲染）。
-		// InstallDRSHook / OnMainUpdateJitter / InstallMainPostProcessingHook /
-		// OnMainPostProcessing 已移除。仅保留 DLSS5(DLSSNR) + FSR3 FG 串联。
+		// v0.7.11：安装 Main_UpdateJitter hook（CS 同款）——引擎每帧渲染前回调，
+		// 用其 State* 参数设置引擎 DRS（dynamicResolution）渲染分辨率 + DLSS jitter。
+		// 在渲染前设置（vs Present 帧尾），引擎重建 kMAIN 为目标渲染分辨率。
+		void InstallDRSHook();
+		void OnMainUpdateJitter(RE::BSGraphics::State* a_state);
+
+		// v0.48：Main_PostProcessing hook（CS 同款）——引擎后处理管线入口（体积光照后、
+		// 后处理前）。此时做 DLSS 超分（kMAIN → 中间纹理 → 写回 kMAIN），后处理（含 ENB）
+		// 读超分结果 → DLSS 锐化/LMK 在 ENB 前生效 + ENB 保留。之前 DLSS 在 Present（ENB
+		// 后），锐化被 ENB 盖掉。
+		void InstallMainPostProcessingHook();
+		void OnMainPostProcessing();
 
 		// v0.7.13：安装 MenuManagerDrawInterfaceStart hook（CS 同款）——引擎 UI 绘制
 		// 开始前回调。此时把 DLSS 超分结果写入引擎 kFRAMEBUFFER（4K），UI 随后叠加

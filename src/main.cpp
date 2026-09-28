@@ -39,9 +39,10 @@ namespace
 			}
 			// 输入开关键（Home）——DataLoaded 后 BSInputDeviceManager 可用
 			FrameGen::Get().InstallInputHook();
-			// v0.50（用户拍板拔掉 DLSS 超分）：移除 InstallDRSHook + InstallMainPostProcessingHook。
-			// 引擎回到 2560 全分辨率渲染（无 DRS、无 DLSS 超分、无 Halton jitter），
-			// 只保留 DLSS5(DLSSNR) + FSR3 FG 串联。DLSS 超分/DRS/jitter 相关代码保留但不调用。
+			// v0.7.11：Main_UpdateJitter hook（渲染前设 DRS + jitter，CS 同款）
+			FrameGen::Get().InstallDRSHook();
+			// v0.48：Main_PostProcessing hook（DLSS 超分迁到 ENB 前）
+			FrameGen::Get().InstallMainPostProcessingHook();
 			// DLSS5 Neural Rendering 入口（MenuManagerDrawInterfaceStart，UI 绘制前）
 			FrameGen::Get().InstallMenuHook();
 			break;

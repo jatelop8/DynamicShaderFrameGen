@@ -9,6 +9,7 @@
 #include "FrameGen.h"
 
 #include "ImguiMenu.h"
+#include "FidelityFX.h"
 #include "DX12SwapChain.h"
 #include "NeuralRendering/Renderer.h"  // DLSSNR 状态显示
 
@@ -253,7 +254,10 @@ namespace FrameGen
 				mult = static_cast<float>(presented);
 			else
 				tag = " (MFG off)";
-		} else if (a_fg.fgActive.load()) {
+		} else if (a_fg.fgActive.load() && FidelityFX::GetSingleton()->module) {
+			// Linux build: only when the FSR3 runtime is actually loaded. fgActive alone
+			// is true without FSR3 as well (it is removed under vkd3d-proton); the
+			// overlay then showed a computed number as the frame rate.
 			mult = 2.0f;  // FSR3 generates exactly one frame (verified by the dispatch probe)
 		}
 
@@ -406,8 +410,15 @@ namespace FrameGen
 			<< "WriteTransfusionConfig=" << s.writeTransfusionConfig << "\n"
 			<< "ReflexFpsLimit=" << s.reflexFpsLimit << "\n"
 			<< "MenuDisableFrameGen=" << (s.menuDisableFrameGen ? 1 : 0) << "\n"
+			// Linux build (Astra review #10): both v1.52 switches were missing here; a
+			// save silently reset them to the default 1 on the next start.
+			<< "MenuDrawHook=" << (s.menuDrawHook ? 1 : 0) << "\n"
+			<< "PollInputHook=" << (s.pollInputHook ? 1 : 0) << "\n"
 			<< "InteropFenceWait=" << (s.interopFenceWait ? 1 : 0) << "\n"
+			<< "PipelinedPresent=" << (s.pipelinedPresent ? 1 : 0) << "\n"
 			<< "FenceWaitBusy=" << (s.fenceWaitBusy ? 1 : 0) << "\n"
+			<< "PresentInterval=" << s.presentInterval << "\n"
+			<< "VanillaDRSNop=" << (s.vanillaDRSNop ? 1 : 0) << "\n"
 			<< "MenuGuardFader=" << (s.menuGuardFader ? 1 : 0) << "\n"
 			<< "PixelProbe=" << (s.pixelProbe ? 1 : 0) << "\n"
 			<< "ForceBackBufferCopy=" << (s.forceBackBufferCopy ? 1 : 0) << "\n"
@@ -417,6 +428,11 @@ namespace FrameGen
 			<< "StreamlineLogLevel=" << s.streamlineLogLevel << "\n"
 			<< "ToggleKey=0x" << std::hex << s.toggleKey << std::dec << "\n";
 		ini.close();
+		// Menu audit: report success only after a checked write.
+		if (!ini) {
+			SKSE::log::error("[FrameGen] INI save FAILED while writing {}", iniPath);
+			return false;
+		}
 		SKSE::log::info("[FrameGen] INI saved: Provider={} DLSSGFramesToGenerate={} MFGMaxFramesOverride={} NR={} NRLayers={}",
 			s.provider, s.dlssgFramesToGenerate, s.mfgMaxFramesOverride, s.neuralRenderingEnabled ? 1 : 0,
 			a_fg.nrTuning.layers);
@@ -603,62 +619,89 @@ namespace FrameGen
 		auto& s = a_fg.settings;
 		auto& sc = a_fg.dx12SwapChain;
 
-		ImGui::SetNextWindowSize(ImVec2(400, 0), ImGuiCond_FirstUseEver);
+		// Linux build: wider and with word wrap - long lines used to end mid-word at
+		// the window edge.
+		ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_FirstUseEver);
 		if (!ImGui::Begin("DynamicShaderFrameGen", nullptr,
 				ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
 			ImGui::End();
 			return;
 		}
 
-		// v0.52：标题别再写 "DLSS Upscaling"——超分在 v0.48 已移除，否则用户会一直找那个
-		// 不存在的开关（"切换 DLSS 没反应"的一部分就来自这类过期文案）。
-		ImGui::TextWrapped("帧生成 + DLSS5 神经渲染（可实时调整）");
-		ImGui::TextWrapped("Frame Generation + DLSS5 Neural Rendering (live adjust)");
-		ImGui::TextDisabled("注意：DLSS 超分已在 v0.48 移除，菜单里没有超分开关。");
-		ImGui::TextDisabled("NOTE: DLSS upscaling was removed in v0.48 - there is no DLSS upscale switch.");
-		ImGui::Separator();
+		ImGui::PushTextWrapPos(0.0f);
+		// Linux build (menu audit 2026-09-27): every item says when it takes effect -
+		// (live) at once, (restart) after a restart. Greyed out = has no effect in the
+		// current configuration, with the reason. Every change is saved. Frame
+		// generation items only when DLSS-G runs or the FSR3 runtime is loaded.
+		const bool showFrameGenControls = sc.dlssgMode || FidelityFX::GetSingleton()->module;
+		bool dirty = false;
+		// Switches/choices: save at once. Sliders: only on release, otherwise the INI
+		// would be written every frame while dragging (audit re-check, 3).
+		auto edited = [&](bool a_changed) {
+			if (a_changed)
+				dirty = true;
+		};
+		auto released = [&]() {
+			if (ImGui::IsItemDeactivatedAfterEdit())
+				dirty = true;
+		};
+		ImGui::TextWrapped("(live) = takes effect immediately, (restart) = after restarting the game. "
+			"Changes are saved to the INI automatically (sliders when released); "
+			"the frame generation switch applies to this session only.");
 
-		ImGui::Checkbox("总开关  |  Enable (master)", &s.enableFrameGen);
-		// v0.7.7：FG 开关直接绑定运行时 fgActive——GUI 里点即生效，不再用 Home 短按
-		bool fgOn = a_fg.fgActive.load();
-		if (ImGui::Checkbox("帧生成 FG  |  Frame Generation (FG)", &fgOn)) {
-			a_fg.fgActive.store(fgOn);
-			SKSE::log::info("[FrameGen] Frame generation {} (GUI)", fgOn ? "ENABLED" : "DISABLED");
+		ImGui::SeparatorText("Plugin");
+		// "Enable" and "Allow below 120 Hz" control whether the D3D12 proxy is built,
+		// which DLAA and NR need (FrameGen.cpp: proxy only with enableFrameGen and
+		// >= 120 Hz, or forceEnable) - so they stay visible without frame generation.
+		edited(ImGui::Checkbox("Enable plugin (restart)", &s.enableFrameGen));
+		edited(ImGui::Checkbox("Allow displays below 120 Hz (restart)", &s.forceEnable));
+		edited(ImGui::Checkbox("FPS overlay (live)", &s.fpsOverlay));
+		// v0.42 / v0.52: the path is fixed once when the swap chain is created.
+		const char* providers[] = { "Standard (DLAA; FSR3 frame generation if its runtime is installed)",
+			"DLSS-G (NVIDIA frame generation; DLAA not available)" };
+		if (ImGui::Combo("Rendering path (restart)", &s.provider, providers, 2)) {
+			dirty = true;
+			SKSE::log::info("[FrameGen] Provider -> {} ({}) | RESTART REQUIRED (swapchain path is fixed at creation)",
+				s.provider, s.provider == 1 ? "DLSSG" : "Standard/FSR3");
 		}
-		ImGui::Checkbox("强制启用（<120Hz）  |  Force Enable (<120Hz)", &s.forceEnable);
-		ImGui::Checkbox("帧数显示（右上角）  |  FPS Overlay (top-right)", &s.fpsOverlay);
+		if (sc.providerAtCreate >= 0 && s.provider != sc.providerAtCreate)
+			ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.2f, 1.0f),
+				"Pending restart: running %s, INI says %s.",
+				sc.providerAtCreate == 1 ? "DLSS-G" : "Standard", s.provider == 1 ? "DLSS-G" : "Standard");
+
+		// Presentation: only without DLSS-G (there the pacer presents by itself).
+		if (!sc.dlssgMode) {
+			ImGui::SeparatorText("Presentation");
+			bool vsyncOn = s.presentInterval != 0;
+			if (ImGui::Checkbox("VSync (live)", &vsyncOn)) {
+				s.presentInterval = vsyncOn ? 1 : 0;
+				dirty = true;
+				SKSE::log::info("[FrameGen] PresentInterval -> {} (GUI)", s.presentInterval);
+			}
+			const bool pipelineReady = sc.presentWrapped[0] && sc.presentWrapped[1] && sc.d3d11ReadyFence && sc.d3d12ReadyFence;
+			ImGui::BeginDisabled(!pipelineReady);
+			if (ImGui::Checkbox("Pipelined present (live, +1 frame latency)", &s.pipelinedPresent)) {
+				dirty = true;
+				SKSE::log::info("[FrameGen] PipelinedPresent -> {} (GUI)", s.pipelinedPresent ? 1 : 0);
+			}
+			ImGui::EndDisabled();
+			ImGui::TextDisabled(pipelineReady
+				? "Presents the previous finished frame, so the D3D12 queue does not wait for the current one."
+				: "Unavailable: the pipeline buffers could not be created.");
+		}
 
 		// v0.25：DLSS-NR 菜单项已移除（NR 改由外部 ReShade 方案提供）
 
-		ImGui::Separator();
-		// v0.42：恢复 Provider 选项（DLSSG 4x MFG）——Provider 决定 swapchain 路径，
-		// 运行时切换需重启游戏生效（重建 D3D12 proxy）。
-		const char* providers[] = { "FSR3 (2x, all GPUs)", "DLSSG (NVIDIA, 4x MFG)" };
-		// v0.52：Provider 只在 DX12SwapChain::CreateSwapChain 里被消费一次（决定 dlssgMode /
-		// BufferCount / D3D12 proxy 路径），**运行中切换不会有任何即时变化**——这是结构性的，
-		// 没有热切方案。所以要保证两点：① 改动立刻写回 INI（否则重启后读回旧值，表现就是
-		// "切了跟没切一样"）；② 明确记录日志 + 界面提示需重启，不再让用户对着一个"没反应"
-		// 的下拉框猜。
-		if (ImGui::Combo("帧生成后端  |  Frame Gen Provider", &s.provider, providers, 2)) {
-			const bool saved = SaveSettingsToIni(a_fg);
-			SKSE::log::info("[FrameGen] Provider -> {} ({}) | {} | RESTART REQUIRED (swapchain path is fixed at creation)",
-				s.provider, s.provider == 1 ? "DLSSG" : "FSR3", saved ? "INI saved." : "INI SAVE FAILED.");
+		if (showFrameGenControls) {
+		ImGui::SeparatorText("Frame generation");
+		// v0.7.7: the switch only sets the runtime state fgActive; it is never saved
+		// (fgActive is set again when the proxy starts).
+		bool fgOn = a_fg.fgActive.load();
+		if (ImGui::Checkbox("Frame generation (live, this session only)", &fgOn)) {
+			a_fg.fgActive.store(fgOn);
+			SKSE::log::info("[FrameGen] Frame generation {} (GUI)", fgOn ? "ENABLED" : "DISABLED");
 		}
-		const bool providerPending = sc.providerAtCreate >= 0 && s.provider != sc.providerAtCreate;
-		if (providerPending) {
-			ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.2f, 1.0f),
-				"待重启：当前运行 %s，INI 已改为 %s —— 不重启游戏不会生效",
-				sc.providerAtCreate == 1 ? "DLSSG" : "FSR3", s.provider == 1 ? "DLSSG" : "FSR3");
-			ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.2f, 1.0f),
-				"PENDING RESTART: running %s, INI wants %s - no effect until you relaunch the game",
-				sc.providerAtCreate == 1 ? "DLSSG" : "FSR3", s.provider == 1 ? "DLSSG" : "FSR3");
-		}
-		if (s.provider == 0) {
-			ImGui::Text("帧生成后端：FSR3（所有显卡可用）");
-			ImGui::Text("FrameGen: FSR3 tech (all GPUs)");
-			ImGui::TextDisabled("通用插帧，NVIDIA 与 AMD 都能用");
-			ImGui::TextDisabled("Universal frame interpolation - works on NVIDIA & AMD");
-		}
+		ImGui::Text("FG active: %s (a request - see the log for generated frames)", a_fg.fgActive.load() ? "ON" : "OFF");
 
 		// v0.52：DLSSG 参数不再藏在 provider==1 后面——在 FSR3 下也能先设好（否则"切了没反应"
 		// 时根本无从判断到底改没改），改动立即持久化，不必再记得按 Save to INI。
@@ -668,7 +711,7 @@ namespace FrameGen
 			int mfg = static_cast<int>(s.dlssgFramesToGenerate) - 1;
 			if (mfg < 0) mfg = 0;
 			if (mfg > 4) mfg = 4;
-			if (ImGui::Combo("倍率（多倍帧生成）  |  MFG Multiplier (DLSSG)", &mfg, mfgModes, IM_ARRAYSIZE(mfgModes))) {
+			if (ImGui::Combo("DLSS-G multiplier (live request)", &mfg, mfgModes, IM_ARRAYSIZE(mfgModes))) {
 				s.dlssgFramesToGenerate = static_cast<std::uint32_t>(mfg + 1);
 				SaveSettingsToIni(a_fg);
 				SKSE::log::info("[FrameGen] MFG multiplier -> {}x (DLSSGFramesToGenerate={})", s.dlssgFramesToGenerate + 1, s.dlssgFramesToGenerate);
@@ -697,8 +740,11 @@ namespace FrameGen
 			// 便于与日志、账本、N 网描述逐字对照。
 			{
 				bool wt = s.writeTransfusionConfig != 0;
-				if (ImGui::Checkbox("写入 DLSSG-Transfusion.json（需重启）"
-						"  |  Write to DLSSG-Transfusion.json (restart required)", &wt)) {
+				const bool haveJson = ReadTransfusionMultiplier() > 0;
+				ImGui::BeginDisabled(!haveJson);
+				const bool wtClicked = ImGui::Checkbox("Sync multiplier to DLSSG-Transfusion.json (next launch)", &wt);
+				ImGui::EndDisabled();
+				if (wtClicked) {
 					s.writeTransfusionConfig = wt ? 1u : 0u;
 					SaveSettingsToIni(a_fg);
 					SKSE::log::info("[FrameGen] WriteTransfusionConfig -> {}", wt ? 1 : 0);
@@ -709,9 +755,6 @@ namespace FrameGen
 								s.dlssgFramesToGenerate + 1);
 					}
 				}
-				ImGui::TextDisabled("本插件 INI 永远会存这个值。游戏启动时真正读的是那个 json ——\n"
-					"它属于 DLSSG-Transfusion，所以只有你勾选后我们才会去动它。\n"
-					"每次写入之前都会自动备份。");
 				ImGui::TextDisabled("Own INI always stores this. The json is what the game actually reads at "
 					"launch - it belongs to DLSSG-Transfusion, so we only touch it when you tick this. "
 					"Backed up automatically before every write.");
@@ -719,32 +762,26 @@ namespace FrameGen
 
 			// v0.50：上限覆盖（老卡多倍帧生成解锁）。0=跟随硬件上报；1..5=抬到 N 个插帧。
 			int ov = static_cast<int>(s.mfgMaxFramesOverride);
-			if (ImGui::SliderInt("上限覆盖  |  MFG Max Override", &ov, 0, 5,
-				ov == 0 ? "关（跟随硬件上限）  |  Off (hardware max)" : "%d")) {
+			if (ImGui::SliderInt("MFG request ceiling (restart)", &ov, 0, 5,
+				ov == 0 ? "Off (hardware max)" : "%d")) {
 				s.mfgMaxFramesOverride = static_cast<std::uint32_t>(ov < 0 ? 0 : ov);
-				SaveSettingsToIni(a_fg);
 				SKSE::log::info("[FrameGen] MFG max override -> {} (1=2x ... 5=6x)", s.mfgMaxFramesOverride);
 			}
+			released();
 
 			const char* archNote = s.mfgMaxFramesOverride > 0
-				? "覆盖已开 —— 抬高它只改变我们【请求】多少倍。运行时仍会校验，超出硬件上限\n"
-				  "时会以 eErrorInvalidState 拒绝，除非装了外部 MFG 内核解锁器\n"
-				  "（DLSSG-Transfusion / dlssg_for_sm86 / MFG Bridge）。日志里搜\n"
-				  "'MFG probe: runtime REJECTED' 与 'ACCEPTED' 可分辨。\n"
-				  "  Override ON - raising this only changes what we REQUEST. The runtime still\n"
+				? "Override ON - raising this only changes what we REQUEST. The runtime still\n"
 				  "  validates it and will reject >hwMax with eErrorInvalidState unless an external MFG\n"
 				  "  kernel unlocker (DLSSG-Transfusion / dlssg_for_sm86 / MFG Bridge) is installed.\n"
 				  "  Check the log for 'MFG probe: runtime REJECTED' vs 'ACCEPTED'."
-				: "RTX 50 原生 4x；40/30/20 需要外部内核解锁器。\n"
-				  "v0.51 的阶梯探针会把请求逐级降到运行时可接受的值。\n"
-				  "  RTX 50 does 4x natively. 40/30/20 need an external kernel unlocker.\n"
+				: "RTX 50 does 4x natively. 40/30/20 need an external kernel unlocker.\n"
 				  "  The v0.51 ladder probe steps the request down to whatever the runtime accepts.";
 			ImGui::TextDisabled("%s", archNote);
-			if (s.provider == 0)
-		ImGui::TextDisabled("以上参数只作用于 DLSSG。你现在是 FSR3 —— 值还是会存进 INI，\n"
-			"切到 DLSSG 并重启后才生效。");
-		ImGui::TextDisabled("These apply to DLSSG. You are on FSR3 now - the values are saved to the INI\nand take effect after you switch Provider and restart.");
-		ImGui::TextDisabled("更换后端需要重启游戏。");
+			// Linux build: in the original this if covered only the (removed) Chinese
+			// line, so the "You are on FSR3 now" hint also showed with DLSS-G.
+			if (!sc.dlssgMode) {
+				ImGui::TextDisabled("These apply to DLSS-G only. You are on the Standard path - the values are saved\nand take effect after you switch the rendering path and restart.");
+			}
 		ImGui::TextDisabled("Provider change needs restart.");
 
 			// v1.46：倍率三态读数。以前这里只有"请求值"，用户没法分辨"菜单改了 / 存了 /
@@ -761,29 +798,60 @@ namespace FrameGen
 					const bool mismatch = jsonMult != ownMult;
 					ImGui::TextColored(mismatch ? ImVec4(1.0f, 0.72f, 0.2f, 1.0f)
 							: ImVec4(0.45f, 0.85f, 0.5f, 1.0f),
-						"倍率：本插件 INI %ux ｜ json %ux%s",
+						"Multiplier: own INI %ux | json %ux%s",
 						ownMult, jsonMult,
-						mismatch ? "  ← 启动时 json 说了算" : "  （一致）");
+						mismatch ? "  <- the json wins at launch" : "  (match)");
 					if (mismatch && !s.writeTransfusionConfig)
-						ImGui::TextDisabled("每次启动真正生效的是 json 里的值。勾上上面的方框让菜单来写它，\n"
-							"或者自己手动编辑那个文件。");
+						ImGui::TextDisabled("The json value is what takes effect at launch. Tick the box above to let\n"
+							"the menu write it, or edit that file by hand.");
 				} else {
-					ImGui::TextDisabled("倍率：本插件 INI %ux ｜ 没找到 DLSSG-Transfusion.json —— 该 json 是游戏\n"
-						"启动时唯一读取的来源，所以本机上没有别的东西能覆盖它。",
-						ownMult);
-					ImGui::TextDisabled("   (no DLSSG-Transfusion.json found - nothing else can override the multiplier here)");
+					// Linux build: the removed Chinese line carried ownMult; without the
+					// json the number was missing otherwise (standards addendum 2).
+					ImGui::TextDisabled("Multiplier: own INI %ux (no DLSSG-Transfusion.json found - nothing else can\n"
+						"override the multiplier here)", ownMult);
 				}
 				// 英文原句保留成一行，便于与日志/账本逐字对照
 				ImGui::TextDisabled("   (INI = this plugin's own value | json = what the game reads at launch)");
 			}
 		}
+		}  // if (showFrameGenControls)
+
+		// Linux build (dlss-quality): quality modes 1-4 render into a DRS sub-rect that
+		// DLSS reconstructs (see FrameGen::OnMainPostProcessing). The mode takes effect
+		// on the next start: the render size is fixed when the swap chain is created and
+		// the DRS hooks are installed at load.
+		// Sharpness removed: Streamline marks the field "not supported"
+		// (sl_dlss.h, SR_DEPRECATED_SHARPENING); the INI value is kept.
+		ImGui::SeparatorText("DLSS");
+		const bool dlssPossible = a_fg.streamline.featureDLSS && !a_fg.streamline.useD3D12;
+		ImGui::BeginDisabled(!dlssPossible);
+		edited(ImGui::Checkbox("DLSS (live)", &s.enableUpscale));
+		ImGui::BeginDisabled(!s.enableUpscale);
+		const char* modes[] = { "DLAA (native)", "Quality (67%)", "Balanced (59%)", "Performance (50%)", "Ultra Performance (33%)" };
+		edited(ImGui::Combo("Mode (restart)", &s.qualityMode, modes, 5));
+		const char* presets[] = { "Auto (DLAA: J, scaled: M/L)", "J", "K", "L", "M" };
+		edited(ImGui::Combo("DLSS model preset (live)", &s.presetDLSS, presets, 5));
+		ImGui::EndDisabled();
+		ImGui::EndDisabled();
+		if (!a_fg.streamline.featureDLSS) {
+			ImGui::TextDisabled("Unavailable: DLSS is not supported or not loaded.");
+		} else if (a_fg.streamline.useD3D12) {
+			ImGui::TextDisabled("Unavailable on the DLSS-G path.");
+		} else {
+			const auto& sc = a_fg.dx12SwapChain;
+			ImGui::TextDisabled("Running: render %ux%u -> output %ux%u", sc.renderWidth, sc.renderHeight,
+				sc.swapChainDesc.Width, sc.swapChainDesc.Height);
+			if (s.qualityMode > 0 && FrameGen::ENBLoaded())
+				ImGui::TextDisabled("ENB is loaded: it renders the scene with the resolution scale applied\n"
+					"twice, so Quality/Balanced/Performance run as DLAA while ENB is present.");
+			else if ((s.qualityMode > 0) != (sc.renderScaleX < 0.999f))
+				ImGui::TextDisabled("Mode change applies after a restart.");
+		}
 
 		// ---- DLSS5 Neural Rendering (NGX Feature 18) ----
-		ImGui::Separator();
-		ImGui::Text("DLSS5 神经渲染（NGX Feature 18）");
-		ImGui::Text("DLSS5 Neural Rendering (NGX Feature 18)");
+		ImGui::SeparatorText("DLSS5 Neural Rendering");
 		bool nrOn = s.neuralRenderingEnabled;
-		if (ImGui::Checkbox("启用 DLSS 神经渲染  |  Enable DLSS Neural Rendering", &nrOn)) {
+		if (ImGui::Checkbox("Neural rendering (live)", &nrOn)) {
 			s.neuralRenderingEnabled = nrOn;
 			// v0.42：DLSSNR 与 FG 串联（不再互斥）——DLSSNR 处理画面后 FG 在结果上插帧。
 			// 若叠加闪烁再回退互斥。开 DLSSNR 不再自动关 FG。
@@ -797,61 +865,57 @@ namespace FrameGen
 		}
 		if (s.neuralRenderingEnabled) {
 			auto& t = a_fg.nrTuning;
-			ImGui::SliderFloat("强度  |  Intensity", &t.intensity, 0.0f, 2.0f, "%.2f");
-			ImGui::SliderFloat("局部色调  |  Local Tone", &t.localToneStrength, 0.0f, 2.0f, "%.2f");
-			ImGui::SliderFloat("局部结构  |  Local Structure", &t.localStructureStrength, 0.0f, 2.0f, "%.2f");
-			ImGui::SliderFloat("皮肤结构  |  Skin Structure", &t.skinStructureStrength, 0.0f, 2.0f, "%.2f");
-			static const char* nrStyles[] = { "Style 0", "Style 1", "Style 2", "Style 3" };
+			const bool nrBlocked = s.frameGeneration && a_fg.fgActive.load() && !s.nrAllowWithFrameGen;
+			if (nrBlocked)
+				ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.2f, 1.0f),
+					"Blocked: frame generation is active and NRAllowWithFrameGen=0.");
+			ImGui::BeginDisabled(nrBlocked);
+			ImGui::SliderFloat("Intensity (live)", &t.intensity, 0.0f, 2.0f, "%.2f");
+			released();
+			ImGui::SliderFloat("Local tone (live)", &t.localToneStrength, 0.0f, 2.0f, "%.2f");
+			released();
+			ImGui::SliderFloat("Local structure (live)", &t.localStructureStrength, 0.0f, 2.0f, "%.2f");
+			released();
+			ImGui::SliderFloat("Skin structure (live)", &t.skinStructureStrength, 0.0f, 2.0f, "%.2f");
+			released();
+			// Names for 0-2 from the dlssnr-linux addon (same model); 3 has no known name.
+			static const char* nrStyles[] = { "0 - Default", "1 - Natural", "2 - Cinematic", "3" };
 			int style = static_cast<int>(t.style);
-			if (ImGui::Combo("风格  |  Style", &style, nrStyles, IM_ARRAYSIZE(nrStyles)))
+			if (ImGui::Combo("Style (live)", &style, nrStyles, IM_ARRAYSIZE(nrStyles))) {
 				t.style = static_cast<std::uint32_t>(style);
-			ImGui::Checkbox("自动遮罩  |  Automatic Mask", &t.useAutoMask);
-			ImGui::Checkbox("UI 校正  |  UI Correction", &t.uiCorrection);
-			// v0.44：DLSSNR 输入分辨率缩放（性能优化）。低 = 快但细节少。
-			if (ImGui::SliderFloat("神经渲染分辨率缩放  |  DLSSNR Render Scale", &t.renderScale, 0.25f, 1.0f, "%.2f"))
+				dirty = true;
+			}
+			edited(ImGui::Checkbox("Automatic mask (live)", &t.useAutoMask));
+			edited(ImGui::Checkbox("UI correction (live)", &t.uiCorrection));
+			// v0.44 / v1.38: shrinks only the guides (depth/motion); color and output stay
+			// at full resolution (Renderer.cpp). No performance promise: measured
+			// 2026-09-27 without a measurable gain.
+			if (ImGui::SliderFloat("Guide scale (live, resets history)", &t.renderScale, 0.25f, 1.0f, "%.2f"))
 				NeuralRendering::Renderer::Instance().ResetHistory();
-			ImGui::TextDisabled("越低越快（FP8 运算更少）但细节更少。0.75 ≈ 输入 1080p。");
-			ImGui::TextDisabled("Lower = faster (fewer FP8 ops) but less detail. 0.75 = 1080p in.");
+			released();
+			ImGui::TextDisabled("Scales the depth/motion guides only; colour and output stay at full resolution.");
 			// v1.45：多层神经渲染 —— 同一帧内把神经渲染串联 N 遍。每层是一个独立的
 			// NGX Feature 18 实例（各持有自己的时域历史），所以成本与显存都按 N 倍计。
 			// 改层数时顺手复位历史：新层首帧本来就会带 Reset=1，复位让所有层同步重新起算。
 			int nrLayers = static_cast<int>(t.layers);
-			if (ImGui::SliderInt("神经渲染层数  |  DLSS5 Layers", &nrLayers, 1, static_cast<int>(NeuralRendering::kMaxNRLayers))) {
+			if (ImGui::SliderInt("Passes (live, resets history)", &nrLayers, 1, static_cast<int>(NeuralRendering::kMaxNRLayers))) {
 				t.layers = static_cast<std::uint32_t>(nrLayers);
 				NeuralRendering::Renderer::Instance().ResetHistory();
-				SaveSettingsToIni(a_fg);
 				SKSE::log::info("[FrameGen] DLSSNR layers -> {} (GUI) | each layer is one more "
 					"Feature 18 evaluate, cost scales with the count", t.layers);
 			}
-			ImGui::TextDisabled("每个真实帧叠加 N 遍神经渲染。1 = 关闭。不是免费的：成本 ≈ N × 单次 evaluate。");
-			ImGui::TextDisabled("Stacked neural passes per real frame. 1 = off. Not free: N x evaluate cost.");
-			ImGui::TextDisabled("状态  Status: %s | frames: %llu",
+			released();
+			ImGui::TextDisabled("Neural passes per frame. 1 = a single pass; each extra pass adds a full evaluation.");
+			ImGui::EndDisabled();
+			ImGui::TextDisabled("Status: %s | frames: %llu",
 				NeuralRendering::Renderer::Instance().StatusText(),
 				static_cast<unsigned long long>(NeuralRendering::Renderer::Instance().SuccessfulFrames()));
 		}
 
-		// v0.41：自定义渲染分辨率缩放——引擎渲染分辨率 = 输出 × 比例，DLSS 放大回输出。
-		// Auto=跟随 QualityMode 档位表（旧行为）；自定义 0.30-1.00 实时生效（下帧 kMAIN 重建）。
-		// 默认 0.70（70% 渲染）：DLSS5/NR 场景下真超分空间 + 帧数大幅提升。
-		ImGui::Separator();
-		bool autoScale = s.renderResolutionScale <= 0.0f;
-		if (ImGui::Checkbox("自动渲染缩放（跟随画质档位）  |  Auto Render Scale (follow Quality Mode)", &autoScale)) {
-			s.renderResolutionScale = autoScale ? 0.0f : 0.70f;  // 切自定义默认 70%
-			SKSE::log::info("[FrameGen] Render scale mode: {}", autoScale ? "Auto (Quality Mode)" : "Custom 0.70");
-		}
-		if (!autoScale) {
-			if (ImGui::SliderFloat("渲染分辨率缩放  |  Render Resolution Scale", &s.renderResolutionScale, 0.30f, 1.00f, "%.2f")) {
-				const float ratio = std::clamp(s.renderResolutionScale, 0.30f, 1.00f);
-				sc.renderScaleX = sc.renderScaleY = ratio;
-				sc.renderWidth = static_cast<std::uint32_t>(
-					std::max(1, static_cast<int>(sc.swapChainDesc.Width * ratio)));
-				sc.renderHeight = static_cast<std::uint32_t>(
-					std::max(1, static_cast<int>(sc.swapChainDesc.Height * ratio)));
-				SKSE::log::info("[FrameGen] Render scale (GUI): {:.2f} -> {}x{}", ratio, sc.renderWidth, sc.renderHeight);
-			}
-			ImGui::TextDisabled("引擎渲染分辨率 = 输出 × 比例，再由 DLSS 放大回输出。0.70 = 70%%。");
-			ImGui::TextDisabled("Engine render = output x scale; DLSS upscales back. 0.70 = 70%%.");
-		}
+		// Linux build (review round 2, architecture P4): the slider for the engine
+		// render scale wrote renderScaleX/Y directly and bypassed the quality mode.
+		// Removed; the render scale follows the DLSS mode above, and NR's own
+		// "Guide scale" slider stays.
 
 		// v1.44：帧尾栅栏等待放在哪条时间线上——每帧实时生效，不需要重启。
 		// 关（0）= 等待排进 D3D11 队列，CPU 立刻返回，于是下一帧能在 GPU 还在跑本帧
@@ -859,9 +923,13 @@ namespace FrameGen
 		// d3d12Fence，等于把渲染线程钉在 GPU 后面（v1.03b..v1.43 行为，base 36.08）。
 		// 关掉后若游戏卡死，勾回来即可（无需重编译）——卡死只会发生在 D3D11 队列
 		// 等一个永不 signal 的栅栏时（2026-09-18 18:23 那次）。
-		ImGui::Separator();
+		ImGui::SeparatorText("Advanced");
 		bool busyWait = s.fenceWaitBusy;
-		if (ImGui::Checkbox("Present 里忙等栅栏（CPU 轮询 GPU）  |  Busy-wait fence in Present (CPU polls the GPU)", &busyWait)) {
+		// Without a shared D3D11 fence, WaitFenceBounded always polls on the CPU.
+		ImGui::BeginDisabled(!sc.d3d11Fence);
+		const bool busyClicked = ImGui::Checkbox("CPU fence polling (live)", &busyWait);
+		ImGui::EndDisabled();
+		if (busyClicked) {
 			s.fenceWaitBusy = busyWait;
 			const bool savedWait = SaveSettingsToIni(a_fg);
 			SKSE::log::info("[FrameGen] FenceWaitBusy -> {} ({}) | {} | live, no restart needed",
@@ -869,32 +937,36 @@ namespace FrameGen
 				s.fenceWaitBusy ? "CPU poll" : "queue-side wait",
 				savedWait ? "INI saved." : "INI SAVE FAILED.");
 		}
-		ImGui::TextDisabled("%s", busyWait
-			? "开：CPU 一直阻塞到 GPU 画完本帧 —— CPU 与 GPU 不会重叠。\n"
-			  "  ON: CPU blocks until the GPU finishes the frame - no CPU/GPU overlap."
-			: "关：等待排到 D3D11 队列上 —— CPU 在 GPU 还在画第 N 帧时就先准备第 N+1 帧（更快）。\n"
-			  "  OFF: wait queued on the D3D11 timeline - CPU builds frame N+1 during frame N.");
+		ImGui::TextDisabled("%s", !sc.d3d11Fence
+			? "Forced ON: no shared D3D11 fence, so the wait always polls on the CPU."
+			: busyWait
+			? "ON: CPU blocks until the GPU finishes the frame - no CPU/GPU overlap."
+			: "OFF: wait queued on the D3D11 timeline - CPU builds frame N+1 during frame N.");
 
-		ImGui::Separator();
-		ImGui::Text("插帧状态  FG active: %s", a_fg.fgActive.load() ? "ON" : "OFF");
+		ImGui::SeparatorText("Status");
 		ImGui::Text("DLSS: %s  DLSSG: %s",
 			a_fg.streamline.featureDLSS ? "OK" : "-",
 			a_fg.streamline.featureDLSSG ? "OK" : "-");
-		ImGui::Text("刷新率  Refresh: %.0f Hz  |  %dx%d",
+		ImGui::Text("Refresh: %.0f Hz  |  %dx%d",
 			a_fg.refreshRate, (int)a_fg.screenWidth, (int)a_fg.screenHeight);
-		ImGui::Text("热键  Keys: Hold Home = Menu | FG switch in GUI");
+		ImGui::Text("Keys: hold Home = menu");
 
-		if (ImGui::Button("保存到 INI  |  Save to INI")) {
+		if (ImGui::Button("Save settings to INI")) {
 			// v0.52：改走统一写回函数（与自动保存同一份键表，不再漏键、不再静默失败）。
 			const bool saved = SaveSettingsToIni(a_fg);
 			if (saved)
 				ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f),
-					"已保存（结果见日志）  |  Saved (see log for result)");
+					"Saved (see log for result)");
 			else
 				ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
-					"保存失败 —— 见日志  |  Save FAILED - see log");
+					"Save FAILED - see log");
 		}
 
+		// Every change above lands in the INI here (menu audit: much took effect live
+		// but was lost on restart). Sliders save on release.
+		if (dirty && !SaveSettingsToIni(a_fg))
+			SKSE::log::error("[ImguiMenu] automatic INI save failed");
+		ImGui::PopTextWrapPos();
 		ImGui::End();
 	}
 }

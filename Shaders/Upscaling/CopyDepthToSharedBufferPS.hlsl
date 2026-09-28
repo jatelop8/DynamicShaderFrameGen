@@ -9,13 +9,21 @@ struct VS_OUTPUT
 
 SamplerState LinearClampSampler : register(s0);
 
+// Linux build (dlss-quality): the engine may have rendered this buffer into the DRS
+// sub-rect (top left of the full texture). UVScale = sub-rect / full size, 1 otherwise.
+cbuffer GuideCopyCB : register(b0)
+{
+	float2 UVScale;
+	float2 Pad0;
+};
+
 #ifdef PSHADER
 
 Texture2D<float> InputTexture : register(t0);
 
 float main(VS_OUTPUT input) : SV_Target
 {
-	return InputTexture.SampleLevel(LinearClampSampler, input.TexCoord, 0);
+	return InputTexture.SampleLevel(LinearClampSampler, input.TexCoord * UVScale, 0);
 }
 
 #endif
