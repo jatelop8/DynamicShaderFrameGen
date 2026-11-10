@@ -359,6 +359,13 @@ namespace FrameGen
 			std::uint32_t a_mvecDepthW, std::uint32_t a_mvecDepthH, DXGI_FORMAT a_colorFormat,
 			bool a_enable = true);
 		// 返回是否成功（失败 → 调用方 Present 兜底直通，避免画面冻结）
+		// PreFgDLAA: DLSS in DLAA mode, a_colorIn -> a_colorOut, on the D3D12 present path.
+		bool EvaluateDLAA(ID3D12GraphicsCommandList* a_cmdList,
+			ID3D12Resource* a_colorIn, ID3D12Resource* a_colorOut,
+			ID3D12Resource* a_depth, ID3D12Resource* a_motionVectors,
+			const FrameBuffer& a_fb);
+		bool constantsSetByDlaa = false;
+		std::uint32_t dlaaOptW = 0, dlaaOptH = 0;  // size the DLAA options were last set for
 		bool EvaluateDLSSG(ID3D12GraphicsCommandList* a_cmdList,
 			ID3D12Resource* a_colorIn, ID3D12Resource* a_colorOut,
 			ID3D12Resource* a_depth, ID3D12Resource* a_motionVectors,

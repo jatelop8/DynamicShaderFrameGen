@@ -136,6 +136,9 @@ namespace FrameGen
 		int providerAtCreate = -1;
 
 		WrappedResource* swapChainBufferWrapped = nullptr;
+		// PreFgDLAA: DLAA output, D3D12-only, same size/format as the swap chain.
+		winrt::com_ptr<ID3D12Resource> dlaaOut;
+		bool dlaaOkThisFrame = false;
 		WrappedResource* colorOutWrapped = nullptr;   // v0.7.5：DLSS 超分独立输出（CS 同款，防 in-place 失效）
 		WrappedResource* nrOutWrapped = nullptr;      // v0.8：DLSS-NR 输出（NGX 写这里，再拷贝呈现）
 		WrappedResource* depthWrapped = nullptr;   // v0.3：DLSSG 深度共享纹理（每帧从引擎 kMAIN 拷贝）

@@ -2487,6 +2487,79 @@ namespace FrameGen
 	}
 
 	// v0.3：DLSSG 每帧评估（D3D12 路径）——游戏画面在共享纹理，插帧输出到 D3D12 backbuffer
+	// PreFgDLAA. DLSS super resolution in DLAA mode (render size == output size) on the
+	// frame the game finished, evaluated on the D3D12 present path just before DLSS-G is tagged.
+	// The output texture then stands in for the HUD-less colour and is copied to the back buffer.
+	bool Streamline::EvaluateDLAA(ID3D12GraphicsCommandList* a_cmdList,
+		ID3D12Resource* a_colorIn, ID3D12Resource* a_colorOut,
+		ID3D12Resource* a_depth, ID3D12Resource* a_motionVectors,
+		const FrameBuffer& a_fb)
+	{
+		static std::uint32_t dlaaLogged = 0;
+		if (!initialized || !featureDLSS || !slDLSSSetOptions || !slEvaluateFeature || !slSetTagForFrame ||
+			!a_colorIn || !a_colorOut || !a_depth || !a_motionVectors) {
+			if (dlaaLogged++ == 0)
+				SKSE::log::warn("[DLAA] not available: initialized={} featureDLSS={} setOptions={} evaluate={} resources={}",
+					initialized, featureDLSS, slDLSSSetOptions != nullptr, slEvaluateFeature != nullptr,
+					(a_colorIn && a_colorOut && a_depth && a_motionVectors));
+			return false;
+		}
+		if (!frameToken)
+			return false;
+		auto& fg = Get();
+		const float aspect = fg.screenHeight > 0 ? fg.screenWidth / fg.screenHeight : 16.0f / 9.0f;
+		const float nearZ = fg.cameraNear ? *fg.cameraNear : 1.0f;
+		const float farZ = fg.cameraFar ? *fg.cameraFar : 10000.0f;
+		CheckFrameConstants(a_fb, aspect, nearZ, farZ);
+		constantsSetByDlaa = true;
+
+		const D3D12_RESOURCE_DESC outDesc = a_colorOut->GetDesc();
+		const std::uint32_t w = static_cast<std::uint32_t>(outDesc.Width);
+		const std::uint32_t h = static_cast<std::uint32_t>(outDesc.Height);
+		if (dlaaOptW != w || dlaaOptH != h) {
+			sl::DLSSOptions opts{};
+			opts.mode = sl::DLSSMode::eDLAA;
+			opts.outputWidth = w;
+			opts.outputHeight = h;
+			opts.colorBuffersHDR = sl::Boolean::eFalse;
+			opts.useAutoExposure = sl::Boolean::eTrue;
+			const sl::Result ro = slDLSSSetOptions(viewport, opts);
+			SKSE::log::info("[DLAA] slDLSSSetOptions DLAA {}x{} -> {}", w, h, static_cast<int>(ro));
+			if (ro != sl::Result::eOk)
+				return false;
+			dlaaOptW = w;
+			dlaaOptH = h;
+		}
+
+		sl::Resource inRes = { sl::ResourceType::eTex2d, a_colorIn, 0 };
+		sl::Resource outRes = { sl::ResourceType::eTex2d, a_colorOut, 0 };
+		sl::Resource depthRes = { sl::ResourceType::eTex2d, a_depth, 0 };
+		sl::Resource mvecRes = { sl::ResourceType::eTex2d, a_motionVectors, 0 };
+		const D3D12_RESOURCE_DESC depthDesc = a_depth->GetDesc();
+		const D3D12_RESOURCE_DESC mvecDesc = a_motionVectors->GetDesc();
+		sl::Extent extent{ 0, 0, w, h };
+		sl::Extent depthExtent{ 0, 0, static_cast<std::uint32_t>(depthDesc.Width), static_cast<std::uint32_t>(depthDesc.Height) };
+		sl::Extent mvecExtent{ 0, 0, static_cast<std::uint32_t>(mvecDesc.Width), static_cast<std::uint32_t>(mvecDesc.Height) };
+		sl::ResourceTag tags[] = {
+			{ &inRes, sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eOnlyValidNow, &extent },
+			{ &outRes, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eOnlyValidNow, &extent },
+			{ &depthRes, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent, &depthExtent },
+			{ &mvecRes, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent, &mvecExtent },
+		};
+		slSetTagForFrame(*frameToken, viewport, tags, _countof(tags), a_cmdList);
+		const sl::BaseStructure* inputs[] = { &viewport };
+		const sl::Result r = slEvaluateFeature(sl::kFeatureDLSS, *frameToken, inputs, _countof(inputs), a_cmdList);
+		static std::uint32_t okCount = 0, failCount = 0;
+		if (r != sl::Result::eOk) {
+			if ((failCount++ % 600u) == 0u)
+				SKSE::log::warn("[DLAA] slEvaluateFeature(DLSS) failed: {} ({} failures)", static_cast<int>(r), failCount);
+			return false;
+		}
+		if ((okCount++ % 3600u) == 0u)
+			SKSE::log::info("[DLAA] evaluate ok ({}x{}, {} frames so far)", w, h, okCount);
+		return true;
+	}
+
 	bool Streamline::EvaluateDLSSG(ID3D12GraphicsCommandList* a_cmdList,
 		ID3D12Resource* a_colorIn, ID3D12Resource* a_colorOut,
 		ID3D12Resource* a_depth, ID3D12Resource* a_motionVectors,
@@ -2507,7 +2580,10 @@ namespace FrameGen
 		// v0.5.21：slSetConstants 提前到 allocate 之前——RSYNC pacer 在
 		// SetConstants（含 frame 时间/Reflex 数据）时创建；allocate 读 pacer context，
 		// 之前顺序 SetOptions→allocate→SetConstants 导致 allocate 时 pacer 未建 → null → 崩
-		CheckFrameConstants(a_fb, aspect, nearZ, farZ);
+		// PreFgDLAA: EvaluateDLAA already set this frame's constants; setting them twice is an SL error.
+		if (!constantsSetByDlaa)
+			CheckFrameConstants(a_fb, aspect, nearZ, farZ);
+		constantsSetByDlaa = false;
 
 		// v0.25.3（用户 2026-08-30“勾选 DLSSG 没生效”——16:35 日志实锤）：**DLSS-G
 		// 不做显式 slAllocateResources / slEvaluateFeature**——与 CS 完全一致（CS 只对
@@ -2864,6 +2940,7 @@ namespace FrameGen
 		if (slDLSSSetOptions) {
 			sl::DLSSOptions opts{};
 			opts.mode = sl::DLSSMode::eOff;
+			dlaaOptW = dlaaOptH = 0;  // PreFgDLAA must set its options again after this
 			slDLSSSetOptions(viewport, opts);
 		}
 		if (slFreeResources)

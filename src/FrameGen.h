@@ -238,6 +238,8 @@ namespace FrameGen
 		//     都不依赖这个 hook，所以菜单照常可用；代价是菜单打开时鼠标仍会转动游戏视角。
 		bool menuDrawHook = true;      // INI MenuDrawHook
 		bool pollInputHook = true;     // INI PollInputHook
+		// PreFgDLAA: run DLSS in DLAA mode on the final frame (D3D12) right before DLSS-G tags it.
+		bool preFgDlaa = false;             // INI PreFgDLAA
 		int  presetDLSS = 0;           // DLSS 模型预设：0=Auto 1=J 2=K 3=L 4=M
 		float sharpness = 0.5f;        // v0.6.3：DLSS 超分锐化（0-1，0=关闭）；v0.7.21 默认 0.3→0.5（4K 重建需更明显锐化）
 		// v0.25：DLSS-NR（NGX 直调）已移除——NR 改由外部 ReShade 方案（dlss5-dx11-bridge +

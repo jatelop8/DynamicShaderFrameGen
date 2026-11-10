@@ -404,6 +404,7 @@ namespace FrameGen
 			<< "MFGMaxFramesOverride=" << s.mfgMaxFramesOverride << "\n"
 			// v1.46：MFG 倍率持久化开关（是否允许写第三方 Transfusion json）
 			<< "WriteTransfusionConfig=" << s.writeTransfusionConfig << "\n"
+			<< "PreFgDLAA=" << (s.preFgDlaa ? 1 : 0) << "\n"
 			<< "ReflexFpsLimit=" << s.reflexFpsLimit << "\n"
 			<< "MenuDisableFrameGen=" << (s.menuDisableFrameGen ? 1 : 0) << "\n"
 			<< "InteropFenceWait=" << (s.interopFenceWait ? 1 : 0) << "\n"

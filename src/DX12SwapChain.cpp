@@ -1976,6 +1976,10 @@ namespace FrameGen
 			fg.streamline.PollMenuState();
 			const bool fgOn = fg.fgActive.load();  // Home 键开关
 			bool dlssgOk = false;
+			// PreFgDLAA: reset every frame. A frame that skips the DLAA pass (menu guard, DLSS-G off) must
+			// copy the live frame, not the previous DLAA output, or the picture freezes behind an open menu.
+			dlaaOkThisFrame = false;
+			fg.streamline.constantsSetByDlaa = false;
 			// 防刷屏：连续失败计数。v0.66：Transfusion 侧实测两个 tid 都在调
 			// slSetConstants，「Present 渲染线程单线程」的旧假设不成立
 			// ⇒ 改原子，消除多线程 ++ 的数据竞争。
@@ -2034,9 +2038,27 @@ namespace FrameGen
 				m_stage = "dlssg SetDLSSGOptions";
 				fg.streamline.SetDLSSGOptions(swapChainDesc.Width, swapChainDesc.Height,
 					swapChainDesc.Width, swapChainDesc.Height, swapChainDesc.Format);
+				// PreFgDLAA: DLAA the finished frame, then hand its output to DLSS-G.
+				if (fg.settings.preFgDlaa && depthWrapped && mvecWrapped) {
+					if (!dlaaOut) {
+						D3D12_RESOURCE_DESC dd = swapChainBufferWrapped->resource->GetDesc();
+						dd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+						const CD3DX12_HEAP_PROPERTIES hp(D3D12_HEAP_TYPE_DEFAULT);
+						const HRESULT hrOut = d3d12Device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &dd,
+							D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(dlaaOut.put()));
+						SKSE::log::info("[DLAA] output texture {}x{} format {} -> hr={:#x}", dd.Width, dd.Height,
+							static_cast<int>(dd.Format), static_cast<unsigned>(hrOut));
+					}
+					if (dlaaOut) {
+						m_stage = "dlaa EvaluateDLAA";
+						dlaaOkThisFrame = fg.streamline.EvaluateDLAA(cmdList,
+							swapChainBufferWrapped->resource.get(), dlaaOut.get(),
+							depthWrapped->resource.get(), mvecWrapped->resource.get(), *fg.GetFrameBuffer());
+					}
+				}
 				m_stage = "dlssg EvaluateDLSSG";
 				dlssgOk = fg.streamline.EvaluateDLSSG(cmdList,
-					swapChainBufferWrapped->resource.get(),
+					dlaaOkThisFrame ? dlaaOut.get() : swapChainBufferWrapped->resource.get(),
 					swapChainBuffers[frameIndex].get(),
 					depthWrapped ? depthWrapped->resource.get() : nullptr,
 					mvecWrapped ? mvecWrapped->resource.get() : nullptr,
@@ -2103,7 +2125,7 @@ namespace FrameGen
 					}
 				}
 				// 直通兜底：共享纹理 Copy 到 backbuffer（无插帧，防画面冻结）
-				auto fakeSwapChain = swapChainBufferWrapped->resource.get();
+				auto fakeSwapChain = (dlaaOkThisFrame && dlaaOut) ? dlaaOut.get() : swapChainBufferWrapped->resource.get();
 				auto realSwapChain = swapChainBuffers[frameIndex].get();
 				{
 					std::vector<D3D12_RESOURCE_BARRIER> barriers;

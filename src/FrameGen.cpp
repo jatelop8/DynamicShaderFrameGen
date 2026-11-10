@@ -203,6 +203,10 @@ namespace FrameGen
 				settings.mfgMaxFramesOverride = std::clamp(readInt(line, 0), 0, 5);
 			// v1.46：是否允许把 MFG 倍率写进第三方 DLSSG-Transfusion 的 json（默认 0 = 不碰）。
 			// 读在这里、写回在 SaveSettingsToIni —— 少一侧就会变成"设置粉碎机"（v1.21 教训）。
+			else if (key == "PreFgDLAA") {
+				settings.preFgDlaa = readBool(line, false);
+				SKSE::log::info("[FrameGen] PreFgDLAA={}", settings.preFgDlaa ? 1 : 0);
+			}
 			else if (key == "WriteTransfusionConfig")
 				settings.writeTransfusionConfig = readBool(line, false) ? 1u : 0u;
 			// v0.54：Reflex 渲染帧率上限（0 = 自动按 刷新率/总倍数 计算；见 Streamline::ReflexSleep）
