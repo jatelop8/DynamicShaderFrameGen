@@ -1866,13 +1866,6 @@ namespace FrameGen
 		if ((ImguiMenu::GetSingleton()->visible || Get().settings.fpsOverlay))
 			ImguiMenu::GetSingleton()->Draw(Get());
 
-		// v0.6：FSR3 FG（Provider=0，dlssgMode=false）——每帧 Configure + Dispatch
-		// （doodlum/ENBFrameGeneration 移植；depth/mvec 共享纹理在 dlssgMode=false 时
-		// 由下面的 FSR3 拷贝块填充——先拷贝后 FG）
-		if (!dlssgMode && FidelityFX::GetSingleton()->module) {
-			FidelityFX::GetSingleton()->Present(fg.fgActive.load());
-		}
-
 		// v0.75: the cycle breaker.
 		//
 		// This used to be:
@@ -1944,6 +1937,19 @@ namespace FrameGen
 		DX::ThrowIfFailed(commandAllocators[frameIndex]->Reset());
 		m_stage = "cmdlist Reset";
 		DX::ThrowIfFailed(commandLists[frameIndex]->Reset(commandAllocators[frameIndex].get(), nullptr));
+
+		// v0.6：FSR3 FG（Provider=0，dlssgMode=false）——每帧 Configure + Dispatch
+		// （doodlum/ENBFrameGeneration 移植；depth/mvec 共享纹理在 dlssgMode=false 时
+		// 由下面的 FSR3 拷贝块填充——先拷贝后 FG）
+		// This call records into commandLists[frameIndex] (the FSR3 "prepare" dispatch in
+		// FidelityFX.cpp), so it has to come after the Reset above. It used to sit before
+		// the fence wait, where that list was still the one closed and executed by the
+		// previous use of this frameIndex; vkd3d-proton crashes on that in d3d12core.dll
+		// as soon as FrameGeneration=1.
+		if (!dlssgMode && FidelityFX::GetSingleton()->module) {
+			m_stage = "ffx Present";
+			FidelityFX::GetSingleton()->Present(fg.fgActive.load());
+		}
 
 		// v0.3：DLSSG 模式——NVIDIA 插帧（输入=游戏画面共享纹理，输出=D3D12 backbuffer）
 		if (dlssgMode) {

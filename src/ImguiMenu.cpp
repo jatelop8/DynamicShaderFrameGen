@@ -407,6 +407,10 @@ namespace FrameGen
 			<< "ReflexFpsLimit=" << s.reflexFpsLimit << "\n"
 			<< "MenuDisableFrameGen=" << (s.menuDisableFrameGen ? 1 : 0) << "\n"
 			<< "InteropFenceWait=" << (s.interopFenceWait ? 1 : 0) << "\n"
+			// Without these two the saved file drops them, and the next launch installs both
+			// hooks again: the crash with CommunityShaders that the keys exist to avoid.
+			<< "MenuDrawHook=" << (s.menuDrawHook ? 1 : 0) << "\n"
+			<< "PollInputHook=" << (s.pollInputHook ? 1 : 0) << "\n"
 			<< "FenceWaitBusy=" << (s.fenceWaitBusy ? 1 : 0) << "\n"
 			<< "MenuGuardFader=" << (s.menuGuardFader ? 1 : 0) << "\n"
 			<< "PixelProbe=" << (s.pixelProbe ? 1 : 0) << "\n"
