@@ -114,17 +114,39 @@ namespace NeuralRendering
 		std::wstring g_spoofedRuntimePath;
 		std::uint32_t g_proxyHits = 0;
 
+		bool HasNgxParameterApi(HMODULE module)
+		{
+			return GetProcAddress(module, "NVSDK_NGX_D3D12_AllocateParameters") &&
+			       GetProcAddress(module, "NVSDK_NGX_D3D12_DestroyParameters");
+		}
+
 		HMODULE FindNgxCoreModule()
 		{
+			// Prefer the driver's NGX core by NAME. The scan below returns the first
+			// loaded module that exports the two parameter functions, and Streamline's
+			// sl.common.dll re-exports the whole NVSDK_NGX_* surface: when another mod's
+			// Streamline (Community Shaders) is loaded earlier, its sl.common.dll won the
+			// scan and its AllocateParameters stub answered 0xBAD00007, so DLSS5 never
+			// initialised. "_nvngx.dll" is the core's file name in the Windows driver
+			// store and in a Proton prefix (system32); "nvngx.dll" is the older name.
+			for (const wchar_t* name : { L"_nvngx.dll", L"nvngx.dll" }) {
+				if (HMODULE core = GetModuleHandleW(name); core && HasNgxParameterApi(core))
+					return core;
+			}
 			std::array<HMODULE, 1024> modules{};
 			DWORD bytesNeeded = 0;
 			if (!K32EnumProcessModules(GetCurrentProcess(), modules.data(), static_cast<DWORD>(sizeof(modules)), &bytesNeeded))
 				return nullptr;
 			const std::size_t count = std::min<std::size_t>(modules.size(), bytesNeeded / sizeof(HMODULE));
 			for (std::size_t index = 0; index < count; ++index) {
-				if (GetProcAddress(modules[index], "NVSDK_NGX_D3D12_AllocateParameters") &&
-					GetProcAddress(modules[index], "NVSDK_NGX_D3D12_DestroyParameters"))
-					return modules[index];
+				if (!HasNgxParameterApi(modules[index]))
+					continue;
+				// Fallback scan: never accept a Streamline plugin (sl.*.dll) as the core.
+				wchar_t path[MAX_PATH] = {};
+				GetModuleFileNameW(modules[index], path, MAX_PATH);
+				if (_wcsnicmp(std::filesystem::path(path).filename().c_str(), L"sl.", 3) == 0)
+					continue;
+				return modules[index];
 			}
 			return nullptr;
 		}
