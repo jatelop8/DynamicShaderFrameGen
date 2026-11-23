@@ -102,6 +102,14 @@ namespace FrameGen
 		if (!HUDLessColor || !depth || !motionVectors)
 			return;
 
+		// With FrameGeneration=0 the swap chain is a plain D3D12 one and
+		// sc.ffxSwapChainContext stays null, but the FSR3 module is still loaded for
+		// Provider=0, so this function ran anyway and handed ffxConfigure a null context:
+		// access violation inside amd_fidelityfx_framegeneration_dx12.dll on the first
+		// frame. Same for a frame generation context that failed to create.
+		if (!sc.ffxSwapChainContext || !frameGenContext)
+			return;
+
 		FfxApiSwapchainFramePacingTuning framePacingTuning{ 0.1f, 0.1f, true, 2, false };
 
 		ffx::ConfigureDescFrameGenerationSwapChainKeyValueDX12 framePacingTuningParameters{};
